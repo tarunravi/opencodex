@@ -53,7 +53,8 @@ import {
 } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseUsageTimeWindow, type UsageTimeWindow } from "../../usage/time-range";
-import { USAGE_RANGES, USAGE_SURFACES, parseRange, parseUsageSurface, rangeWindow, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
+import { USAGE_RANGES, USAGE_SURFACES, parseRange, parseUsageSurface, rangeWindow, type CodexTaskActivity, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
+import { collectCodexTaskEvents, summarizeTaskEvents } from "../../usage/codex-activity";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
@@ -270,11 +271,20 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }
       if (cached && !filterRequested) discardUsageSummaryCacheEntry(cacheKey);
+      // Codex task time is range-dependent. Read rollout activity once for this
+      // request and project it onto each warmed range without changing the usage
+      // aggregate's cache semantics.
+      const taskEvents = await collectCodexTaskEvents();
+      const activityFor = (activityRange: UsageRange): CodexTaskActivity | null => {
+        if (!taskEvents) return null;
+        const { since: activitySince } = rangeWindow(activityRange, now);
+        return summarizeTaskEvents(taskEvents, { cutoff: activitySince ?? -Infinity, now });
+      };
       if (filterRequested) {
         const filteredAggregate = await getFilteredUsageAggregate(filter, window);
         const accumulator = filteredAggregate.accumulator;
         return jsonResponse({
-          ...accumulator.summarize(range, now, surface),
+          ...accumulator.summarize(range, now, surface, activityFor(range)),
           ...(filteredAggregate.usageIncomplete ? { usageIncomplete: true as const, usageIncompleteReason: "oversized_rows" as const } : {}),
           historyTruncated: false,
           truncatedPrefixBytes: 0,
@@ -307,7 +317,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         snapshotWindowEnd: baseAccumulator.snapshotWindow.end,
       } as const;
       const requestedSummary = {
-        ...baseAccumulator.summarize(range, now, surface),
+        ...baseAccumulator.summarize(range, now, surface, activityFor(range)),
         ...baseReadMetadata,
       };
       const currentOverlayVersion = userCostOverlayVersion();
@@ -329,7 +339,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
           const nextSummary = nextRange === range && nextSurface === surface
               ? requestedSummary
               : {
-                ...baseAccumulator.summarize(nextRange, now, nextSurface),
+                ...baseAccumulator.summarize(nextRange, now, nextSurface, activityFor(nextRange)),
                 ...baseReadMetadata,
               };
           setUsageSummaryCacheEntry(`${nextRange}:${nextSurface}`, {
