@@ -27,13 +27,14 @@ import { injectGrokConfig, stripGrokConfig, type GrokInjectModel } from "../../g
 import { inspectGrokConfig } from "../../grok/inspect";
 import { grokConfigPath } from "../../grok/status";
 import { assertNativeTeardownOwned } from "../../integrations/native/ownership-preflight";
+import { CursorMcpConfigError, disableCursorMcp, enableCursorMcp, readCursorMcpState } from "../../integrations/cursor-config";
 import type { CodexNativeRestoreResult } from "../../codex/inject";
 import type { OcxConfig } from "../../types";
 import { jsonResponse } from "../auth-cors";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import type { ManagementContext } from "./context";
 
-export type NativeIntegrationClientId = "claude" | "grok" | "codex" | "claude-desktop";
+export type NativeIntegrationClientId = "claude" | "grok" | "codex" | "claude-desktop" | "cursor";
 
 /** Every reason this module can decline, in one place (audit r3 #6). */
 export type NativeRefusalReason =
@@ -44,6 +45,7 @@ export type NativeRefusalReason =
   | "write_failed"
   | "metadata_unreadable"
   | "cleanup_incomplete"
+  | "foreign_entry"
   | "desired_state_changed";
 
 export interface NativeStatus {
@@ -169,6 +171,24 @@ function codexStatus(config: ManagementContext["config"], configPath: string): N
     configPath,
     desiredEnabled,
     disableBlocked: null,
+  };
+}
+
+function cursorStatus(deps: ManagementContext["deps"]): NativeStatus {
+  const state = (deps.readCursorMcpState ?? readCursorMcpState)();
+  const unsafe = state.kind === "foreign" || state.kind === "invalid" || state.kind === "unreadable";
+  return {
+    clientId: "cursor",
+    state: unsafe ? "unsafe" : state.enabled ? "current" : "absent",
+    installed: state.installed,
+    configPath: state.configPath,
+    // mcp.json itself is durable state; a second OpenCodex intent flag would
+    // drift and would make a missing key look enabled by default.
+    desiredEnabled: state.enabled,
+    disableBlocked: unsafe ? {
+      reason: state.kind === "foreign" ? "foreign_entry" : "metadata_unreadable",
+      message: state.message ?? "Cursor's MCP configuration cannot be changed safely.",
+    } : null,
   };
 }
 
@@ -688,8 +708,12 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
   if (url.pathname === "/api/native-integrations" && req.method === "GET") {
     const { getConfigPath } = await import("../../config");
     return jsonResponse({
-      clients: [claudeStatus(config, getConfigPath()), grokStatus(config), codexStatus(config, getConfigPath()), desktopStatus(config)],
+      clients: [claudeStatus(config, getConfigPath()), grokStatus(config), codexStatus(config, getConfigPath()), desktopStatus(config), cursorStatus(deps)],
     } satisfies NativeStatusListEnvelope);
+  }
+
+  if (url.pathname === "/api/native-integrations/cursor" && req.method === "GET") {
+    return jsonResponse(cursorStatus(deps), 200, req, config);
   }
 
   if (url.pathname === "/api/native-integrations/claude" && req.method === "PUT") {
@@ -766,5 +790,55 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
     return handleClaudeDesktopToggle(ctx);
   }
 
+  if (url.pathname === "/api/native-integrations/cursor" && req.method === "PUT") {
+    return handleCursorToggle(ctx);
+  }
+
   return null;
+}
+
+async function handleCursorToggle(ctx: ManagementContext): Promise<Response> {
+  let body: { enabled?: unknown };
+  try {
+    body = await readManagementJsonBody(ctx.req);
+  } catch (error) {
+    rethrowManagementBodyTooLarge(error);
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.enabled !== "boolean") {
+    return jsonResponse({ error: "enabled must be a boolean" }, 400);
+  }
+  const enabled = body.enabled;
+  const runtime = (ctx.deps.readRuntimePort ?? readRuntimePort)(process.pid);
+  const port = runtime?.port ?? (Number(ctx.url.port) || ctx.config.port);
+  const before = (ctx.deps.readCursorMcpState ?? readCursorMcpState)();
+  let state;
+  try {
+    state = enabled
+      ? (ctx.deps.enableCursorMcp ?? enableCursorMcp)(port)
+      : (ctx.deps.disableCursorMcp ?? disableCursorMcp)();
+  } catch (error) {
+    if (error instanceof CursorMcpConfigError) {
+      const reason: NativeRefusalReason = error.reason === "foreign_entry"
+        ? "foreign_entry"
+        : error.reason === "config_busy"
+          ? "config_busy"
+          : error.reason === "invalid_config"
+            ? "metadata_unreadable"
+            : "write_failed";
+      return refusal(reason === "write_failed" ? 500 : 409, "cursor", reason, error.message);
+    }
+    return refusal(500, "cursor", "write_failed", "Cursor's MCP configuration could not be changed.");
+  }
+
+  return jsonResponse({
+    ok: true,
+    clientId: "cursor",
+    changed: state.changed ?? (before.enabled !== state.enabled || before.kind !== state.kind),
+    state: state.enabled ? "current" : "absent",
+    desiredEnabled: state.enabled,
+    message: enabled
+      ? "Cursor MCP tools enabled. OpenCodex completions, account status/pinning, automatic rotation, usage, and reset timing are now available to Cursor. Cursor's own Agent/Composer inference is unchanged."
+      : "Cursor MCP tools disabled. Only the OpenCodex-owned entry was removed; Cursor's native traffic and other MCP servers were unchanged.",
+  } satisfies NativeToggleEnvelope);
 }

@@ -354,7 +354,7 @@ describe("Codex catalog sync hardening", () => {
     const bare = rows.find(row => row.slug === "gpt-5.5");
     const team = rows.find(row => row.slug === "team/gpt-5.5");
     expect(team).toMatchObject({
-      display_name: "team / 5.5",
+      display_name: "Private Display Name · GPT-5.5",
       opencodex_catalog_kind: accountMarker,
       comp_hash: "native-5.5-hash",
       visibility: "list",
@@ -377,7 +377,6 @@ describe("Codex catalog sync hardening", () => {
     }
     expect(JSON.stringify(rows)).not.toContain("stored-team-account");
     expect(JSON.stringify(rows)).not.toContain("private@example.test");
-    expect(JSON.stringify(rows)).not.toContain("Private Display Name");
   });
 
   test("account sync preserves an observed gated native only after the mapped account confirms it", () => {

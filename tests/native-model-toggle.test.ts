@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   accountBoundNativeOpenAiSlugs,
+  accountBoundNativeDisplayLabels,
   accountBoundNativeDisplayName,
   accountBoundNativeModelSlugs,
   applyNativeVisibility,
@@ -244,14 +245,14 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     const routed = entries.find(entry => entry.slug === "litellm-local/qwen3.6");
     expect(bare?.visibility).toBe("hide");
     expect(main).toMatchObject({
-      display_name: "main-account / 5.5",
+      display_name: "main-account · GPT-5.5",
       opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
       comp_hash: "native-compaction-hash",
       visibility: "list",
       priority: 0,
     });
     expect(main?.description).toBe(bare?.description);
-    expect(side?.display_name).toBe("side.account / 5.5");
+    expect(side?.display_name).toBe("side.account · GPT-5.5");
     expect(side?.priority).toBe(1);
     expect(side?.model_messages).toEqual(bare?.model_messages);
     expect(routed?.priority).toBeGreaterThan(side?.priority as number);
@@ -497,8 +498,54 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
   });
 
   test("case-distinct routing selectors remain distinguishable in picker labels", () => {
-    expect(accountBoundNativeDisplayName("work", nativeTemplate())).toBe("work / 5.5");
-    expect(accountBoundNativeDisplayName("Work", nativeTemplate())).toBe("Work / 5.5");
+    expect(accountBoundNativeDisplayName("work", nativeTemplate())).toBe("work · GPT-5.5");
+    expect(accountBoundNativeDisplayName("Work", nativeTemplate())).toBe("Work · GPT-5.5");
+    expect(accountBoundNativeDisplayName("Personal", {
+      ...nativeTemplate(),
+      slug: "gpt-5.6-sol",
+      display_name: "GPT-5.6-Sol",
+    })).toBe("Personal · GPT-5.6 Sol");
+  });
+
+  test("an explicit account alias labels picker rows without changing the privacy-safe selector", () => {
+    const config = {
+      codexAccounts: [{
+        id: "private-account-id",
+        email: "private@example.test",
+        alias: "Work plan",
+        isMain: false,
+      }],
+      codexAccountNamespaces: {
+        desktop: "@main",
+        team: "private-account-id",
+      },
+    };
+    const labels = accountBoundNativeDisplayLabels(config);
+    expect(labels).toEqual(new Map([
+      ["desktop", "desktop"],
+      ["team", "Work plan"],
+    ]));
+    const rows = buildCatalogEntries(
+      nativeTemplate(),
+      ["gpt-5.5"],
+      [],
+      [],
+      false,
+      "default",
+      new Set(),
+      ["desktop", "team"],
+      new Set(),
+      new Set(),
+      undefined,
+      undefined,
+      undefined,
+      labels,
+    );
+    const team = rows.find(row => row.slug === "team/gpt-5.5");
+    expect(team?.display_name).toBe("Work plan · GPT-5.5");
+    expect(team?.slug).toBe("team/gpt-5.5");
+    expect(JSON.stringify(rows)).not.toContain("private-account-id");
+    expect(JSON.stringify(rows)).not.toContain("private@example.test");
   });
 
   test("catalog discovery uses public selectors only and drops mappings to missing accounts", () => {
