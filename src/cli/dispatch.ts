@@ -940,7 +940,6 @@ async function handleDesktopAppRestart(log: Pick<Console, "log" | "error">): Pro
       }
   }
 }
-
 async function handleConnectedSyncCatalogWrite(
   result: { catalogWritten: boolean; cacheSynced: boolean },
   restartCodex: boolean,

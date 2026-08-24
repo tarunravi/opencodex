@@ -53,6 +53,10 @@ export interface ManagementApiDeps {
   writeDesktop3pConfig?: typeof writeDesktop3pConfig;
   /** Read-only Windows MDM policy seam for status/apply tests. */
   probeClaudeDesktopPolicy?: typeof probeClaudeDesktopPolicy;
+  /** Cursor MCP seams keep route tests out of the user's real ~/.cursor. */
+  readCursorMcpState?: typeof readCursorMcpState;
+  enableCursorMcp?: typeof enableCursorMcp;
+  disableCursorMcp?: typeof disableCursorMcp;
   /**
    * Runtime-state seam: the fence must name the host/port the RUNNING process
    * bound (agent-settings-routes.ts:99-103 pattern), and a test must not depend
