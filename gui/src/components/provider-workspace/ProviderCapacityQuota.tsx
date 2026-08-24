@@ -101,6 +101,14 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
           incompleteCustomWindowLabels={showsAggregate ? incompleteCustomWindowLabels : undefined}
         />
       )}
+      {credits && !credits.unlimited && (
+        <div className="pws-capacity-details">
+          <div className="pws-capacity-recovery">
+            <span>{t("pws.capacity.apiKeySpend")}</span>
+            <strong>{formatCredits(credits.used)} / {formatCredits(credits.limit)}</strong>
+          </div>
+        </div>
+      )}
       {(credits || aggregation) && (
         <div className="pws-capacity-details">
           {credits && (

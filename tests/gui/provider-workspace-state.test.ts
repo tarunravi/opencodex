@@ -117,6 +117,22 @@ describe("workspace detail derived states (WP090)", () => {
       expect(accountQuotaFromReport({ updatedAt: 1, quota: { monthlyPercent: 5, updatedAt: 2 } })?.updatedAt).toBe(2);
       expect(accountQuotaFromReport({ updatedAt: 1, quota: { monthlyPercent: 5 } })?.updatedAt).toBe(1);
     });
+
+    test("preserves a valid provider credit balance and drops malformed balances", () => {
+      expect(accountQuotaFromReport({
+        updatedAt: 111,
+        quota: {
+          creditsUsd: { used: 125.25, limit: 5000, remaining: 4874.75, percent: 2.505, expiresAt: 999 },
+        },
+      })).toEqual({
+        creditsUsd: { used: 125.25, limit: 5000, remaining: 4874.75, percent: 2.505, expiresAt: 999 },
+        updatedAt: 111,
+      });
+      expect(accountQuotaFromReport({
+        updatedAt: 111,
+        quota: { creditsUsd: { used: -1, limit: 5000, remaining: 5001, percent: -1 } },
+      })).toBeNull();
+    });
   });
 
   describe("formatQuotaSourceLabel (missing-usage metadata)", () => {

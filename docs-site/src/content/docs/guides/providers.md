@@ -1003,6 +1003,13 @@ CLI headlessly (`claude -p`, `stream-json`) once per turn:
 > Anthropic. OpenCodex does not convert the login into an API key and does not reproduce the CLI's
 > HTTP identity.
 
+### LiteLLM key budget
+
+A key-based provider named `litellm` reads per-key spend, budget, and reset time from LiteLLM's
+`/key/info` endpoint. The dashboard shows both the consumed percentage and the exact USD spend.
+The probe accepts HTTPS providers and explicitly allowed loopback HTTP bridges; other plaintext
+destinations and redirects fail closed.
+
 ### A6API credit quota
 
 A custom `openai-chat` provider using `authMode: "key"` and the canonical
