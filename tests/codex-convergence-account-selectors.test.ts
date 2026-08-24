@@ -369,12 +369,12 @@ test("convergence renders account-qualified rows and preserves only non-generate
 
   expect(models.find(entry => entry.slug === "gpt-5.6-sol")?.visibility).toBe("hide");
   expect(models.find(entry => entry.slug === "desktop/gpt-5.6-sol")).toMatchObject({
-    display_name: "desktop / 5.6 Sol",
+    display_name: "desktop · GPT-5.6 Sol",
     visibility: "list",
     opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
   });
   expect(models.find(entry => entry.slug === "team/gpt-5.6-sol")).toMatchObject({
-    display_name: "team / 5.6 Sol",
+    display_name: "Private Side Account · GPT-5.6 Sol",
     visibility: "hide",
     opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
   });
@@ -385,7 +385,7 @@ test("convergence renders account-qualified rows and preserves only non-generate
   const serializedCatalog = JSON.stringify(catalog);
   const serializedCache = readFileSync(join(codexHome, "models_cache.json"), "utf8");
   expect((JSON.parse(serializedCache) as { models?: RawEntry[] }).models).toEqual(models);
-  for (const privateValue of ["side-account-id", "side@example.test", "Private Side Account"]) {
+  for (const privateValue of ["side-account-id", "side@example.test"]) {
     expect(serializedCatalog).not.toContain(privateValue);
     expect(serializedCache).not.toContain(privateValue);
   }
@@ -941,7 +941,7 @@ test("generated account rows silently win freshly gathered provider collisions",
 
     expect(collisions).toHaveLength(1);
     expect(collisions[0]).toMatchObject({
-      display_name: "team / 5.6 Sol",
+      display_name: "Private Side Account · GPT-5.6 Sol",
       opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
     });
     expect(warn.mock.calls.some(args => (

@@ -16,6 +16,7 @@ import type {
   performCodexRestart,
   readCodexAppServerState,
 } from "../../codex/app-server-restart-service";
+import type { disableCursorMcp, enableCursorMcp, readCursorMcpState } from "../../integrations/cursor-config";
 
 export interface ManagementApiDeps {
   /** Platform seam for capability projections; does not alter host-level startup behavior. */
@@ -52,6 +53,10 @@ export interface ManagementApiDeps {
   writeDesktop3pConfig?: typeof writeDesktop3pConfig;
   /** Read-only Windows MDM policy seam for status/apply tests. */
   probeClaudeDesktopPolicy?: typeof probeClaudeDesktopPolicy;
+  /** Cursor MCP seams keep route tests out of the user's real ~/.cursor. */
+  readCursorMcpState?: typeof readCursorMcpState;
+  enableCursorMcp?: typeof enableCursorMcp;
+  disableCursorMcp?: typeof disableCursorMcp;
   /**
    * Runtime-state seam: the fence must name the host/port the RUNNING process
    * bound (agent-settings-routes.ts:99-103 pattern), and a test must not depend

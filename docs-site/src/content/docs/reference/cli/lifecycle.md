@@ -450,6 +450,15 @@ Install and control the Windows status tray icon. It starts at Windows login and
 proxy controls. `start` and `stop` control the icon only; use its menu to control the proxy.
 `--no-start` applies to `install` and installs the tray without launching it immediately.
 
+### `ocx menubar <install|start|stop|status|uninstall|remove> [--json] [--no-start]`
+
+Install and control the native macOS OpenCodex.app companion (menu bar plus a real usage
+window). `install` is idempotent: it stops every leftover companion and compile-check
+process, then leaves exactly one `com.opencodex.menubar` launchd job. The app shows proxy
+status, Codex billing accounts, and per-model token/wall-time/tok-per-second usage.
+`start` and `stop` control the companion only; they do not stop the proxy. `--no-start`
+applies to `install` and writes the app without launching it.
+
 ## Dashboard
 
 ### `ocx gui`

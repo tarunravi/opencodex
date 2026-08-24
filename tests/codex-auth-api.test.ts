@@ -1224,6 +1224,32 @@ describe("codex-auth API", () => {
     });
   });
 
+  test("GET active and quota surface the next known reset without account identity metadata", async () => {
+    const resetAt = Math.floor(Date.now() / 1000) + 86_400;
+    const laterResetAt = resetAt + 86_400;
+    const config = makeConfig({
+      activeCodexAccountId: "pool-live",
+      codexAccounts: [{ id: "pool-live", email: "pool-live@example.test", plan: "pro", isMain: false }],
+    });
+    saveCodexAccountCredential("pool-live", {
+      accessToken: "access-pool-live",
+      refreshToken: "refresh-pool-live",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-live",
+    });
+    updateAccountQuota("pool-live", 11, resetAt, 2, laterResetAt);
+
+    const activeReq = new Request("http://localhost/api/codex-auth/active");
+    const active = await (await handleCodexAuthAPI(activeReq, new URL(activeReq.url), config))!.json() as Record<string, unknown>;
+    expect(active.nextQuotaResetAt).toBe(resetAt);
+    expect(JSON.stringify(active)).not.toContain("pool-live@example.test");
+    expect(JSON.stringify(active)).not.toContain("acct-pool-live");
+
+    const quotaReq = new Request("http://localhost/api/codex-auth/quota");
+    const quota = await (await handleCodexAuthAPI(quotaReq, new URL(quotaReq.url), config))!.json() as Record<string, unknown>;
+    expect(quota.nextQuotaResetAt).toBe(resetAt);
+  });
+
   test("GET /api/codex-auth/accounts returns large live pools without dropping entries", async () => {
     const config = makeConfig({
       codexAccounts: Array.from({ length: 30 }, (_, i) => ({
@@ -3448,6 +3474,29 @@ describe("codex-auth API", () => {
     expect(config.activeCodexAccountId).toBe("work");
   });
 
+  test("PUT account alias converges picker-visible catalog labels after persistence", async () => {
+    const config = makeConfig({
+      codexAccounts: [{ id: "work", email: "work@example.test", isMain: false }],
+      codexAccountPickerEnabled: true,
+      codexAccountNamespaces: { work: "work" },
+    });
+    let convergenceCalls = 0;
+    const req = new Request("http://localhost/api/codex-auth/accounts/alias", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "work", alias: "Work Plus" }),
+    });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config, async () => {
+      convergenceCalls += 1;
+      expect(config.codexAccounts?.[0]?.alias).toBe("Work Plus");
+      return { status: "committed", changed: true, degraded: false, notices: [] };
+    });
+
+    expect(resp!.status).toBe(200);
+    expect(await resp!.json()).toMatchObject({ alias: "Work Plus", catalogRefreshPending: false });
+    expect(convergenceCalls).toBe(1);
+  });
+
   test("PUT /api/codex-auth/accounts/alias preserves the dedicated main-account error", async () => {
     const req = new Request("http://localhost/api/codex-auth/accounts/alias", {
       method: "PUT",
@@ -4056,8 +4105,11 @@ describe("codex-auth API", () => {
     expect(data).toEqual({ status: "expired" });
   });
 
-  test("POST /api/codex-auth/login rejects invalid account id before OAuth starts", async () => {
-    const req = new Request("http://localhost/api/codex-auth/login", {
+  test.each([
+    "/api/codex-auth/login",
+    "/api/codex-auth/accounts/add",
+  ])("POST %s rejects invalid account id before OAuth starts", async (path) => {
+    const req = new Request(`http://localhost${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: "bad id" }),

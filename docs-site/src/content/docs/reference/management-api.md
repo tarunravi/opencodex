@@ -82,6 +82,7 @@ route-specific results rather than repeating this table.
 | `POST /api/claude-desktop/apply` | Write the saved profile to Claude Desktop's managed config | 400/500 write failure |
 | `GET /api/claude-desktop/status` | Inspect saved-versus-applied profile and Desktop health | 400 status read failure |
 | `GET, PUT /api/claude-code` | Read or update Claude Code gateway, auth-mode, model-map, context, agent, and sidecar settings | 400 invalid field or shape |
+| `GET, PUT /api/native-integrations/cursor` | Inspect or toggle Cursor's ownership-marked OpenCodex MCP tools; native Cursor inference is unchanged | 409 malformed, changed, or same-named user-owned config; 500 write failure |
 
 For the concepts behind the model roster and encrypted worker-task behavior, see
 [Sub-agent Surface](/guides/sub-agent-surface/).
@@ -248,15 +249,17 @@ manager. Its routes are:
 | Method and path | Purpose | Notable errors |
 | --- | --- | --- |
 | `GET, POST, DELETE /api/codex-auth/accounts` | List/refresh or delete Codex accounts. POST is retained as a disabled compatibility endpoint; successful DELETE responses include `catalogRefreshPending`. | POST always returns 403 `manual_import_disabled`; 400 invalid DELETE input |
-| `PUT /api/codex-auth/accounts/alias` | Set or clear an account alias | 400 invalid account/alias |
+| `GET /api/codex-auth/accounts/discover` | Discover importable CodexBar-managed Codex profiles on macOS. The response contains opaque source/account handles and masked emails only. | Invalid or unreadable local profiles are counted but their paths, identities, fingerprints, and credential bytes are never returned. |
+| `POST /api/codex-auth/accounts/import-codexbar` | Explicitly validate and import all discovered CodexBar profiles, or the `sourceIds` named in the request. Existing main/pool identities and credential fingerprints are deduplicated. | 400 invalid/unknown selection; per-account warmup, conflict, or credential-publication failures are returned as fixed status codes. |
+| `PUT /api/codex-auth/accounts/alias` | Set or clear an account alias and converge picker-visible catalog labels after persistence | 400 invalid account/alias; `catalogRefreshPending: true` requests a later `POST /api/sync` retry |
 | `PUT /api/codex-auth/accounts/pause` | Pause or resume one account | 400 invalid account/state; 404 missing account |
 | `PUT /api/codex-auth/accounts/pause-exhausted` | Pause accounts whose quota is exhausted | Mutation-lock failures become 503 |
 | `POST /api/codex-auth/accounts/clear-cooldown` | Clear runtime cooldown for one account or all accounts | 400 invalid id |
-| `GET, PUT /api/codex-auth/active` | Read or select the active account | 400 invalid or missing account; 409 paused/legacy-row conflict |
+| `GET, PUT /api/codex-auth/active` | Read or select the active account. GET includes `nextQuotaResetAt` (Unix seconds) when the effective active account has a future upstream quota-window reset. | 400 invalid or missing account; 409 paused/legacy-row conflict |
 | `PUT /api/codex-auth/auto-switch` | Set the quota threshold for automatic account switching | 400 invalid threshold |
 | `PUT, PATCH /api/codex-auth/pool-strategy` | Update Codex account-pool selection strategy | 400 invalid strategy/config |
 | `PUT /api/codex-auth/failover` | Set the account failover threshold | 400 invalid threshold |
-| `GET /api/codex-auth/quota` | Read cached quota state by account | — |
+| `GET /api/codex-auth/quota` | Read cached quota state by account plus the earliest known future `nextQuotaResetAt` (Unix seconds) | — |
 | `GET /api/codex-auth/reset-credits` | Inspect reset-credit eligibility for an account | 400 missing account id; upstream status passthrough; 500 lookup failure |
 | `POST /api/codex-auth/reset-credits/consume` | Consume an eligible reset credit | 400 missing account id; upstream status passthrough; 503 `server_busy`; 500 consume failure |
 | `POST /api/codex-auth/login` | Start Codex login or reauthentication | 400 invalid request; conflict/busy login states |
@@ -269,6 +272,12 @@ If a new account config row is saved but credential setup cannot finish, OAuth `
 `code: "codex_credential_persistence_failed"`, `accountId`, `needsReauth: true`, and optional
 `catalogRefreshPending: true`; storage-error details are not exposed. The account row remains saved:
 reauthenticate or delete it before retrying account creation.
+
+CodexBar discovery is read-only. Import verifies that each private `auth.json` is inside CodexBar's
+managed-home root, matches CodexBar's recorded file fingerprint, and carries the same provider account
+identity and email as its JWTs. The import request warms each credential before publishing it to the
+OpenCodex pool, then best-effort refreshes plan/quota metadata. Raw tokens, full emails, provider account
+ids, source fingerprints, and filesystem paths never cross the management response boundary.
 
 Configuration-writer or credential-refresh lock timeouts under this delegated family return HTTP
 503 with code `CONFIG_MUTATION_LOCK_UNAVAILABLE`. Clients should retry shortly rather than treating
