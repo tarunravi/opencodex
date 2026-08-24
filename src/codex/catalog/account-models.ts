@@ -33,17 +33,57 @@ export function visibleCodexAccountSelectors(
     .map(([selector]) => selector);
 }
 
-export function accountBoundNativeDisplayName(selector: string, native: RawEntry): string {
+function safeExplicitAccountAlias(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const alias = value.trim();
+  return alias.length > 0 && alias.length <= 80 && !/[\x00-\x1f\x7f]/.test(alias)
+    ? alias
+    : undefined;
+}
+
+/**
+ * Display-only labels for public account selectors.
+ *
+ * The routing slug always keeps the privacy-safe selector. A user-owned alias may replace that
+ * selector in `display_name`, but email addresses and private account ids are never inferred as
+ * labels. Main-account rows have no configurable alias and therefore keep their public selector.
+ */
+export function accountBoundNativeDisplayLabels(
+  config: Pick<OcxConfig, "codexAccounts" | "codexAccountNamespaces">,
+): ReadonlyMap<string, string> {
+  const aliasesByAccountId = new Map(
+    (config.codexAccounts ?? []).flatMap(account => {
+      if (account.isMain) return [];
+      const alias = safeExplicitAccountAlias(account.alias);
+      return alias === undefined ? [] : [[account.id, alias] as const];
+    }),
+  );
+  return new Map(codexAccountNamespaceEntries(config).map(([selector, accountId]) => [
+    selector,
+    aliasesByAccountId.get(accountId) ?? selector,
+  ]));
+}
+
+function nativePickerDisplayName(native: RawEntry): string {
   const rawModel = typeof native.display_name === "string"
-    ? native.display_name
-    : String(native.slug ?? "");
-  const model = rawModel
-    .replace(/^gpt-/i, "")
+    ? native.display_name.trim()
+    : String(native.slug ?? "").trim();
+  const gpt = /^gpt-(.+)$/i.exec(rawModel);
+  const parts = (gpt?.[1] ?? rawModel)
     .split("-")
     .filter(Boolean)
     .map(part => /^[a-z]/.test(part) ? part.charAt(0).toUpperCase() + part.slice(1) : part)
     .join(" ");
-  return `${selector} / ${model}`;
+  return gpt ? `GPT-${parts}` : parts;
+}
+
+export function accountBoundNativeDisplayName(
+  selector: string,
+  native: RawEntry,
+  displayLabel = selector,
+): string {
+  const label = safeExplicitAccountAlias(displayLabel) ?? selector;
+  return `${label} · ${nativePickerDisplayName(native)}`;
 }
 
 /** Identify current generated rows without changing Codex's semantic model fields. */

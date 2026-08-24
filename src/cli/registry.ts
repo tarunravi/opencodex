@@ -93,6 +93,15 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
       "--no-start (install only) installs the tray without launching it immediately.",
     ],
   },
+  {
+    name: "menubar",
+    usage: "ocx menubar <install|start|stop|status|uninstall|remove> [--json] [--no-start]",
+    summary: "Install and control the macOS menu bar companion.",
+    details: [
+      "The menu bar starts at login and shows proxy status, active Codex account, per-model usage, and one-click account switching.",
+      "--no-start (install only) installs the menu bar without launching it immediately.",
+    ],
+  },
   { name: "ensure", usage: "ocx ensure", summary: "Ensure the proxy is running and Codex config/cache are current." },
   {
     name: "connect",
@@ -377,7 +386,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   {
     name: "integration",
-    usage: "ocx integration <claude|grok|client|native> ...",
+    usage: "ocx integration <claude|cursor|grok|client|native> ...",
     summary: "Manage supported client integrations, and the native client toggles.",
     details: [
       "`native` shows or flips the native Claude/Claude Desktop/Codex/Grok toggles; the other subcommands manage the reversible file integrations.",

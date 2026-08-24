@@ -630,6 +630,14 @@ const commandRunners: Record<string, CommandRunner> = {
     await windowsTrayCommand(deps.args.slice(1));
     return Number(process.exitCode ?? 0);
   },
+  menubar: async deps => {
+    const { macosMenubarCommand } = await import("../tray/macos");
+    await macosMenubarCommand(deps.args.slice(1), {
+      json: deps.args.includes("--json"),
+      noStart: deps.args.includes("--no-start"),
+    });
+    return Number(process.exitCode ?? 0);
+  },
   "codex-shim": async deps => {
     const { codexShimStatus, diagnoseCodexShim, installCodexShim, uninstallCodexShim } = await import("../codex/shim");
     switch (deps.args[1]) {
