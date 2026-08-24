@@ -737,6 +737,15 @@ Deprecated: the OpenCodex desktop app provides the tray on Windows, macOS, and L
 remains for installs without the desktop app.
 When a newer package version is known, the tray adds a blue dot to its online, warning, or offline icon and shows **Update available**. The tray checks its local cached badge about once a minute; stale or unavailable results remove the dot. The menu item opens the dashboard, where you can start the package update. It does not install automatically.
 
+### `ocx menubar <install|start|stop|status|uninstall|remove> [--json] [--no-start]`
+
+Install and control the native macOS OpenCodex.app companion (menu bar plus a real usage
+window). `install` is idempotent: it stops every leftover companion and compile-check
+process, then leaves exactly one `com.opencodex.menubar` launchd job. The app shows proxy
+status, Codex billing accounts, and per-model token/wall-time/tok-per-second usage.
+`start` and `stop` control the companion only; they do not stop the proxy. `--no-start`
+applies to `install` and writes the app without launching it.
+
 ## Dashboard
 
 ### `ocx gui`
