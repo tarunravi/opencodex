@@ -4,6 +4,8 @@ import type { UsageReadMetadata } from "../usage-summary-resource";
 import { UsageIncompleteNotice } from "../components/usage-incomplete-notice";
 import { formatProviderDisplayName } from "../provider-icons";
 import { formatTokens } from "../format-tokens";
+import { formatUptime } from "../formatUptime";
+import { catalogValue } from "../i18n/catalogs";
 import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { EmptyState, Notice } from "../ui";
@@ -81,6 +83,31 @@ interface UsageProvider {
 
 class UsageWindowMismatchError extends Error {}
 
+interface UsageLatency {
+  modelCallMs: number;
+  apiActiveMs: number;
+  activeWallMs: number | null;
+  activeTurns: number;
+  completedTurns: number;
+  averageTtftMs: number | null;
+  endToEndTokensPerSecond: number | null;
+  decodeTokensPerSecond: number | null;
+}
+
+interface UsageEffortGroup {
+  model: string;
+  requestedEffort: string;
+  effectiveEffort: string;
+  requests: number;
+  requestShare: number;
+  modelCallMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  averageTtftMs: number | null;
+  endToEndTokensPerSecond: number | null;
+  decodeTokensPerSecond: number | null;
+}
+
 interface UsageResponse extends UsageReadMetadata {
   range: Range;
   surface: UsageSurface;
@@ -96,6 +123,9 @@ interface UsageResponse extends UsageReadMetadata {
   truncatedPrefixBytes: number;
   entriesTruncated: boolean;
   entriesDropped: number;
+  // Optional because a dashboard can talk to a proxy that predates latency analytics.
+  latency?: UsageLatency;
+  effortGroups?: UsageEffortGroup[];
   // Bounds of the rows the bounded reader loaded, before any range or surface filtering.
   // Describes the read, not the query, and is never a completeness claim (#1497).
   // Optional because a dashboard can talk to a proxy that predates these fields.
@@ -106,6 +136,27 @@ interface UsageResponse extends UsageReadMetadata {
 
 function formatPct(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
+}
+
+function isFiniteNumber(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+// Latency stats span sub-second TTFTs to multi-hour wall times. formatUptime rounds to whole
+// seconds, which would flatten every TTFT, so sub-10s values keep one decimal instead.
+function formatDurationMs(ms: number, locale: Locale): string {
+  const clamped = Math.max(0, ms);
+  if (clamped < 10_000) {
+    const seconds = (clamped / 1000).toFixed(1).replace(/\.0$/, "");
+    return `${seconds}${catalogValue(locale, "uptime.second")}`;
+  }
+  return formatUptime(clamped / 1000, locale);
+}
+
+function formatTokensPerSecond(value: number, locale: Locale, t: TFn): string {
+  return t("usage.perf.tokensPerSecondValue", {
+    value: value.toLocaleString(locale, { maximumFractionDigits: 1 }),
+  });
 }
 
 // Stable per-model bar color: hash the provider/model id to a hue so the same model keeps its color
@@ -659,6 +710,120 @@ function UsageHeatmapPanel({
   );
 }
 
+function effortLabel(effort: string, t: TFn): ReactNode {
+  // "not-recorded" is a backend sentinel for requests that predate effort tracking,
+  // not a real effort level, so it renders as a muted placeholder instead of a value.
+  if (effort === "not-recorded") return <span className="muted">{t("usage.effort.notRecorded")}</span>;
+  return effort;
+}
+
+function UsagePerformancePanel({
+  latency,
+  effortGroups,
+  locale,
+  t,
+}: {
+  latency?: UsageLatency;
+  effortGroups?: UsageEffortGroup[];
+  locale: Locale;
+  t: TFn;
+}) {
+  const groups = effortGroups ?? [];
+  const cards: { label: string; value: string; hint?: string }[] = [];
+  if (latency) {
+    if (isFiniteNumber(latency.apiActiveMs)) {
+      cards.push({
+        label: t("usage.perf.apiWallTime"),
+        value: formatDurationMs(latency.apiActiveMs, locale),
+        hint: t("usage.perf.apiWallTimeHint"),
+      });
+    }
+    if (isFiniteNumber(latency.activeWallMs)) {
+      cards.push({
+        label: t("usage.perf.taskTime"),
+        value: formatDurationMs(latency.activeWallMs, locale),
+        hint: t("usage.perf.taskTimeHint"),
+      });
+    }
+    if (isFiniteNumber(latency.modelCallMs)) {
+      cards.push({ label: t("usage.perf.modelCallTime"), value: formatDurationMs(latency.modelCallMs, locale) });
+    }
+    if (isFiniteNumber(latency.averageTtftMs)) {
+      cards.push({ label: t("usage.perf.averageTtft"), value: formatDurationMs(latency.averageTtftMs, locale) });
+    }
+    if (isFiniteNumber(latency.endToEndTokensPerSecond)) {
+      cards.push({ label: t("usage.perf.endToEndTps"), value: formatTokensPerSecond(latency.endToEndTokensPerSecond, locale, t) });
+    }
+    if (isFiniteNumber(latency.decodeTokensPerSecond)) {
+      cards.push({ label: t("usage.perf.decodeTps"), value: formatTokensPerSecond(latency.decodeTokensPerSecond, locale, t) });
+    }
+  }
+  // An older proxy omits both fields; the panel disappears rather than rendering empty chrome.
+  if (cards.length === 0 && groups.length === 0) return null;
+  return (
+    <section className="panel" style={{ marginTop: 16 }} aria-labelledby="usage-performance-title">
+      <h3 id="usage-performance-title" className="panel-title">{t("usage.section.performance")}</h3>
+      {cards.length > 0 && (
+        <div className="usage-cards usage-cards-3x2" role="group" aria-label={t("usage.section.performance")}>
+          {cards.map(card => (
+            <div key={card.label} className="stat">
+              <div className="muted">{card.label}</div>
+              <div className="stat-value">{card.value}</div>
+              {card.hint && <div className="muted text-caption">{card.hint}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+      {latency && latency.activeTurns > 0 && (
+        <p className="muted text-control" style={{ marginTop: 12 }}>
+          {t("usage.perf.activeTasks", { count: latency.activeTurns })}
+        </p>
+      )}
+      {groups.length > 0 && (
+        <>
+          <h4 className="usage-insights-title" style={{ marginTop: 16 }}>{t("usage.section.effortBreakdown")}</h4>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>{t("logs.col.model")}</th>
+                  <th>{t("usage.col.requestedEffort")}</th>
+                  <th>{t("usage.col.effectiveEffort")}</th>
+                  <th className="num">{t("usage.col.requests")}</th>
+                  <th className="num">{t("usage.col.share")}</th>
+                  <th className="num">{t("usage.col.modelCallTime")}</th>
+                  <th className="num">{t("usage.col.inputTokens")}</th>
+                  <th className="num">{t("usage.col.outputTokens")}</th>
+                  <th className="num">{t("usage.col.avgTtft")}</th>
+                  <th className="num">{t("usage.col.e2eTps")}</th>
+                  <th className="num">{t("usage.col.decodeTps")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map(group => (
+                  <tr key={`${group.model}/${group.requestedEffort}/${group.effectiveEffort}`}>
+                    <td className="mono">{modelLabel(group.model)}</td>
+                    <td>{effortLabel(group.requestedEffort, t)}</td>
+                    <td>{effortLabel(group.effectiveEffort, t)}</td>
+                    <td className="num">{group.requests.toLocaleString(locale)}</td>
+                    <td className="num">{`${Math.round(group.requestShare)}%`}</td>
+                    <td className="num mono">{formatDurationMs(group.modelCallMs, locale)}</td>
+                    <td className="num mono">{formatTokens(group.inputTokens, locale)}</td>
+                    <td className="num mono">{formatTokens(group.outputTokens, locale)}</td>
+                    <td className="num mono">{isFiniteNumber(group.averageTtftMs) ? formatDurationMs(group.averageTtftMs, locale) : "—"}</td>
+                    <td className="num mono">{isFiniteNumber(group.endToEndTokensPerSecond) ? group.endToEndTokensPerSecond.toLocaleString(locale, { maximumFractionDigits: 1 }) : "—"}</td>
+                    <td className="num mono">{isFiniteNumber(group.decodeTokensPerSecond) ? group.decodeTokensPerSecond.toLocaleString(locale, { maximumFractionDigits: 1 }) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function UsageWorkspaceSection({
   title,
   titleId,
@@ -890,6 +1055,7 @@ function UsageWorkspaceBody({
           <UsageProfileHero summary={data.summary} days={data.days} host={host} locale={locale} t={t} />
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
           <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
+          <UsagePerformancePanel latency={data.latency} effortGroups={data.effortGroups} locale={locale} t={t} />
           <UsageInsightsRow data={data} activeDays={activeDays} locale={locale} t={t} />
         </>
       ) : null,

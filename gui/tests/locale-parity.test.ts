@@ -56,6 +56,7 @@ const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   // Backend/brand names
   "dash.backendAnthropic",
   "dash.backendOpenAI",
+  "usage.profile.name",
   // Claude app labels
   "claude.pageTitle",
   "claude.tabCode",
