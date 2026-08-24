@@ -1382,6 +1382,7 @@ export const ja: Record<TKey, string> = {
   "pws.dashboard.rateLimits": "レート制限",
   "pws.capacity.estimate": "設定済み重みによるプール推定",
   "pws.capacity.currentAccount": "現在の有効アカウント",
+  "pws.capacity.apiKeySpend": "API キーの利用額",
   "pws.capacity.nextRecovery": "次の容量回復",
   "pws.capacity.recoveryShare": "+{percent}% のプール容量",
   "pws.capacity.incomplete": "対象範囲が不完全です: {excluded} 件を除外",

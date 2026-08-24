@@ -1471,6 +1471,7 @@ export const tr: Record<TKey, string> = {
   "pws.dashboard.rateLimits": "ORAN LİMİTLERİ",
   "pws.capacity.estimate": "Havuz kapasite tahmini",
   "pws.capacity.currentAccount": "Mevcut geçerli hesap",
+  "pws.capacity.apiKeySpend": "API anahtarı harcaması",
   "pws.capacity.nextRecovery": "Sonraki kapasite yenilenmesi",
   "pws.capacity.recoveryShare": "+%{percent} havuz kapasitesi",
   "pws.capacity.incomplete": "Kısmi pencere kapsamı ({excluded} hariç tutuldu)",

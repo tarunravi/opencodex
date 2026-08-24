@@ -1457,6 +1457,7 @@ export const fr: Record<TKey, string> = {
   "pws.dashboard.rateLimits": "LIMITES DE DÉBIT",
   "pws.capacity.estimate": "Estimation du groupe pondérée selon la configuration",
   "pws.capacity.currentAccount": "Compte effectif actuel",
+  "pws.capacity.apiKeySpend": "Dépenses de la clé API",
   "pws.capacity.nextRecovery": "Prochaine récupération de capacité",
   "pws.capacity.recoveryShare": "+{percent}% de capacité du groupe",
   "pws.capacity.incomplete": "Couverture incomplète : {excluded} compte(s) exclus",

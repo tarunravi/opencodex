@@ -2317,6 +2317,7 @@ export const ko: Record<TKey, string> = {
   "pws.dashboard.rateLimits": "사용량 제한",
   "pws.capacity.estimate": "설정 가중치 기반 풀 추정치",
   "pws.capacity.currentAccount": "현재 유효 계정",
+  "pws.capacity.apiKeySpend": "API 키 사용액",
   "pws.capacity.nextRecovery": "다음 용량 회복",
   "pws.capacity.recoveryShare": "+{percent}% 풀 용량",
   "pws.capacity.incomplete": "불완전한 범위: {excluded}개 계정 제외",

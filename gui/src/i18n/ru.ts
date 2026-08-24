@@ -1452,6 +1452,7 @@ export const ru: Record<TKey, string> = {
   "pws.dashboard.rateLimits": "Лимиты запросов",
   "pws.capacity.estimate": "Оценка пула по настроенным весам",
   "pws.capacity.currentAccount": "Текущая активная учётная запись",
+  "pws.capacity.apiKeySpend": "Расходы по API-ключу",
   "pws.capacity.nextRecovery": "Следующее восстановление ёмкости",
   "pws.capacity.recoveryShare": "+{percent}% ёмкости пула",
   "pws.capacity.incomplete": "Неполное покрытие: исключено аккаунтов: {excluded}",

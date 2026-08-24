@@ -796,6 +796,13 @@ OpenCodex provides official adapter support for Qoder through the `qoder` (Globa
 - **Quota:** No public quota API is used, so totals and reset times are unavailable. Insufficient-credit errors (vendor code 118) surface as HTTP 429 `insufficient_quota`.
 - **Operators:** Qoder Global is operated by BRIGHT ZENITH PRIVATE LIMITED under the [product service terms](https://qoder.com/product-service); Qoder CN by 通义云启（杭州）信息技术有限公司 with Alibaba Cloud. Verify `ocx provider test qoder` (or `qoder-cn`) after configuring.
 
+### LiteLLM key budget
+
+A key-based provider named `litellm` reads per-key spend, budget, and reset time from LiteLLM's
+`/key/info` endpoint. The dashboard shows both the consumed percentage and the exact USD spend.
+The probe accepts HTTPS providers and explicitly allowed loopback HTTP bridges; other plaintext
+destinations and redirects fail closed.
+
 ### A6API credit quota
 
 A custom `openai-chat` provider using `authMode: "key"` and the canonical

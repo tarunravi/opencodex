@@ -182,6 +182,7 @@ describe("buildQuotaRows (WP070)", () => {
 });
 
 describe("maxQuotaUtilisation", () => {
+  test("LiteLLM credits", () => { expect(maxQuotaUtilisation(quota({ creditsUsd: { used: 45, limit: 100, remaining: 55, percent: 45 } }))).toBe(45); });
   test("mixed, absent, and custom values", () => {
     expect(maxQuotaUtilisation(null)).toBe(-1);
     expect(maxQuotaUtilisation(quota({}))).toBe(-1);

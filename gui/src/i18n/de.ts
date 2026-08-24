@@ -2278,6 +2278,7 @@ export const de: Record<TKey, string> = {
   "pws.dashboard.rateLimits": "RATE LIMITS",
   "pws.capacity.estimate": "Pool-Schätzung anhand konfigurierter Gewichtungen",
   "pws.capacity.currentAccount": "Aktuelles effektives Konto",
+  "pws.capacity.apiKeySpend": "Ausgaben des API-Schlüssels",
   "pws.capacity.nextRecovery": "Nächste Kapazitätswiederherstellung",
   "pws.capacity.recoveryShare": "+{percent} % Pool-Kapazität",
   "pws.capacity.incomplete": "Unvollständige Abdeckung: {excluded} Konten ausgeschlossen",

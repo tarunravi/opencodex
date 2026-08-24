@@ -2317,6 +2317,7 @@ export const zhTW: Record<TKey, string> = {
   "pws.accountModeConfirm": "要切換 OpenAI 帳號模式嗎？進行中的對話將重新指派到另一種模式的帳號集合，配額用量將依新模式追蹤。",
   "pws.capacity.estimate": "依設定權重的帳號池估算",
   "pws.capacity.currentAccount": "目前有效帳號",
+  "pws.capacity.apiKeySpend": "API 金鑰支出",
   "pws.capacity.nextRecovery": "下一次容量復原",
   "pws.capacity.recoveryShare": "+{percent}% 帳號池容量",
   "pws.capacity.incomplete": "覆蓋不完整：已排除 {excluded} 個帳號",
