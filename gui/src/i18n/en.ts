@@ -1314,6 +1314,7 @@ export const en = {
   "pws.dashboard.rateLimits": "RATE LIMITS",
   "pws.capacity.estimate": "Configured-weight pool estimate",
   "pws.capacity.currentAccount": "Current effective account",
+  "pws.capacity.apiKeySpend": "API key spend",
   "pws.capacity.nextRecovery": "Next capacity recovery",
   "pws.capacity.recoveryShare": "+{percent}% pool capacity",
   "pws.capacity.incomplete": "Incomplete coverage: {excluded} account(s) excluded",

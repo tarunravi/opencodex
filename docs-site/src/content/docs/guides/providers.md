@@ -493,6 +493,13 @@ Create a key in [Novita's key manager](https://novita.ai/settings/key-management
 > hosts and schemas and are not routed by this preset.
 > Live discovery for this preset is capped at a 1 MiB response and 256 raw model rows.
 
+### LiteLLM key budget
+
+A key-based provider named `litellm` reads per-key spend, budget, and reset time from LiteLLM's
+`/key/info` endpoint. The dashboard shows both the consumed percentage and the exact USD spend.
+The probe accepts HTTPS providers and explicitly allowed loopback HTTP bridges; other plaintext
+destinations and redirects fail closed.
+
 ### A6API credit quota
 
 A custom `openai-chat` provider using `authMode: "key"` and the canonical

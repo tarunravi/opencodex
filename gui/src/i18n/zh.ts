@@ -2023,6 +2023,7 @@ export const zh: Record<TKey, string> = {
   "pws.dashboard.rateLimits": "速率限制",
   "pws.capacity.estimate": "按配置权重估算的账户池",
   "pws.capacity.currentAccount": "当前有效账户",
+  "pws.capacity.apiKeySpend": "API 密钥支出",
   "pws.capacity.nextRecovery": "下一次容量恢复",
   "pws.capacity.recoveryShare": "+{percent}% 账户池容量",
   "pws.capacity.incomplete": "覆盖不完整：已排除 {excluded} 个账户",

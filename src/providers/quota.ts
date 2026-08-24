@@ -1703,6 +1703,65 @@ function normalizedBaseUrl(value: string): string | null {
   }
 }
 
+function liteLlmKeyInfoUrl(baseUrl: string, allowPrivateNetwork = false): string | null {
+  try {
+    const url = new URL(baseUrl);
+    const loopbackHttp = url.protocol === "http:"
+      && allowPrivateNetwork
+      && (url.hostname === "localhost" || url.hostname === "[::1]" || /^127\./.test(url.hostname));
+    if ((url.protocol !== "https:" && !loopbackHttp) || url.username || url.password || url.search || url.hash) return null;
+    url.pathname = `${url.pathname.replace(/\/v1\/?$/, "").replace(/\/+$/, "")}/key/info`;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function parseLiteLlmQuotaPayload(value: unknown, now = Date.now()): ProviderQuota | null {
+  const info = asRecord(asRecord(value)?.info);
+  const used = toFiniteNumber(info?.spend);
+  const limit = toFiniteNumber(info?.max_budget);
+  if (used === undefined || used < 0 || limit === undefined || limit <= 0) return null;
+  const remaining = Math.max(0, limit - used);
+  const percent = normalizePercent((used / limit) * 100);
+  if (percent === undefined) return null;
+  const resetAt = normalizeResetAt(info?.budget_reset_at);
+  return {
+    customWindows: [{ label: "LiteLLM", percent, ...(resetAt !== undefined ? { resetAt } : {}) }],
+    creditsUsd: {
+      used,
+      limit,
+      remaining,
+      percent,
+      ...(resetAt !== undefined ? { expiresAt: resetAt } : {}),
+    },
+    updatedAt: now,
+  };
+}
+
+async function fetchLiteLlmQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  const endpoint = liteLlmKeyInfoUrl(config.baseUrl, config.allowPrivateNetwork);
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!endpoint || !apiKey) return null;
+  const headers = new Headers(config.headers);
+  headers.set("Accept", "application/json");
+  headers.set("Authorization", `Bearer ${apiKey}`);
+  const response = await fetch(endpoint, {
+    headers,
+    redirect: "error",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const body = await readQuotaJson(response);
+  if (body === QUOTA_JSON_READ_FAILURE) return null;
+  const quota = parseLiteLlmQuotaPayload(body);
+  return quota ? report(provider, "litellm:key-info", quota) : null;
+}
+
 function quotaResetAt(row: Record<string, unknown>): number | undefined {
   return normalizeResetAt(row.resetTime ?? row.resetAt ?? row.reset_time ?? row.reset_at);
 }
@@ -2323,6 +2382,9 @@ async function maybeFetchProviderQuota(
     // `fetchOpenCodeGoQuota` stays — sending a key anywhere must not depend on this gate.
     if ((provider.authMode ?? "key") === "key" && registryEntryForProviderDestination(provider)?.id === "opencode-go") {
       return fetchOpenCodeGoQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && name === "litellm") {
+      return fetchLiteLlmQuota(name, provider);
     }
     if ((provider.authMode ?? "key") === "key" && isCanonicalA6apiBaseUrl(provider.baseUrl)) {
       return fetchA6apiQuota(name, provider);
