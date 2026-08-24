@@ -53,7 +53,8 @@ import {
   type PersistedUsageEntry,
 } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
-import { USAGE_RANGES, USAGE_SURFACES, parseRange, parseUsageSurface, projectUsageSummary, rangeWindow, summarizeUsage, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
+import { USAGE_RANGES, USAGE_SURFACES, parseRange, parseUsageSurface, projectUsageSummary, rangeWindow, summarizeUsage, type CodexTaskActivity, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
+import { collectCodexTaskEvents, summarizeTaskEvents } from "../../usage/codex-activity";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
@@ -240,8 +241,17 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       const snapshot = await readUsageSnapshotForManagement(effectiveReadLimit);
       const revisionReadAt = Date.now();
       const window = snapshotWindow(snapshot.entries);
+      // Codex task time is range-dependent (intervals clamp to the range start),
+      // so events are collected once and summarized per range. Unavailability of
+      // the thread index degrades to null and must never fail the endpoint.
+      const taskEvents = await collectCodexTaskEvents();
+      const activityFor = (activityRange: UsageRange): CodexTaskActivity | null => {
+        if (!taskEvents) return null;
+        const { since: activitySince } = rangeWindow(activityRange, now);
+        return summarizeTaskEvents(taskEvents, { cutoff: activitySince ?? -Infinity, now });
+      };
       const summary = {
-        ...summarizeUsage(snapshot.entries, range, now, surface),
+        ...summarizeUsage(snapshot.entries, range, now, surface, activityFor(range)),
         historyTruncated: snapshot.truncatedPrefixBytes > 0 || snapshot.entriesTruncated,
         truncatedPrefixBytes: snapshot.truncatedPrefixBytes,
         entriesTruncated: snapshot.entriesTruncated,
@@ -269,7 +279,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       for (const nextRange of ranges) {
         for (const nextSurface of surfaces) {
           const nextSummary = nextRange === range && nextSurface === surface ? summary : {
-            ...summarizeUsage(snapshot.entries, nextRange, now, nextSurface),
+            ...summarizeUsage(snapshot.entries, nextRange, now, nextSurface, activityFor(nextRange)),
             historyTruncated: summary.historyTruncated,
             truncatedPrefixBytes: summary.truncatedPrefixBytes,
             entriesTruncated: summary.entriesTruncated,
@@ -331,6 +341,17 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         models: [],
         providers: [],
         accounts: [],
+        latency: {
+          modelCallMs: 0,
+          apiActiveMs: 0,
+          activeWallMs: null,
+          activeTurns: 0,
+          completedTurns: 0,
+          averageTtftMs: null,
+          endToEndTokensPerSecond: null,
+          decodeTokensPerSecond: null,
+        },
+        effortGroups: [],
         historyTruncated: false,
         truncatedPrefixBytes: 0,
         entriesTruncated: false,

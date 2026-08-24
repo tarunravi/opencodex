@@ -134,6 +134,44 @@ export interface UsageAccount {
   priceCoverageRatio: number;
 }
 
+export interface UsageLatency {
+  /** Plain SUM of durationMs over all rows in range (overlaps double-counted). */
+  modelCallMs: number;
+  /** UNION of [timestamp, timestamp+durationMs] intervals — wall-clock with >=1 call in flight. */
+  apiActiveMs: number;
+  /** Codex task time (rollout-derived); null when unavailable. */
+  activeWallMs: number | null;
+  activeTurns: number;
+  completedTurns: number;
+  /** Mean firstOutputMs over completed rows with a valid TTFT; null with no qualifying rows. */
+  averageTtftMs: number | null;
+  /** Token-weighted: SUM(outputTokens) / SUM(durationMs). */
+  endToEndTokensPerSecond: number | null;
+  /** Token-weighted: SUM(outputTokens) / SUM(durationMs - firstOutputMs). */
+  decodeTokensPerSecond: number | null;
+}
+
+export interface UsageEffortGroup {
+  model: string;
+  requestedEffort: string;
+  effectiveEffort: string;
+  requests: number;
+  requestShare: number;
+  modelCallMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  averageTtftMs: number | null;
+  endToEndTokensPerSecond: number | null;
+  decodeTokensPerSecond: number | null;
+}
+
+/** Rollout-derived Codex task time, computed outside this module (codex-activity.ts). */
+export interface CodexTaskActivity {
+  activeWallMs: number;
+  completedTurns: number;
+  activeTurns: number;
+}
+
 export interface UsageSummary {
   range: UsageRange;
   surface: UsageSurface;
@@ -144,6 +182,8 @@ export interface UsageSummary {
   models: UsageModel[];
   providers: UsageProvider[];
   accounts: UsageAccount[];
+  latency: UsageLatency;
+  effortGroups: UsageEffortGroup[];
 }
 
 /**
@@ -1083,11 +1123,145 @@ function buildAccounts(entries: PersistedUsageEntry[], costMap: Map<PersistedUsa
   return [...byLabel.values()].sort((a, b) => b.totalTokens - a.totalTokens);
 }
 
+/** Total covered milliseconds of a set of [start, end] intervals, overlaps merged. */
+export function unionDurationMs(intervals: ReadonlyArray<readonly [number, number]>): number {
+  if (!intervals.length) return 0;
+  const sorted = intervals.filter(([start, end]) => end > start).sort((a, b) => a[0] - b[0]);
+  if (!sorted.length) return 0;
+  let [start, end] = sorted[0]!;
+  let total = 0;
+  for (const [nextStart, nextEnd] of sorted.slice(1)) {
+    if (nextStart <= end) end = Math.max(end, nextEnd);
+    else { total += end - start; [start, end] = [nextStart, nextEnd]; }
+  }
+  return total + end - start;
+}
+
+/**
+ * The gate for every latency RATE: only a successful, fully-completed, metered
+ * row with real output can honestly contribute to TTFT or tokens/sec. Rows that
+ * fail the gate still count toward requests and modelCallMs.
+ */
+function isCompletedForRates(entry: PersistedUsageEntry): boolean {
+  return entry.status >= 200 && entry.status < 300
+    && (!entry.terminalStatus || entry.terminalStatus === "completed")
+    && (entry.usageStatus === "reported" || entry.usageStatus === "estimated")
+    && (entry.usage?.outputTokens ?? 0) > 0
+    && entry.durationMs > 0;
+}
+
+/** firstOutputMs === 0 is a valid TTFT — never truthiness-check it. */
+function validTtft(entry: PersistedUsageEntry): boolean {
+  return entry.firstOutputMs != null && entry.firstOutputMs <= entry.durationMs;
+}
+
+interface RateAccumulator {
+  ttftSumMs: number;
+  ttftRows: number;
+  e2eTokens: number;
+  e2eMs: number;
+  decodeTokens: number;
+  decodeMs: number;
+}
+
+function blankRates(): RateAccumulator {
+  return { ttftSumMs: 0, ttftRows: 0, e2eTokens: 0, e2eMs: 0, decodeTokens: 0, decodeMs: 0 };
+}
+
+function accumulateRates(acc: RateAccumulator, entry: PersistedUsageEntry): void {
+  if (!isCompletedForRates(entry)) return;
+  const outputTokens = entry.usage!.outputTokens;
+  acc.e2eTokens += outputTokens;
+  acc.e2eMs += entry.durationMs;
+  if (!validTtft(entry)) return;
+  acc.ttftSumMs += entry.firstOutputMs!;
+  acc.ttftRows += 1;
+  const decodeMs = entry.durationMs - entry.firstOutputMs!;
+  if (decodeMs > 0) {
+    acc.decodeTokens += outputTokens;
+    acc.decodeMs += decodeMs;
+  }
+}
+
+/** Token-weighted rates: sum of tokens over sum of ms, never a mean of per-request rates. */
+function finalizeRates(acc: RateAccumulator): Pick<UsageLatency, "averageTtftMs" | "endToEndTokensPerSecond" | "decodeTokensPerSecond"> {
+  return {
+    averageTtftMs: acc.ttftRows > 0 ? acc.ttftSumMs / acc.ttftRows : null,
+    endToEndTokensPerSecond: acc.e2eMs > 0 ? acc.e2eTokens / (acc.e2eMs / 1000) : null,
+    decodeTokensPerSecond: acc.decodeMs > 0 ? acc.decodeTokens / (acc.decodeMs / 1000) : null,
+  };
+}
+
+function buildLatency(entries: PersistedUsageEntry[], activity: CodexTaskActivity | null): UsageLatency {
+  let modelCallMs = 0;
+  const intervals: Array<[number, number]> = [];
+  const rates = blankRates();
+  for (const entry of entries) {
+    modelCallMs += entry.durationMs;
+    intervals.push([entry.timestamp, entry.timestamp + entry.durationMs]);
+    accumulateRates(rates, entry);
+  }
+  return {
+    modelCallMs,
+    apiActiveMs: unionDurationMs(intervals),
+    activeWallMs: activity ? activity.activeWallMs : null,
+    activeTurns: activity?.activeTurns ?? 0,
+    completedTurns: activity?.completedTurns ?? 0,
+    ...finalizeRates(rates),
+  };
+}
+
+const NOT_RECORDED_EFFORT = "not-recorded";
+
+function buildEffortGroups(entries: PersistedUsageEntry[]): UsageEffortGroup[] {
+  const byKey = new Map<string, { group: UsageEffortGroup; rates: RateAccumulator }>();
+  for (const entry of entries) {
+    const model = entry.resolvedModel ?? entry.model;
+    const requestedEffort = entry.requestedEffort ?? NOT_RECORDED_EFFORT;
+    const effectiveEffort = entry.effectiveEffort ?? NOT_RECORDED_EFFORT;
+    const key = `${model}\0${requestedEffort}\0${effectiveEffort}`;
+    let slot = byKey.get(key);
+    if (!slot) {
+      slot = {
+        group: {
+          model,
+          requestedEffort,
+          effectiveEffort,
+          requests: 0,
+          requestShare: 0,
+          modelCallMs: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          averageTtftMs: null,
+          endToEndTokensPerSecond: null,
+          decodeTokensPerSecond: null,
+        },
+        rates: blankRates(),
+      };
+      byKey.set(key, slot);
+    }
+    slot.group.requests += 1;
+    slot.group.modelCallMs += entry.durationMs;
+    slot.group.inputTokens += entry.usage?.inputTokens ?? 0;
+    slot.group.outputTokens += entry.usage?.outputTokens ?? 0;
+    accumulateRates(slot.rates, entry);
+  }
+  const totalRequests = entries.length;
+  const groups: UsageEffortGroup[] = [];
+  for (const { group, rates } of byKey.values()) {
+    group.requestShare = totalRequests === 0 ? 0 : group.requests / totalRequests * 100;
+    Object.assign(group, finalizeRates(rates));
+    groups.push(group);
+  }
+  return groups.sort((a, b) => b.requests - a.requests);
+}
+
 export function summarizeUsage(
   entries: PersistedUsageEntry[],
   range: UsageRange,
   now: number,
   surface: UsageSurface = "all",
+  codexActivity?: CodexTaskActivity | null,
 ): UsageSummary {
   const { since } = rangeWindow(range, now);
   const filteredEntries = entries.filter(entry => {
@@ -1122,6 +1296,8 @@ export function summarizeUsage(
     models: buildModels(filteredEntries, totals.totalTokens, costMap),
     providers: buildProviders(filteredEntries, totals.totalTokens, costMap),
     accounts: buildAccounts(filteredEntries, costMap),
+    latency: buildLatency(filteredEntries, codexActivity ?? null),
+    effortGroups: buildEffortGroups(filteredEntries),
   };
 }
 
@@ -1237,6 +1413,15 @@ export function projectUsageSummary<T extends UsageSummary>(
     // rows projected from those entries are exactly the accounts that key used. They
     // are honest under that filter and are kept.
     accounts: provider === null && model === null ? projected.accounts : [],
+    // Row-derived latency reflects the retained rows; Codex task time is not
+    // partitionable by provider/model, so the parent summary's values carry over.
+    latency: {
+      ...projected.latency,
+      activeWallMs: summary.latency.activeWallMs,
+      activeTurns: summary.latency.activeTurns,
+      completedTurns: summary.latency.completedTurns,
+    },
+    effortGroups: projected.effortGroups,
     filter: { provider, model, apiKeyId, matched, comboOverlap },
   };
 }
