@@ -148,6 +148,166 @@ function bucketLevel(value: number, buckets: number[]): 0 | 1 | 2 | 3 | 4 {
   return 4;
 }
 
+function isoDay(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Streaks count calendar days with at least one request. The current streak may
+ * end yesterday: today stays "live" until it ends without activity, so an
+ * inactive today does not zero out an ongoing run.
+ */
+function computeStreaks(days: UsageDay[]): { current: number; longest: number } {
+  const active = new Set(days.filter(d => d.requests > 0).map(d => d.date));
+  if (active.size === 0) return { current: 0, longest: 0 };
+
+  const sorted = [...active].sort();
+  let longest = 1;
+  let run = 1;
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = new Date(`${sorted[i - 1]}T00:00:00`);
+    const curr = new Date(`${sorted[i]}T00:00:00`);
+    const gapDays = Math.round((curr.getTime() - prev.getTime()) / 86_400_000);
+    run = gapDays === 1 ? run + 1 : 1;
+    if (run > longest) longest = run;
+  }
+
+  const cursor = new Date();
+  cursor.setHours(0, 0, 0, 0);
+  if (!active.has(isoDay(cursor))) cursor.setDate(cursor.getDate() - 1);
+  let current = 0;
+  while (active.has(isoDay(cursor))) {
+    current += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return { current, longest };
+}
+
+function peakDayTokens(days: UsageDay[]): number {
+  return days.reduce((max, d) => Math.max(max, d.totalTokens), 0);
+}
+
+function apiHost(apiBase: string): string {
+  try {
+    return new URL(apiBase).host;
+  } catch {
+    return apiBase;
+  }
+}
+
+function UsageProfileHero({
+  summary,
+  days,
+  host,
+  locale,
+  t,
+}: {
+  summary: UsageSummaryTotals;
+  days: UsageDay[];
+  host: string;
+  locale: Locale;
+  t: TFn;
+}) {
+  const streaks = useMemo(() => computeStreaks(days), [days]);
+  const peak = useMemo(() => peakDayTokens(days), [days]);
+  const name = t("usage.profile.name");
+  // Initials from the (possibly localized) display name: first letter of each
+  // word, or the first two letters when the name is a single word.
+  const initials = (() => {
+    const words = name.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return "??";
+    if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+    return words.map(word => word[0]).join("").slice(0, 2).toUpperCase();
+  })();
+  const stats = [
+    { label: t("usage.stat.lifetimeTokens"), value: formatTokens(summary.totalTokens, locale) },
+    { label: t("usage.stat.peakDay"), value: formatTokens(peak, locale) },
+    { label: t("usage.stat.requests"), value: summary.requests.toLocaleString(locale) },
+    { label: t("usage.stat.currentStreak"), value: t("usage.stat.daysValue", { days: streaks.current }) },
+    { label: t("usage.stat.longestStreak"), value: t("usage.stat.daysValue", { days: streaks.longest }) },
+  ];
+  return (
+    <section className="profile-hero" aria-label={t("usage.title")}>
+      <div className="profile-avatar" aria-hidden="true">{initials}</div>
+      <div className="profile-name">{name}</div>
+      <div className="profile-sub">
+        <span className="profile-handle mono">{host}</span>
+        <span className="profile-sub-dot" aria-hidden="true">·</span>
+        <span className="profile-badge">{t("usage.profile.badge")}</span>
+      </div>
+      <div className="profile-stats" role="group" aria-label={t("usage.title")}>
+        {stats.map(stat => (
+          <div key={stat.label} className="profile-stat">
+            <div className="profile-stat-value">{stat.value}</div>
+            <div className="profile-stat-label muted">{stat.label}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function UsageInsightsRow({
+  data,
+  activeDays,
+  locale,
+  t,
+}: {
+  data: UsageResponse;
+  activeDays: number;
+  locale: Locale;
+  t: TFn;
+}) {
+  const topModels = useMemo(
+    () => [...data.models].toSorted((a, b) => b.totalTokens - a.totalTokens).slice(0, 5),
+    [data.models],
+  );
+  const topModel = topModels[0];
+  const insights: { label: string; value: ReactNode }[] = [
+    { label: t("usage.insight.topModel"), value: topModel ? modelLabel(topModel.model) : "—" },
+    { label: t("usage.insight.providers"), value: String(data.providers.length) },
+    { label: t("usage.insight.activeDays"), value: String(activeDays) },
+    { label: t("usage.card.coverage"), value: formatPct(data.summary.coverageRatio) },
+  ];
+  if (data.summary.estimatedCostUsd !== undefined) {
+    insights.push({
+      label: t("usage.insight.estimatedCost"),
+      value: formatUsdEstimate(data.summary.estimatedCostUsd, locale),
+    });
+  }
+  return (
+    <div className="usage-insights-row">
+      <section className="usage-insights-col" aria-labelledby="usage-insights-title">
+        <h4 id="usage-insights-title" className="usage-insights-title">{t("usage.section.insights")}</h4>
+        <div className="usage-insight-list">
+          {insights.map(insight => (
+            <div key={insight.label} className="usage-insight-row">
+              <span className="muted">{insight.label}</span>
+              <span className="usage-insight-value">{insight.value}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="usage-insights-col" aria-labelledby="usage-topmodels-title">
+        <h4 id="usage-topmodels-title" className="usage-insights-title">{t("usage.section.topModels")}</h4>
+        <div className="usage-topmodels-list">
+          {topModels.map(model => (
+            <div key={`${model.provider}/${model.model}`} className="usage-topmodel">
+              <span className="usage-topmodel-swatch" style={{ background: modelColor(model.model, model.provider) }} aria-hidden="true" />
+              <span className="usage-topmodel-name">{modelLabel(model.model)}</span>
+              <span className="usage-topmodel-count muted">{t("usage.topModels.runs", { count: model.requests })}</span>
+            </div>
+          ))}
+          {topModels.length === 0 && <span className="muted text-control">—</span>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 interface HeatmapCell {
   date: string;
   requests: number;
@@ -660,6 +820,7 @@ function UsageWorkspaceBody({
   onModelQuery,
   sortedProviders,
   range,
+  host,
   locale,
   t,
 }: {
@@ -672,6 +833,7 @@ function UsageWorkspaceBody({
   onModelQuery: (query: string) => void;
   sortedProviders: UsageProvider[];
   range: Range;
+  host: string;
   locale: Locale;
   t: TFn;
 }) {
@@ -683,8 +845,10 @@ function UsageWorkspaceBody({
       meta: data ? `${data.summary.requests}` : "—",
       body: data ? (
         <>
+          <UsageProfileHero summary={data.summary} days={data.days} host={host} locale={locale} t={t} />
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
           <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
+          <UsageInsightsRow data={data} activeDays={activeDays} locale={locale} t={t} />
         </>
       ) : null,
     },
@@ -800,6 +964,7 @@ export default function Usage({ apiBase }: { apiBase: string }) {
     (data?.providers ?? []).toSorted((a, b) => b.totalTokens - a.totalTokens),
     [data?.providers],
   );
+  const host = useMemo(() => apiHost(apiBase), [apiBase]);
 
   return (
     <>
@@ -839,19 +1004,20 @@ export default function Usage({ apiBase }: { apiBase: string }) {
               })()}
             </Notice>
           )}
-          <UsageWorkspaceBody
-            data={data}
-            heatmap={heatmap}
-            weekBars={weekBars}
-            activeDays={activeDays}
-            filteredModels={filteredModels}
-            modelQuery={modelQuery}
-            onModelQuery={setModelQuery}
-            sortedProviders={sortedProviders}
-            range={range}
-            locale={locale}
-            t={t}
-          />
+      <UsageWorkspaceBody
+        data={data}
+        heatmap={heatmap}
+        weekBars={weekBars}
+        activeDays={activeDays}
+        filteredModels={filteredModels}
+        modelQuery={modelQuery}
+        onModelQuery={setModelQuery}
+        sortedProviders={sortedProviders}
+        range={range}
+        host={host}
+        locale={locale}
+        t={t}
+      />
         </>
       )}
     </>

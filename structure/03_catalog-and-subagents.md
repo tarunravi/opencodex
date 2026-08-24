@@ -136,7 +136,10 @@ Pool mode routes across main plus added Codex credentials. Key rules:
 - **Selector labels carry no account-role semantics.** When at least one selector is advertisable,
   the Codex catalog clones each supported native row per selector and hides the bare picker rows;
   bare ids remain routable and stay in raw `/v1/models` unless explicitly disabled. Missing stored
-  account targets are not advertised, and private account ids never become catalog labels.
+  account targets are not advertised, and private account ids or emails are never inferred into a
+  catalog slug or label. A validated, user-owned account alias may replace the selector in the
+  display-only `display_name` (`<alias> · <native model>`); the slug remains
+  `<selector>/<native-model>`, so renaming the alias cannot change routing identity.
   `codexAccountPickerEnabled: false` hides generated rows without deleting exact routing bindings;
   an omitted flag preserves the established behavior of a nonempty hand-written selector map.
 - **Rotation is sticky.** A conversation stays on its selected account while that account is

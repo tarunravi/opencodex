@@ -85,6 +85,15 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
       "--no-start (install only) installs the tray without launching it immediately.",
     ],
   },
+  {
+    name: "menubar",
+    usage: "ocx menubar <install|start|stop|status|uninstall|remove> [--json] [--no-start]",
+    summary: "Install and control the macOS menu bar companion.",
+    details: [
+      "The menu bar starts at login and shows proxy status, active Codex account, per-model usage, and one-click account switching.",
+      "--no-start (install only) installs the menu bar without launching it immediately.",
+    ],
+  },
   { name: "ensure", usage: "ocx ensure", summary: "Ensure the proxy is running and Codex config/cache are current." },
   {
     name: "sync",
@@ -237,7 +246,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     usage: "ocx grok <status|exclude|include|set|clear|apply> ...",
     summary: "Manage and apply the Grok Build model fence.",
   },
-  { name: "integration", usage: "ocx integration <claude|grok|client> ...", summary: "Manage supported client integrations." },
+  { name: "integration", usage: "ocx integration <claude|cursor|grok|client> ...", summary: "Manage supported client integrations." },
   {
     name: "system",
     usage: "ocx system <status|settings|startup|diagnostics|sync|update> ...",
