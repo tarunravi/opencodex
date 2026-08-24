@@ -107,6 +107,7 @@ export function maxQuotaUtilisation(quota: AccountQuota | null): number {
   for (const w of quota.customWindows ?? []) {
     if (typeof w.percent === "number") vals.push(w.percent);
   }
+  if (typeof quota.creditsUsd?.percent === "number") vals.push(quota.creditsUsd.percent);
   return vals.length ? Math.max(...vals) : -1;
 }
 

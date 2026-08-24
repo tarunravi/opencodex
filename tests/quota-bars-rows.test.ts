@@ -86,6 +86,9 @@ describe("maxQuotaUtilisation", () => {
       fiveHourPercent: 10,
       customWindows: [{ label: "x", percent: 95 }],
     }))).toBe(95);
+    expect(maxQuotaUtilisation(quota({
+      creditsUsd: { used: 45, limit: 100, remaining: 55, percent: 45 },
+    }))).toBe(45);
   });
 });
 

@@ -78,10 +78,10 @@ function quotaFromUnknown(quota: unknown, fallbackUpdatedAt?: number): AccountQu
   const creditsRemaining = finite(creditsRaw?.remaining);
   const creditsPercent = finite(creditsRaw?.percent);
   const creditsExpiresAt = dateTimestamp(creditsRaw?.expiresAt);
-  const creditsUsd = creditsUsed !== undefined
-    && creditsLimit !== undefined
-    && creditsRemaining !== undefined
-    && creditsPercent !== undefined
+  const creditsUsd = creditsUsed !== undefined && creditsUsed >= 0
+    && creditsLimit !== undefined && creditsLimit >= 0
+    && creditsRemaining !== undefined && creditsRemaining >= 0
+    && creditsPercent !== undefined && creditsPercent >= 0 && creditsPercent <= 100
     ? {
         used: creditsUsed,
         limit: creditsLimit,
