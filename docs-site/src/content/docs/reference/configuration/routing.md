@@ -53,7 +53,10 @@ closed instead of switching accounts and does not change the active Pool account
 eligible selector is configured, Codex catalogs hide bare native picker rows and list a separate
 `<selector>/<native-openai-model>` row for each selector. Bare native ids retain normal Pool/Direct
 routing and remain in raw `/v1/models` discovery unless explicitly disabled. Selectors whose mapped
-stored account is missing are not advertised. Selector validation, collision rules, and privacy guidance are documented in
+stored account is missing are not advertised. The visible row label is
+`<explicit account alias> · <native model name>` when an alias exists, otherwise
+`<selector> · <native model name>`; the slug always remains selector-qualified. Selector validation,
+collision rules, and privacy guidance are documented in
 [Provider Configuration](/reference/configuration/providers/).
 
 The Codex Auth page exposes this picker behavior as an opt-in. Disabling it hides generated
