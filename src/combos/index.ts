@@ -34,6 +34,7 @@ export {
   coolComboTarget,
   isComboTargetInCooldown,
   parseRetryAfterMs,
+  reconcileComboTargetCooldowns,
   comboFailureDecision,
   type ComboFailureDecision,
 } from "./failover";

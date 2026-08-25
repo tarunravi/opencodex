@@ -2288,7 +2288,7 @@ export async function handleComboResponses(
       return unreadableEncryptedAgentTaskResponse();
     }
     pick = pickComboTarget(config, comboId, {
-      eligible: target => !isComboTargetInCooldown(comboId, target, initialNow),
+      eligible: target => combo.cooldownMs === 0 || !isComboTargetInCooldown(comboId, target, initialNow),
     });
     if (!pick) {
       discardEncryptedAgentTaskRecovery(
@@ -2329,7 +2329,7 @@ export async function handleComboResponses(
   } else {
     pick = pickComboTarget(config, comboId, {
       eligible: target => payloadEligible(target)
-        && !isComboTargetInCooldown(comboId, target, initialNow),
+        && (combo.cooldownMs === 0 || !isComboTargetInCooldown(comboId, target, initialNow)),
     });
   }
 
@@ -2395,7 +2395,7 @@ export async function handleComboResponses(
         && combo.targets.slice(pick.targetIndex + 1).some(target =>
           target.provider === currentTargetProvider
           && payloadEligible(target)
-          && !isComboTargetInCooldown(comboId, target),
+          && (combo.cooldownMs === 0 || !isComboTargetInCooldown(comboId, target)),
         );
       response = await handleResponses(childRequest, config, childLog, {
         ...options,
