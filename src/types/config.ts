@@ -1041,9 +1041,9 @@ export interface OcxComboConfig {
   /**
    * Optional per-target cooldown used only when the upstream response has no Retry-After or Codex reset signal.
    * Unset uses the upstream fallback (5 s for request-rate 429 codes 1302/1305, otherwise 60 s);
-   * an explicit value overrides that fallback. Range 1..600000.
+   * an explicit value overrides that fallback. 0 disables shared cooldown; range 0..600000.
    */
-  cooldownMs?: number;
+  cooldownMs?: number | null;
   /** Maximum wait for an eligible target cooldown to expire before failing closed. Default 0; range 0..600000, per selection attempt. */
   waitForCooldownMs?: number;
   /** Used when the client omits reasoning.effort. null/omitted leaves the target default unchanged. */

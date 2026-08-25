@@ -271,6 +271,23 @@ describe("combo management API", () => {
       expect(listComboIds(config)).toEqual(["alpha", "zeta"]);
       // Default imageInput is not written to disk — only explicit "disabled" is.
       expect(config.combos?.zeta).not.toHaveProperty("imageInput");
+      expect(config.combos?.zeta).not.toHaveProperty("cooldownMs");
+    });
+  });
+
+  test("PUT and GET preserve an explicit request-local cooldown", async () => {
+    await withTempHome(async () => {
+      const config = baseConfig({ combos: undefined });
+      saveConfig(config);
+      const response = await comboApi(config, "PUT", "/api/combos", {
+        id: "request-local",
+        combo: { ...VALID_COMBO, cooldownMs: 0 },
+      });
+      expect(response?.status).toBe(200);
+      expect(await responseJson(response)).toMatchObject({ combo: { cooldownMs: 0 } });
+      expect(config.combos?.["request-local"]?.cooldownMs).toBe(0);
+      const listed = await responseJson(await comboApi(config, "GET", "/api/combos"));
+      expect(listed.combos).toEqual([expect.objectContaining({ id: "request-local", cooldownMs: 0 })]);
     });
   });
 

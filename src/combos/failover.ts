@@ -2,7 +2,7 @@ import { parseResetCooldownMs } from "../codex/routing";
 import { classifyError, isCyberPolicyCode } from "../lib/errors";
 import { isNonReplayableUpstreamCode } from "../lib/upstream-retry";
 import type { OcxComboTarget } from "../types";
-import { targetKey } from "./types";
+import { DEFAULT_COMBO_COOLDOWN_MS, MAX_COMBO_COOLDOWN_MS, targetKey } from "./types";
 import {
   captureConfigGeneration,
   sweepExpiredOnWrite,
@@ -212,6 +212,7 @@ export function coolComboTarget(
   const writerGeneration = options?.writerGeneration ?? captureConfigGeneration();
   const ownerKey = `${comboId}::${targetKey(target)}`;
   if (writerGeneration < lastReconciledGeneration && !liveComboTargets.has(ownerKey)) return;
+  if (options?.cooldownMs === 0) return;
   // A server-provided Retry-After is authoritative, including an immediate `0` directive.
   // A quota reset is the next-most-specific signal (#3256); configured and default cooldowns
   // are only fallbacks when upstream supplied neither usable value.

@@ -4,6 +4,8 @@ import type { OcxComboConfig, OcxComboDefaultEffort, OcxComboReasoningEffortMode
 import { COMBO_NAMESPACE, isValidComboId, targetKey } from "./identifiers";
 
 export const COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS = 0;
+export const DEFAULT_COMBO_COOLDOWN_MS = 60_000;
+export const MAX_COMBO_COOLDOWN_MS = 600_000;
 export { COMBO_NAMESPACE, preservesPhysicalComboProvider, isNativeAliasCombo, targetKey, parseComboModelId, comboModelId, comboPublicModelId, comboDisabledModelId, comboDisabledModelSelectors, resolveComboId, isValidComboId } from "./identifiers";
 
 /**
@@ -147,11 +149,11 @@ export function comboConfigIssues(
       || body.stickyLimit > 100)) {
     issues.push({ path: ["stickyLimit"], message: "stickyLimit must be an integer from 1 to 100" });
   }
-  if (body.cooldownMs !== undefined
+  if (body.cooldownMs !== undefined && body.cooldownMs !== null
     && (typeof body.cooldownMs !== "number" || !Number.isInteger(body.cooldownMs)
-      || body.cooldownMs < 1
+      || body.cooldownMs < 0
       || body.cooldownMs > 600_000)) {
-    issues.push({ path: ["cooldownMs"], message: "cooldownMs must be an integer from 1 to 600000" });
+    issues.push({ path: ["cooldownMs"], message: "cooldownMs must be an integer from 0 to 600000" });
   }
   if (body.waitForCooldownMs !== undefined
     && (typeof body.waitForCooldownMs !== "number" || !Number.isInteger(body.waitForCooldownMs)
@@ -296,7 +298,7 @@ export function normalizeComboConfig(raw: OcxComboConfig): NormalizedComboConfig
   return {
     strategy: raw.strategy ?? "failover",
     stickyLimit: raw.stickyLimit ?? 1,
-    cooldownMs: raw.cooldownMs,
+    cooldownMs: raw.cooldownMs ?? undefined,
     waitForCooldownMs: raw.waitForCooldownMs ?? COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS,
     defaultEffort: raw.defaultEffort ?? null,
     reasoningEffortMode: raw.reasoningEffortMode === "adaptive" ? "adaptive" : "strict",

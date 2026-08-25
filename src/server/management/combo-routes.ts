@@ -76,15 +76,16 @@ import { COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS } from "../../combos";
  * materialized in every user's config.json.
  */
 function sparseComboConfig<T extends {
-  cooldownMs?: number;
+  cooldownMs?: number | null;
   waitForCooldownMs?: number;
   imageInput?: "auto" | "disabled";
   reasoningEffortMode?: "strict" | "adaptive";
 }>(combo: T): Omit<T, "cooldownMs" | "waitForCooldownMs" | "imageInput" | "reasoningEffortMode"> & {
-  cooldownMs?: number;
+  cooldownMs?: number | null;
   waitForCooldownMs?: number;
   imageInput?: "disabled";
   reasoningEffortMode?: "adaptive";
+  cooldownMs?: number;
 } {
   const {
     cooldownMs,
@@ -95,12 +96,13 @@ function sparseComboConfig<T extends {
   } = combo;
   return {
     ...rest,
-    ...(cooldownMs !== undefined ? { cooldownMs } : {}),
+    ...(cooldownMs !== undefined && cooldownMs !== null ? { cooldownMs } : {}),
     ...(waitForCooldownMs !== undefined && waitForCooldownMs !== COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS
       ? { waitForCooldownMs }
       : {}),
     ...(imageInput === "disabled" ? { imageInput: "disabled" as const } : {}),
     ...(reasoningEffortMode === "adaptive" ? { reasoningEffortMode: "adaptive" as const } : {}),
+    ...(cooldownMs !== undefined && cooldownMs !== null ? { cooldownMs } : {}),
   };
 }
 
@@ -185,6 +187,8 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
       alias: normalizedAlias,
       nativeAlias: normalizedNativeAlias,
       displayName: normalizedDisplayName,
+      imageInput: normalizedImageInput,
+      cooldownMs: normalizedCooldownMs,
       ...normalizedBase
     } = sparseComboConfig(normalized);
     const stored: OcxComboConfig = {
@@ -192,6 +196,8 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
       ...(normalizedAlias ? { alias: normalizedAlias } : {}),
       ...(normalizedNativeAlias ? { nativeAlias: true } : {}),
       ...(normalizedDisplayName ? { displayName: normalizedDisplayName } : {}),
+      ...(normalizedImageInput === "disabled" ? { imageInput: "disabled" as const } : {}),
+      ...(normalizedCooldownMs !== null ? { cooldownMs: normalizedCooldownMs } : {}),
     };
     const oldPublicModel = previous ? comboPublicModelId(sourceId, previous) : null;
     const newPublicModel = comboPublicModelId(id, normalized);

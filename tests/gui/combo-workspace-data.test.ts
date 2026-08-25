@@ -77,6 +77,7 @@ function combo(overrides: Partial<ComboItem> = {}): ComboItem {
     displayName: null,
     strategy: "failover",
     stickyLimit: 1,
+    cooldownMs: null,
     defaultEffort: "medium",
     targets: [
       { provider: "a", model: "m1" },
@@ -138,6 +139,7 @@ describe("combo-workspace-data", () => {
         displayName: null,
         strategy: "failover",
         stickyLimit: 1,
+        cooldownMs: null,
         defaultEffort: null,
         imageInput: "auto",
         reasoningEffortMode: "strict",
@@ -151,6 +153,7 @@ describe("combo-workspace-data", () => {
         displayName: null,
         strategy: "round-robin",
         stickyLimit: 4,
+        cooldownMs: null,
         defaultEffort: "high",
         imageInput: "auto",
         reasoningEffortMode: "strict",
@@ -553,6 +556,7 @@ describe("combo-workspace-data", () => {
       },
     });
     expect("stickyLimit" in failoverBody.combo).toBe(false);
+    expect("cooldownMs" in failoverBody.combo).toBe(false);
     expect("weight" in failoverBody.combo.targets[0]!).toBe(false);
     // clientKey is UI-only — never serialize it upstream even when present on the draft.
     const withClientKeys = toPutBody(combo({
@@ -562,6 +566,14 @@ describe("combo-workspace-data", () => {
       ],
     }));
     expect(withClientKeys.combo.targets.every((t) => !("clientKey" in t))).toBe(true);
+  });
+
+  test("preserves an explicit request-local cooldown override", () => {
+    const parsed = parseComboList({
+      combos: [{ id: "request-local", cooldownMs: 0, targets: [{ provider: "a", model: "m1" }] }],
+    })[0]!;
+    expect(parsed.cooldownMs).toBe(0);
+    expect(toPutBody(parsed).combo.cooldownMs).toBe(0);
   });
 
   test("preserves an unset effort through parse, draft, and PUT", () => {
