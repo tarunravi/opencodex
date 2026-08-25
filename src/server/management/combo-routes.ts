@@ -77,15 +77,18 @@ import { shadowCallTargetError } from "./shadow-call-validation";
 function sparseComboConfig<T extends {
   imageInput?: "auto" | "disabled";
   reasoningEffortMode?: "strict" | "adaptive";
+  cooldownMs?: number | null;
 }>(combo: T): Omit<T, "imageInput" | "reasoningEffortMode"> & {
   imageInput?: "disabled";
   reasoningEffortMode?: "adaptive";
+  cooldownMs?: number;
 } {
-  const { imageInput, reasoningEffortMode, ...rest } = combo;
+  const { imageInput, reasoningEffortMode, cooldownMs, ...rest } = combo;
   return {
     ...rest,
     ...(imageInput === "disabled" ? { imageInput: "disabled" as const } : {}),
     ...(reasoningEffortMode === "adaptive" ? { reasoningEffortMode: "adaptive" as const } : {}),
+    ...(cooldownMs !== undefined && cooldownMs !== null ? { cooldownMs } : {}),
   };
 }
 
@@ -155,6 +158,8 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
       alias: normalizedAlias,
       nativeAlias: normalizedNativeAlias,
       displayName: normalizedDisplayName,
+      imageInput: normalizedImageInput,
+      cooldownMs: normalizedCooldownMs,
       ...normalizedBase
     } = sparseComboConfig(normalized);
     const stored: import("../../types").OcxComboConfig = {
@@ -162,6 +167,8 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
       ...(normalizedAlias ? { alias: normalizedAlias } : {}),
       ...(normalizedNativeAlias ? { nativeAlias: true } : {}),
       ...(normalizedDisplayName ? { displayName: normalizedDisplayName } : {}),
+      ...(normalizedImageInput === "disabled" ? { imageInput: "disabled" as const } : {}),
+      ...(normalizedCooldownMs !== null ? { cooldownMs: normalizedCooldownMs } : {}),
     };
     const sourceId = renameFrom ?? id;
     const previous = config.combos?.[sourceId];

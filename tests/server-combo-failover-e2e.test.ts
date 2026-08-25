@@ -1532,6 +1532,35 @@ describe("server combo failover 030 activation matrix", () => {
     expect(bHits).toBe(2);
   });
 
+  test("zero cooldown retries the primary on the next request after same-request failover", async () => {
+    const order: string[] = [];
+    let primaryHits = 0;
+    const primary = serve(() => {
+      order.push("sol");
+      primaryHits += 1;
+      return primaryHits === 1
+        ? Response.json({ error: { message: "temporarily unavailable" } }, { status: 503 })
+        : chatSuccess("sol recovered", "sol");
+    });
+    const backup = serve(async request => {
+      order.push("terra");
+      const body = await request.json() as Record<string, unknown>;
+      expect(body.reasoning_effort).toBe("xhigh");
+      return chatSuccess("terra backup", "terra");
+    });
+    const config = comboConfig({
+      work: provider("openai-chat", baseUrl(primary), "key-sol", { reasoningEfforts: ["xhigh"] }),
+      fallback: provider("openai-chat", baseUrl(backup), "key-terra", { reasoningEfforts: ["xhigh"] }),
+    }, [
+      { provider: "work", model: "sol" },
+      { provider: "fallback", model: "terra" },
+    ], { cooldownMs: 0 });
+
+    expect((await post(config, { reasoning: { effort: "xhigh" } })).status).toBe(200);
+    expect((await post(config, { reasoning: { effort: "xhigh" } })).status).toBe(200);
+    expect(order).toEqual(["sol", "terra", "sol"]);
+  });
+
   test("disabled image input rejects the request before any combo target is called", async () => {
     let hits = 0;
     const a = serve(() => {

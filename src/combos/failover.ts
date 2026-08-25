@@ -1,6 +1,6 @@
 import { classifyError, isCyberPolicyCode } from "../lib/errors";
 import type { OcxComboTarget } from "../types";
-import { targetKey } from "./types";
+import { DEFAULT_COMBO_COOLDOWN_MS, MAX_COMBO_COOLDOWN_MS, targetKey } from "./types";
 import {
   captureConfigGeneration,
   sweepExpiredOnWrite,
@@ -10,9 +10,6 @@ import {
 interface TargetCooldown {
   cooldownUntil: number;
 }
-
-const DEFAULT_COOLDOWN_MS = 60_000;
-const MAX_COOLDOWN_MS = 10 * 60_000;
 
 /** Map<`${comboId}\0${provider/model}`, TargetCooldown> */
 const targetCooldowns = new Map<string, TargetCooldown>();
@@ -35,13 +32,13 @@ export function parseRetryAfterMs(
   if (/^\d+(?:\.\d+)?$/.test(text)) {
     const seconds = Number(text);
     if (Number.isFinite(seconds) && seconds > 0) {
-      return Math.min(Math.max(Math.ceil(seconds * 1000), 1), MAX_COOLDOWN_MS);
+      return Math.min(Math.max(Math.ceil(seconds * 1000), 1), MAX_COMBO_COOLDOWN_MS);
     }
   }
   const timestamp = Date.parse(text);
   if (!Number.isFinite(timestamp)) return undefined;
   const delay = timestamp - now;
-  return delay > 0 ? Math.min(delay, MAX_COOLDOWN_MS) : undefined;
+  return delay > 0 ? Math.min(delay, MAX_COMBO_COOLDOWN_MS) : undefined;
 }
 
 export function isComboTargetInCooldown(
@@ -68,11 +65,16 @@ export function coolComboTarget(
   const writerGeneration = options?.writerGeneration ?? captureConfigGeneration();
   const ownerKey = `${comboId}::${targetKey(target)}`;
   if (writerGeneration < lastReconciledGeneration && !liveComboTargets.has(ownerKey)) return;
+  const key = cooldownMapKey(comboId, target);
+  if (options?.cooldownMs === 0) {
+    targetCooldowns.delete(key);
+    return;
+  }
   const cooldownMs = options?.cooldownMs
     ?? parseRetryAfterMs(options?.retryAfter, now)
-    ?? DEFAULT_COOLDOWN_MS;
-  targetCooldowns.set(cooldownMapKey(comboId, target), {
-    cooldownUntil: now + Math.min(Math.max(cooldownMs, 1), MAX_COOLDOWN_MS),
+    ?? DEFAULT_COMBO_COOLDOWN_MS;
+  targetCooldowns.set(key, {
+    cooldownUntil: now + Math.min(Math.max(cooldownMs, 1), MAX_COMBO_COOLDOWN_MS),
   });
   sweepExpiredOnWrite(now);
 }

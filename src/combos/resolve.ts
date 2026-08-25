@@ -249,6 +249,7 @@ export function advanceComboAfterFailure(
   options: {
     retryAfter?: string | null;
     now?: number;
+    cooldownMs?: number;
     eligible?: (target: Required<OcxComboTarget>) => boolean;
   } = {},
 ): ComboPick | null {
