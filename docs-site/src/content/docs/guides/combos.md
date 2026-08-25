@@ -205,6 +205,11 @@ A hopped target enters cooldown for 60 seconds by default. If the upstream respo
 valid `Retry-After` value, opencodex uses it instead. Numeric seconds and HTTP-date values are
 accepted, and every cooldown is capped at 10 minutes.
 
+Set `cooldownMs` to `0` when failover should apply only to the current request. The attempted
+target is still excluded from that request's remaining hops, but the next request starts from the
+first configured target again. A positive value sets a fixed cross-request cooldown and overrides
+`Retry-After`.
+
 The current request never retries the same attempted target. Later requests skip it until its
 cooldown expires. If no eligible target remains, the proxy returns HTTP 503 with
 `error.code = "combo_unavailable"`.
@@ -363,6 +368,7 @@ Combos are stored in the top-level `combos` object, keyed by combo id:
       ],
       "strategy": "round-robin",
       "stickyLimit": 2,
+      "cooldownMs": 60000,
       "defaultEffort": "high",
       "alias": "team/balanced"
     }
@@ -376,6 +382,7 @@ Combos are stored in the top-level `combos` object, keyed by combo id:
 | `targets[].weight` | No | `1` | Integer from 1 to 10,000. Used by round-robin and random; ignored by failover, least-used, and reset-window. |
 | `strategy` | No | `"failover"` | `"failover"`, `"round-robin"`, `"random"`, `"least-used"`, or `"reset-window"`. |
 | `stickyLimit` | No | `1` | Integer from 1 to 100 successful requests per round-robin selection. Applies only to round-robin. |
+| `cooldownMs` | No | `Retry-After` or `60000` | Integer from 0 to 600,000. `0` disables cross-request cooldown; a positive value fixes the cooldown duration. |
 | `defaultEffort` | No | `null` | `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`; applied only when the caller omits effort and the target advertises support. |
 | `reasoningEffortMode` | No | `"strict"` | `"strict"` intersects every known target ladder, so one target advertising no effort control empties the combo's picker. `"adaptive"` excludes those empty ladders from the published intersection. Metadata only; dispatch is unchanged. |
 | `imageInput` | No | `"auto"` | `"auto"` or `"disabled"`. `"auto"` publishes image support only when every target supports images; `"disabled"` forces text-only (drops image from published modalities and rejects image-bearing requests before dispatch). |

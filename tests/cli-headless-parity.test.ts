@@ -463,7 +463,8 @@ describe("headless GUI parity CLI", () => {
   test("combo set parses ordered weighted targets", async () => {
     const runtime = fakeRuntime();
     const code = await handleComboCommand([
-      "set", "fast", "--targets", "ark/model-a:2,openai/gpt-5.5", "--strategy", "failover", "--json",
+      "set", "fast", "--targets", "ark/model-a:2,openai/gpt-5.5", "--strategy", "failover",
+      "--cooldown-ms", "0", "--json",
     ], runtime.deps);
     expect(code).toBe(0);
     expect(runtime.requests.find(request => request.method === "PUT")?.body).toEqual({
@@ -471,6 +472,7 @@ describe("headless GUI parity CLI", () => {
       combo: {
         strategy: "failover",
         stickyLimit: 1,
+        cooldownMs: 0,
         targets: [
           { provider: "ark", model: "model-a", weight: 2 },
           { provider: "openai", model: "gpt-5.5" },

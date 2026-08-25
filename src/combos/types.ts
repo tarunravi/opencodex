@@ -20,6 +20,8 @@ export function preservesPhysicalComboProvider(
 }
 
 const COMBO_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const DEFAULT_COMBO_COOLDOWN_MS = 60_000;
+export const MAX_COMBO_COOLDOWN_MS = 10 * 60_000;
 /**
  * Public alias shape: one optional "/" segment, each segment id-shaped. Bare aliases
  * (no "/") are the masquerade case — the combo answers to a mandated model id with no
@@ -37,6 +39,7 @@ export interface ComboValidationIssue {
 export interface NormalizedComboConfig {
   strategy: OcxComboStrategy;
   stickyLimit: number;
+  cooldownMs: number | null;
   defaultEffort: OcxComboDefaultEffort | null;
   /** Picker-ladder derivation policy; `strict` preserves the legacy intersection rule. */
   reasoningEffortMode: OcxComboReasoningEffortMode;
@@ -230,6 +233,16 @@ export function comboConfigIssues(
       || body.stickyLimit > 100)) {
     issues.push({ path: ["stickyLimit"], message: "stickyLimit must be an integer from 1 to 100" });
   }
+  if (body.cooldownMs !== undefined
+    && body.cooldownMs !== null
+    && (typeof body.cooldownMs !== "number" || !Number.isInteger(body.cooldownMs)
+      || body.cooldownMs < 0
+      || body.cooldownMs > MAX_COMBO_COOLDOWN_MS)) {
+    issues.push({
+      path: ["cooldownMs"],
+      message: `cooldownMs must be an integer from 0 to ${MAX_COMBO_COOLDOWN_MS}`,
+    });
+  }
   if (body.defaultEffort !== undefined
     && body.defaultEffort !== null
     && (typeof body.defaultEffort !== "string" || !isCodexReasoningEffort(body.defaultEffort))) {
@@ -367,6 +380,7 @@ export function normalizeComboConfig(raw: OcxComboConfig): NormalizedComboConfig
   return {
     strategy: raw.strategy ?? "failover",
     stickyLimit: raw.stickyLimit ?? 1,
+    cooldownMs: raw.cooldownMs ?? null,
     defaultEffort: raw.defaultEffort ?? null,
     reasoningEffortMode: raw.reasoningEffortMode === "adaptive" ? "adaptive" : "strict",
     imageInput: raw.imageInput === "disabled" ? "disabled" : "auto",

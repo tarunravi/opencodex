@@ -2541,6 +2541,7 @@ export async function handleComboResponses(
     const nextPick = advanceComboAfterFailure(config, pick, {
       retryAfter: failure.retryAfter,
       now: Date.now(),
+      cooldownMs: combo.cooldownMs ?? undefined,
       eligible: payloadEligible,
     });
     if (!nextPick) adoptFailedChildLog(childLog);

@@ -382,6 +382,11 @@ describe("combo target cooldowns", () => {
     clearComboTargetCooldowns("other");
     expect(isComboTargetInCooldown("other", target, 1_050)).toBe(false);
   });
+
+  test("zero cooldown keeps failover request-local", () => {
+    coolComboTarget("free", target, { now: 1_000, cooldownMs: 0 });
+    expect(isComboTargetInCooldown("free", target, 1_000)).toBe(false);
+  });
 });
 
 describe("combo failure policy and advancement", () => {
@@ -798,6 +803,12 @@ describe("combo validation and normalization", () => {
         targets: [{ provider: "a", model: "m1", weight }],
       }, providers)[0]).toMatchObject({ path: ["targets", 0, "weight"] });
     }
+    for (const cooldownMs of [-1, 1.5, 600_001, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(comboConfigIssues("free", { ...VALID_COMBO, cooldownMs }, providers)[0]).toMatchObject({
+        path: ["cooldownMs"],
+      });
+    }
+    expect(comboConfigIssues("free", { ...VALID_COMBO, cooldownMs: 0 }, providers)).toEqual([]);
   });
 
   test("normalizes valid values and returns defensive default efforts", () => {
@@ -807,6 +818,7 @@ describe("combo validation and normalization", () => {
     })).toEqual({
       strategy: "failover",
       stickyLimit: 1,
+      cooldownMs: null,
       defaultEffort: "high",
       reasoningEffortMode: "strict",
       imageInput: "auto",
@@ -827,6 +839,7 @@ describe("combo validation and normalization", () => {
       reasoningEffortMode: "aggressive",
       targets: [{ provider: "a", model: "m1" }],
     }, baseConfig().providers).some(issue => issue.path[0] === "reasoningEffortMode")).toBe(true);
+    expect(normalizeComboConfig({ cooldownMs: 0, targets: [{ provider: "a", model: "m1" }] }).cooldownMs).toBe(0);
     expect(comboDefaultEffort(baseConfig(), "free")).toBeNull();
     const aliased = baseConfig({
       combos: { free: { ...VALID_COMBO, alias: "  deepseek-v4-flash  " } },

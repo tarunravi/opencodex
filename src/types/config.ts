@@ -811,6 +811,8 @@ export interface OcxComboConfig {
   strategy?: OcxComboStrategy;
   /** Successful requests retained on one RR selection batch. Default 1; range 1..100. */
   stickyLimit?: number;
+  /** Fixed cross-request cooldown after a retryable failure. null/omitted honors Retry-After or 60s; 0 disables it. */
+  cooldownMs?: number | null;
   /** Used when the client omits reasoning.effort. null/omitted leaves the target default unchanged. */
   defaultEffort?: OcxComboDefaultEffort | null;
   /**
