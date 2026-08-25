@@ -51,7 +51,6 @@ export const COMBO_TARGETS_HINT_KEYS: Record<ComboStrategy, TKey> = {
 };
 
 const COMBO_STRATEGY_SET = new Set<string>(COMBO_STRATEGIES);
-
 /**
  * Intersection of advertised effort ladders for picker availability.
  * Unknown ladders are wildcards here only; runtime injection remains fail-closed.
@@ -139,6 +138,7 @@ export interface ComboItem {
   displayName: string | null;
   strategy: ComboStrategy;
   stickyLimit: number;
+  cooldownMs: number | null;
   defaultEffort: ComboEffort | null;
   imageInput?: "auto" | "disabled";
   /**
@@ -209,6 +209,12 @@ export function normalizeStickyLimit(raw: unknown): number {
     : 1;
 }
 
+export function normalizeCooldownMs(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 && raw <= 600_000
+    ? raw
+    : null;
+}
+
 export function normalizeDefaultEffort(raw: unknown): ComboEffort | null {
   return typeof raw === "string" && (COMBO_EFFORTS as string[]).includes(raw)
     ? (raw as ComboEffort)
@@ -273,6 +279,7 @@ export function parseComboList(payload: unknown): ComboItem[] {
       displayName: normalizeAlias(r.displayName),
       strategy: normalizeStrategy(r.strategy),
       stickyLimit: normalizeStickyLimit(r.stickyLimit),
+      cooldownMs: normalizeCooldownMs(r.cooldownMs),
       defaultEffort: normalizeDefaultEffort(r.defaultEffort),
       imageInput: normalizeImageInput(r.imageInput),
       reasoningEffortMode: normalizeReasoningEffortMode(r.reasoningEffortMode),
@@ -442,6 +449,7 @@ export function draftEquals(a: ComboItem, b: ComboItem): boolean {
     || a.displayName !== b.displayName
     || a.strategy !== b.strategy
     || a.stickyLimit !== b.stickyLimit
+    || a.cooldownMs !== b.cooldownMs
     || a.defaultEffort !== b.defaultEffort
     || (a.imageInput ?? "auto") !== (b.imageInput ?? "auto")
     || (a.reasoningEffortMode ?? "strict") !== (b.reasoningEffortMode ?? "strict")
@@ -464,6 +472,7 @@ export function toPutBody(item: ComboItem, options: { renameFrom?: string } = {}
     targets: ComboTarget[];
     strategy: ComboStrategy;
     stickyLimit?: number;
+    cooldownMs?: number;
     defaultEffort: ComboEffort | null;
     imageInput: "auto" | "disabled";
     reasoningEffortMode: "strict" | "adaptive";
@@ -490,6 +499,7 @@ export function toPutBody(item: ComboItem, options: { renameFrom?: string } = {}
       })),
       strategy: item.strategy,
       defaultEffort: item.defaultEffort,
+      ...(item.cooldownMs !== null ? { cooldownMs: item.cooldownMs } : {}),
       // The server preserves an omitted field from the stored combo (#5687), so the dashboard
       // must send both explicitly or switching back to auto/strict would never take effect.
       // Storage stays sparse: the server drops the defaults before persisting.
@@ -617,6 +627,7 @@ export function emptyDraft(id = ""): ComboItem {
     displayName: null,
     strategy: "failover",
     stickyLimit: 1,
+    cooldownMs: null,
     defaultEffort: null,
     imageInput: "auto",
     reasoningEffortMode: "strict",

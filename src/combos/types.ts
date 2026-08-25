@@ -7,6 +7,8 @@ export const COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS = 0;
 export const JEV_MAX_CANDIDATE_FIELD_CHARS = 512;
 export { COMBO_NAMESPACE, preservesPhysicalComboProvider, isNativeAliasCombo, targetKey, parseComboModelId, comboModelId, comboPublicModelId, comboDisabledModelId, comboDisabledModelSelectors, resolveComboId, isValidComboId } from "./identifiers";
 
+export const DEFAULT_COMBO_COOLDOWN_MS = 60_000;
+export const MAX_COMBO_COOLDOWN_MS = 10 * 60_000;
 /**
  * Public alias shape: one optional "/" segment, each segment id-shaped. Bare aliases
  * (no "/") are the masquerade case — the combo answers to a mandated model id with no
@@ -35,7 +37,7 @@ export interface NormalizedComboTarget {
 export interface NormalizedComboConfig {
   strategy: OcxComboStrategy;
   stickyLimit: number;
-  cooldownMs?: number;
+  cooldownMs?: number | null;
   waitForCooldownMs: number;
   /** `before-last-resort` defers lastResort targets while a normal one can be waited out (#5691). */
   cooldownWaitPolicy: OcxComboCooldownWaitPolicy | null;
@@ -165,10 +167,11 @@ export function comboConfigIssues(
     issues.push({ path: ["stickyLimit"], message: "stickyLimit must be an integer from 1 to 100" });
   }
   if (body.cooldownMs !== undefined
+    && body.cooldownMs !== null
     && (typeof body.cooldownMs !== "number" || !Number.isInteger(body.cooldownMs)
-      || body.cooldownMs < 1
-      || body.cooldownMs > 600_000)) {
-    issues.push({ path: ["cooldownMs"], message: "cooldownMs must be an integer from 1 to 600000" });
+      || body.cooldownMs < 0
+      || body.cooldownMs > MAX_COMBO_COOLDOWN_MS)) {
+    issues.push({ path: ["cooldownMs"], message: `cooldownMs must be an integer from 0 to ${MAX_COMBO_COOLDOWN_MS}` });
   }
   if (body.waitForCooldownMs !== undefined
     && (typeof body.waitForCooldownMs !== "number" || !Number.isInteger(body.waitForCooldownMs)

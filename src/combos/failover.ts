@@ -38,7 +38,6 @@ const HTTP_MONTH_INDEX: Record<string, number> = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
-
 /** Map<`${comboId}\0${provider/model}`, TargetCooldown> */
 const targetCooldowns = new Map<string, TargetCooldown>();
 let lastReconciledGeneration = 0;
@@ -209,7 +208,7 @@ export function coolComboTarget(
     retryAfter?: string | null;
     resetAt?: unknown | unknown[];
     now?: number;
-    cooldownMs?: number;
+    cooldownMs?: number | null;
     writerGeneration?: number;
     status?: number;
     code?: string | null;
@@ -220,6 +219,13 @@ export function coolComboTarget(
   const writerGeneration = options?.writerGeneration ?? captureConfigGeneration();
   const ownerKey = `${comboId}::${targetKey(target)}`;
   if (writerGeneration < lastReconciledGeneration && !liveComboTargets.has(ownerKey)) return false;
+  const key = cooldownMapKey(comboId, target);
+  // Zero is an explicit request-local policy: do not retain a target cooldown
+  // after this failure, even when the upstream supplied a Retry-After header.
+  if (options?.cooldownMs === 0) {
+    targetCooldowns.delete(key);
+    return false;
+  }
   // A server-provided Retry-After is authoritative, including an immediate `0` directive.
   // A quota reset is the next-most-specific signal (#3256); configured and default cooldowns
   // are only fallbacks when upstream supplied neither usable value.
@@ -230,9 +236,6 @@ export function coolComboTarget(
   const cooldownMs = serverDelayMs
     ?? parseResetCooldownMs(options?.resetAt, now)
     ?? options?.cooldownMs
-    // A spent account window or an unpaid/rejected credential does not turn over in a minute,
-    // so the 60s default would re-offer a target that cannot succeed. Only the duration
-    // changes; the scope and hop decisions are untouched.
     ?? (isAccountWindowExhausted(options?.message ?? "", options?.code)
       || PROVIDER_SCOPED_FAILURE_CODES.has(normalizedFailureCode(options?.code))
       ? MAX_COOLDOWN_MS
@@ -241,7 +244,7 @@ export function coolComboTarget(
         code: options?.code,
         message: options?.message,
       }) ? COMBO_REQUEST_RATE_COOLDOWN_MS : DEFAULT_COOLDOWN_MS);
-  targetCooldowns.set(cooldownMapKey(comboId, target), {
+  targetCooldowns.set(key, {
     // Local fallbacks are capped at ten minutes; explicit server delays at one day.
     cooldownUntil: now + (serverDelayMs ?? Math.min(Math.max(cooldownMs, 1), MAX_COOLDOWN_MS)),
   });

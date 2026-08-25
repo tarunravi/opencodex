@@ -15,6 +15,7 @@ const USAGE = `Usage:
   ocx combo show <id> [--json]
   ocx combo set <id> --targets <provider/model[:weight],...>
       [--strategy <failover|round-robin|random|least-used|reset-window|jev>] [--sticky <1-100>]
+      [--cooldown-ms <0-600000>]
       [--effort <low|medium|high|xhigh|max|ultra|->] [--effort-mode <fallback|force>]
       (force overrides valid client effort and can increase cost/latency) [--alias <name|->]
       [--native-alias] [--display-name <label|->]
@@ -80,6 +81,8 @@ async function set(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     if (stickyLimit > 100) throw new CliUsageError("--sticky must be <= 100", USAGE);
     if (strategy !== "round-robin") throw new CliUsageError("--sticky applies only to round-robin", USAGE);
   }
+  const cooldownMs = takeIntegerOption(args, "--cooldown-ms", { min: 0 });
+  if (cooldownMs !== undefined && cooldownMs > 600_000) throw new CliUsageError("--cooldown-ms must be <= 600000", USAGE);
   const effort = takeOption(args, "--effort");
   const effortMode = takeOption(args, "--effort-mode");
   if (effortMode !== undefined && effortMode !== "fallback" && effortMode !== "force") {
@@ -95,6 +98,7 @@ async function set(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     stickyLimit: stickyLimit ?? 1,
     targets: parseTargets(targetsRaw),
   };
+  if (cooldownMs !== undefined) combo.cooldownMs = cooldownMs;
   if (effort !== undefined) combo.defaultEffort = effort === "-" ? null : effort;
   if (effortMode !== undefined) combo.defaultEffortMode = effortMode;
   if (alias !== undefined) combo.alias = alias === "-" ? "" : alias;
