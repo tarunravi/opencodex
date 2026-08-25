@@ -220,12 +220,9 @@ export function coolComboTarget(
   const ownerKey = `${comboId}::${targetKey(target)}`;
   if (writerGeneration < lastReconciledGeneration && !liveComboTargets.has(ownerKey)) return false;
   const key = cooldownMapKey(comboId, target);
-  // Zero is an explicit request-local policy: do not retain a target cooldown
-  // after this failure, even when the upstream supplied a Retry-After header.
-  if (options?.cooldownMs === 0) {
-    targetCooldowns.delete(key);
-    return false;
-  }
+  // Zero is an explicit request-local policy. It must not erase a newer shared
+  // cooldown recorded by another in-flight request.
+  if (options?.cooldownMs === 0) return false;
   // A server-provided Retry-After is authoritative, including an immediate `0` directive.
   // A quota reset is the next-most-specific signal (#3256); configured and default cooldowns
   // are only fallbacks when upstream supplied neither usable value.
