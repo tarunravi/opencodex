@@ -203,6 +203,25 @@ export function AddComboModal({
             </div>
           )}
           <div className="cwi-field">
+            <label htmlFor="cwi-new-cooldown">{t("cws.field.cooldownMs")}</label>
+            <select
+              id="cwi-new-cooldown"
+              className="input"
+              value={draft.cooldownMs === 0 ? "request" : "shared"}
+              disabled={busy}
+              onChange={(e) => setDraft((d) => ({
+                ...d,
+                cooldownMs: e.target.value === "request" ? 0 : null,
+              }))}
+            >
+              <option value="shared">{t("cws.field.cooldownShared")}</option>
+              <option value="request">{t("cws.field.cooldownRequest")}</option>
+            </select>
+            <p className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
+              {t("cws.field.cooldownHint")}
+            </p>
+          </div>
+          <div className="cwi-field">
             <span className="field-label">{t("cws.targets")}</span>
             <TargetEditor
               targets={draft.targets}

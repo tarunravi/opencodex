@@ -260,7 +260,7 @@ export function advanceComboAfterFailure(
   });
   return pickComboTarget(config, pick.comboId, {
     exclude: pick.attempted,
-    eligible: target => !isComboTargetInCooldown(pick.comboId, target, options.now)
+    eligible: target => (options.cooldownMs === 0 || !isComboTargetInCooldown(pick.comboId, target, options.now))
       && (options.eligible?.(target) ?? true),
   });
 }
