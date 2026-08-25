@@ -473,7 +473,7 @@ export async function executeComboResponses(
         && combo.targets.slice(pick.targetIndex + 1).some(target =>
           target.provider === currentTargetProvider
           && payloadEligible(target)
-          && !isComboTargetInCooldown(comboId, target),
+          && (combo.cooldownMs === 0 || !isComboTargetInCooldown(comboId, target)),
         );
       response = await requestDispatchers.handleResponses(childRequest, config, childLog, {
         ...options,

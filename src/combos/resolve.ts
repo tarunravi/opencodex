@@ -213,7 +213,7 @@ export function pickComboTarget(
   const now = options.now ?? Date.now();
   const eligible = (target: Required<OcxComboTarget>): boolean =>
     targetProviderIsUsable(config, target, now)
-    && !isComboTargetInCooldown(comboId, target, now)
+    && (getCombo(config, comboId)?.cooldownMs === 0 || !isComboTargetInCooldown(comboId, target, now))
     && !excluded.has(targetKey(target))
     && (options.eligible?.(target) ?? true);
 
@@ -362,7 +362,7 @@ export function advanceComboAfterFailure(
   return pickComboTarget(config, pick.comboId, {
     exclude: pick.attempted,
     now: options.now,
-    eligible: target => !isComboTargetInCooldown(pick.comboId, target, options.now)
+    eligible: target => (getCombo(config, pick.comboId)?.cooldownMs === 0 || !isComboTargetInCooldown(pick.comboId, target, options.now))
       && (options.eligible?.(target) ?? true),
   });
 }
@@ -383,7 +383,7 @@ export async function pickComboTargetWithWait(
   const excluded = new Set(options.exclude ?? []);
   const customEligible = options.eligible;
   const eligible = (target: Required<OcxComboTarget>): boolean =>
-    !isComboTargetInCooldown(comboId, target, now)
+    (getCombo(config, comboId)?.cooldownMs === 0 || !isComboTargetInCooldown(comboId, target, now))
     && (customEligible?.(target) ?? true);
   const pick = pickComboTarget(config, comboId, { exclude: excluded, eligible, now });
   if (pick || options.waitForCooldownMs <= 0 || options.abortSignal?.aborted) return pick;
@@ -418,7 +418,7 @@ export async function pickComboTargetWithWait(
     exclude: excluded,
     now: now + delay,
     eligible: targetCandidate =>
-      !isComboTargetInCooldown(comboId, targetCandidate, now + delay)
+      (getCombo(config, comboId)?.cooldownMs === 0 || !isComboTargetInCooldown(comboId, targetCandidate, now + delay))
       && (customEligible?.(targetCandidate) ?? true),
   });
 }
