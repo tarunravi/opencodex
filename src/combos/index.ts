@@ -44,6 +44,7 @@ export {
   isTransientRequestRateLimit,
   parseRetryAfterMs,
   remainingComboCooldownMs,
+  reconcileComboTargetCooldowns,
   comboFailureDecision,
   comboFailureCooldownScope,
   type ComboFailureDecision,

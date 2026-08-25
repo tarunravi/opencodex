@@ -23,6 +23,7 @@ import {
   COMBO_REQUEST_RATE_COOLDOWN_MS,
   coolComboTarget,
   earliestQuotaResetAt,
+  reconcileComboTargetCooldowns,
   getCombo,
   isComboTargetInCooldown,
   isValidComboId,
@@ -941,6 +942,22 @@ describe("combo target cooldowns", () => {
   test("zero cooldown keeps failover request-local", () => {
     coolComboTarget("free", target, { now: 1_000, cooldownMs: 0 });
     expect(isComboTargetInCooldown("free", target, 1_000)).toBe(false);
+  });
+
+  test("zero cooldown clears a stale in-flight cooldown after config reconciliation", () => {
+    reconcileComboTargetCooldowns({
+      generation: 10,
+      providerNames: new Set(["a"]),
+      comboIds: new Set(["free"]),
+      comboTargets: new Set(["free::a/m1"]),
+      codexAccountIds: new Set(),
+      oauthAccountKeys: new Set(),
+      configRoots: new Set(),
+    });
+    coolComboTarget("free", target, { now: 1_000, cooldownMs: 60_000, writerGeneration: 9 });
+    expect(isComboTargetInCooldown("free", target, 1_001)).toBe(true);
+    coolComboTarget("free", target, { now: 1_001, cooldownMs: 0 });
+    expect(isComboTargetInCooldown("free", target, 1_001)).toBe(false);
   });
 });
 

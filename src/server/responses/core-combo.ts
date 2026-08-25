@@ -737,7 +737,7 @@ export async function executeComboResponses(
         && remainingTargets.some(target =>
           target.provider === currentTargetProvider
           && targetEligible(target)
-          && !isComboTargetInCooldown(comboId, target),
+          && (combo.cooldownMs === 0 || !isComboTargetInCooldown(comboId, target)),
         );
       const nativeChild = protocolLanes?.nativeChild(pick.target, targetRoute, targetSendBudget);
       response = nativeChild ? await dispatchNativeComboChild({

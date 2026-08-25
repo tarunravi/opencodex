@@ -94,7 +94,7 @@ export function DetailPanel({
   const [copied, setCopied] = useState(false);
   const dirty = !draftEquals(draft, baseline);
   const allTargetsExhausted = comboQuotaState(draft.targets, providerQuotaStates, providerMap) === "exhausted";
-  const baselineSyncKey = JSON.stringify([baseline.id, baseline.alias, baseline.nativeAlias, baseline.displayName, baseline.strategy, baseline.stickyLimit, baseline.defaultEffort, baseline.imageInput, baseline.reasoningEffortMode, baseline.targets.map(t => [t.provider, t.model, t.weight, t.reasoningEfforts, t.modelProfile])]);
+  const baselineSyncKey = JSON.stringify([baseline.id, baseline.alias, baseline.nativeAlias, baseline.displayName, baseline.strategy, baseline.stickyLimit, baseline.cooldownMs, baseline.defaultEffort, baseline.imageInput, baseline.reasoningEffortMode, baseline.targets.map(t => [t.provider, t.model, t.weight, t.reasoningEfforts, t.modelProfile])]);
   const effortMap = useMemo(() => {
     const map = new Map<string, string[] | undefined>();
     for (const model of models) {
@@ -364,6 +364,25 @@ export function DetailPanel({
                 />
               </div>
             )}
+            <div className="cwi-field">
+              <label htmlFor="cwi-cooldown">{t("cws.field.cooldownMs")}</label>
+              <select
+                id="cwi-cooldown"
+                className="input"
+                value={draft.cooldownMs === 0 ? "request" : "shared"}
+                disabled={busy}
+                onChange={(e) => updateDraft((d) => ({
+                  ...d,
+                  cooldownMs: e.target.value === "request" ? 0 : null,
+                }))}
+              >
+                <option value="shared">{t("cws.field.cooldownShared")}</option>
+                <option value="request">{t("cws.field.cooldownRequest")}</option>
+              </select>
+              <p className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
+                {t("cws.field.cooldownHint")}
+              </p>
+            </div>
             <div className="cwi-field">
               <span className="field-label">{t("cws.targets")}</span>
               <TargetEditor
