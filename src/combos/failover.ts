@@ -66,10 +66,7 @@ export function coolComboTarget(
   const ownerKey = `${comboId}::${targetKey(target)}`;
   if (writerGeneration < lastReconciledGeneration && !liveComboTargets.has(ownerKey)) return;
   const key = cooldownMapKey(comboId, target);
-  if (options?.cooldownMs === 0) {
-    targetCooldowns.delete(key);
-    return;
-  }
+  if (options?.cooldownMs === 0) return;
   const cooldownMs = options?.cooldownMs
     ?? parseRetryAfterMs(options?.retryAfter, now)
     ?? DEFAULT_COMBO_COOLDOWN_MS;
