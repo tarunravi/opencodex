@@ -389,7 +389,7 @@ describe("combo target cooldowns", () => {
     expect(isComboTargetInCooldown("free", target, 1_000)).toBe(false);
   });
 
-  test("zero cooldown clears a stale in-flight cooldown after config reconciliation", () => {
+  test("a stale zero-cooldown completion cannot erase a newer shared cooldown", () => {
     reconcileComboTargetCooldowns({
       generation: 10,
       providerNames: new Set(["a"]),
@@ -399,10 +399,10 @@ describe("combo target cooldowns", () => {
       oauthAccountKeys: new Set(),
       configRoots: new Set(),
     });
-    coolComboTarget("free", target, { now: 1_000, cooldownMs: 60_000, writerGeneration: 9 });
+    coolComboTarget("free", target, { now: 1_000, cooldownMs: 60_000, writerGeneration: 10 });
     expect(isComboTargetInCooldown("free", target, 1_001)).toBe(true);
-    coolComboTarget("free", target, { now: 1_001, cooldownMs: 0 });
-    expect(isComboTargetInCooldown("free", target, 1_001)).toBe(false);
+    coolComboTarget("free", target, { now: 1_001, cooldownMs: 0, writerGeneration: 9 });
+    expect(isComboTargetInCooldown("free", target, 1_001)).toBe(true);
   });
 });
 
