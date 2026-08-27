@@ -1,5 +1,6 @@
 import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { logsFromApiBody } from "./helpers/logs-api";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -48,6 +49,11 @@ import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../src/lib/local-provi
 import { resetCodexModelEntitlementCacheForTests } from "../src/codex/model-entitlements";
 import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
 import { resetDebugSettingsForTests, setDebugSettings } from "../src/lib/debug-settings";
+import {
+  MAX_REMOTE_CATALOG_BYTES,
+  catalogDataPlaneResponse,
+  type SerializedCatalog,
+} from "../src/server/catalog-download";
 
 import { watchdogMs } from "./helpers/ci-watchdog";
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
@@ -80,6 +86,22 @@ function config(hostname?: string): OcxConfig {
       },
     },
   };
+}
+
+const REMOTE_CATALOG_BYTES = '{"models":[{"slug":"fixture/model","display_name":"Fixture Model","priority":1,"visibility":"list","base_instructions":"Fixture instructions","input_modalities":["text"]}]}';
+const REMOTE_DATA_KEY = "ocx_data_remote_catalog";
+
+function remoteCatalogConfig(keyId = "remote-key"): OcxConfig {
+  return {
+    ...config("0.0.0.0"),
+    port: 0,
+    apiKeys: [{ id: keyId, name: "remote", key: REMOTE_DATA_KEY, createdAt: "2026-08-28T00:00:00.000Z" }],
+  };
+}
+
+function writeRemoteCatalog(): void {
+  if (!isolatedCodexHome) throw new Error("isolated Codex home is not installed");
+  writeFileSync(join(isolatedCodexHome.path, "opencodex-catalog.json"), REMOTE_CATALOG_BYTES);
 }
 
 function managementHeaders(initial?: HeadersInit): Headers {
@@ -4016,6 +4038,171 @@ describe("server local API auth", () => {
     } finally {
       await server.stop(true);
       await upstream.stop(true);
+    }
+  });
+});
+
+describe("GET /v1/catalog remote data plane", () => {
+  test("management and data-plane routes return byte-identical catalog bodies", async () => {
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const server = startServer(0);
+    try {
+      const management = await fetch(new URL("/api/catalog", server.url), { headers: managementHeaders() });
+      const remote = await fetch(new URL("/v1/catalog", server.url), {
+        headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
+      });
+      const managementBytes = new Uint8Array(await management.arrayBuffer());
+      const remoteBytes = new Uint8Array(await remote.arrayBuffer());
+      expect(management.status).toBe(200);
+      expect(remote.status).toBe(200);
+      expect(remoteBytes).toEqual(managementBytes);
+      expect(new TextDecoder().decode(remoteBytes)).toBe(REMOTE_CATALOG_BYTES);
+      const expectedEtag = `"sha256-${createHash("sha256").update(remoteBytes).digest("base64url")}"`;
+      expect(remote.headers.get("etag")).toBe(expectedEtag);
+      expect(remote.headers.get("cache-control")).toBe("private, no-cache");
+      expect(remote.headers.get("x-opencodex-key-id")).toBe("remote-key");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("admission accepts configured dedicated and bearer keys, and rejects every foreign class", async () => {
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const server = startServer(0);
+    try {
+      const cases = [
+        [{ "x-opencodex-api-key": REMOTE_DATA_KEY }, 200, "remote-key"],
+        [{ authorization: `Bearer ${REMOTE_DATA_KEY}` }, 200, "remote-key"],
+        [{ "x-api-key": REMOTE_DATA_KEY }, 401, null],
+        [{ authorization: "Bearer foreign-key" }, 401, null],
+        [{ authorization: `Bearer ${configuredAdminToken() ?? "missing-admin"}` }, 401, null],
+        [{ "x-opencodex-api-key": REMOTE_DATA_KEY, origin: "https://attacker.test" }, 403, null],
+        [{}, 401, null],
+      ] as const;
+      for (const [headers, status, keyId] of cases) {
+        const response = await fetch(new URL("/v1/catalog", server.url), { headers });
+        expect(response.status).toBe(status);
+        expect(response.headers.get("x-opencodex-key-id")).toBe(keyId);
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("environment-token and loopback admission never emit a configured key id", async () => {
+    process.env.OPENCODEX_API_AUTH_TOKEN = "environment-catalog-token";
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const remote = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/catalog", remote.url), {
+        headers: { "x-opencodex-api-key": "environment-catalog-token" },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-opencodex-key-id")).toBeNull();
+    } finally {
+      await remote.stop(true);
+    }
+
+    const loopbackConfig = remoteCatalogConfig();
+    loopbackConfig.hostname = "127.0.0.1";
+    saveConfig(loopbackConfig);
+    const loopback = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/catalog", loopback.url));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-opencodex-key-id")).toBeNull();
+    } finally {
+      await loopback.stop(true);
+    }
+  });
+
+  test("an unsafe configured key id is omitted with one id-free warning", async () => {
+    const unsafeId = "unsafe key id";
+    saveConfig(remoteCatalogConfig(unsafeId));
+    writeRemoteCatalog();
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/catalog", server.url), {
+        headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-opencodex-key-id")).toBeNull();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls.flat().join(" ")).not.toContain(unsafeId);
+    } finally {
+      await server.stop(true);
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("strong, weak, list, and wildcard validators return bodyless 304", async () => {
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const server = startServer(0);
+    try {
+      const first = await fetch(new URL("/v1/catalog", server.url), {
+        headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
+      });
+      const etag = first.headers.get("etag")!;
+      for (const validator of [etag, `W/${etag}`, `"stale", ${etag}`, "*"]) {
+        const response = await fetch(new URL("/v1/catalog", server.url), {
+          headers: { "x-opencodex-api-key": REMOTE_DATA_KEY, "if-none-match": validator },
+        });
+        expect(response.status).toBe(304);
+        expect(await response.text()).toBe("");
+        expect(response.headers.get("etag")).toBe(etag);
+        expect(response.headers.get("cache-control")).toBe("private, no-cache");
+        expect(response.headers.get("x-opencodex-key-id")).toBe("remote-key");
+      }
+      for (const validator of ['"stale"', `W/ ${etag}`, "malformed"]) {
+        const response = await fetch(new URL("/v1/catalog", server.url), {
+          headers: { "x-opencodex-api-key": REMOTE_DATA_KEY, "if-none-match": validator },
+        });
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe(REMOTE_CATALOG_BYTES);
+        expect(response.headers.get("cache-control")).toBe("private, no-cache");
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("the remote size cap accepts exactly the bound and rejects cap plus one", async () => {
+    const request = new Request("http://localhost/v1/catalog");
+    const policy = { hostname: "127.0.0.1" };
+    const atCap: SerializedCatalog = { bytes: new Uint8Array(MAX_REMOTE_CATALOG_BYTES) };
+    const overCap: SerializedCatalog = { bytes: new Uint8Array(MAX_REMOTE_CATALOG_BYTES + 1) };
+    expect(catalogDataPlaneResponse(atCap, request, policy).status).toBe(200);
+    const rejected = catalogDataPlaneResponse(overCap, request, policy);
+    expect(rejected.status).toBe(503);
+    expect(await rejected.json()).toMatchObject({ error: { code: "catalog_too_large" } });
+  });
+
+  test("method and path matching stay exact ahead of the unknown-v1 guard", async () => {
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const server = startServer(0);
+    try {
+      for (const [path, method] of [
+        ["/v1/catalog", "POST"],
+        ["/v1/catalog/", "GET"],
+        ["/v1/does-not-exist", "GET"],
+      ] as const) {
+        const response = await fetch(new URL(path, server.url), {
+          method,
+          headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
+        });
+        expect(response.status).toBe(404);
+        expect(response.headers.get("content-type")).toContain("application/json");
+        expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+        expect(response.headers.get("x-opencodex-key-id")).toBeNull();
+      }
+    } finally {
+      await server.stop(true);
     }
   });
 });

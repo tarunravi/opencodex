@@ -121,6 +121,14 @@ function forwardConfig(): OcxConfig {
   } as OcxConfig;
 }
 
+function expectReadyProtocolMetadata(body: Record<string, unknown>, managementUrl: string): void {
+  expect(body).toMatchObject({
+    protocol: 1,
+    minimumClientProtocol: 1,
+    managementUrl,
+  });
+}
+
 function multipartLiveBody(
   sdp = "v=0",
   session: Record<string, unknown> | null = { model: "gpt-live" },
@@ -1231,13 +1239,17 @@ describe("GET /readyz", () => {
       try {
         const pending = await fetch(new URL("/readyz", server.url));
         expect(pending.status).toBe(503);
-        expect(((await pending.json()) as { status: string }).status).toBe("pending");
+        const pendingBody = (await pending.json()) as Record<string, unknown>;
+        expect(pendingBody.status).toBe("pending");
+        expectReadyProtocolMetadata(pendingBody, new URL(server.url).origin);
 
         await runStartupReadinessSync(gate, async () => outcome);
 
         const settled = await fetch(new URL("/readyz", server.url));
         expect(settled.status).toBe(expectedHttp);
-        expect(((await settled.json()) as { status: string }).status).toBe(expectedStatus);
+        const settledBody = (await settled.json()) as Record<string, unknown>;
+        expect(settledBody.status).toBe(expectedStatus);
+        expectReadyProtocolMetadata(settledBody, new URL(server.url).origin);
       } finally {
         await server.stop(true);
       }
@@ -1268,8 +1280,11 @@ describe("GET /readyz", () => {
       expect(typeof readyzBody.uptime).toBe("number");
       expect(typeof readyzBody.pid).toBe("number");
       expect(typeof readyzBody.port).toBe("number");
+      expectReadyProtocolMetadata(readyzBody, new URL(base).origin);
       // Sanitization: the body must never carry sync diagnostics, paths, or warnings.
-      expect(Object.keys(readyzBody).sort()).toEqual(["pid", "port", "service", "status", "uptime", "version"]);
+      expect(Object.keys(readyzBody).sort()).toEqual([
+        "managementUrl", "minimumClientProtocol", "pid", "port", "protocol", "service", "status", "uptime", "version",
+      ]);
       expect(JSON.stringify(readyzBody)).not.toContain("warning");
       expect(JSON.stringify(readyzBody)).not.toContain("path");
     } finally {
@@ -1517,7 +1532,9 @@ describe("GET /readyz while draining", () => {
       const drainRes = await fetch(new URL("/readyz", base));
       expect(drainRes.status).toBe(503);
       expect(drainRes.headers.get("retry-after")).toBe("1");
-      expect(((await drainRes.json()) as { status: string }).status).toBe("pending");
+      const drainBody = (await drainRes.json()) as Record<string, unknown>;
+      expect(drainBody.status).toBe("pending");
+      expectReadyProtocolMetadata(drainBody, new URL(base).origin);
 
       // The gate itself is untouched — draining is a listener state, not a gate
       // transition, so the startup-sync ownership contract is preserved.
