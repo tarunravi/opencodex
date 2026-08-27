@@ -48,6 +48,11 @@ export interface IssuedClientKey {
   name: string;
 }
 
+export interface StartedClientKeyRotation extends IssuedClientKey {
+  rotationId: string;
+  expiresAt: string;
+}
+
 export class HubClientError extends Error {
   constructor(
     readonly code: string,
@@ -326,6 +331,84 @@ export async function revokeClientKey(
   if (!response.ok) throw new HubClientError("key_revoke_failed", `Hub refused key revocation (${response.status})`, response.status);
 }
 
+function rotationManagementHeaders(
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+): Headers {
+  const headers = new Headers({ "Content-Type": "application/json", Accept: "application/json" });
+  if (credential.kind === "admin") headers.set("x-opencodex-api-key", credentialString(credential.value));
+  else {
+    headers.set("x-opencodex-api-key", credential.value.token);
+    headers.set("Origin", credential.value.browserOrigin);
+    headers.set("X-OpenCodex-GUI-Origin", credential.value.browserOrigin);
+    headers.set("X-OpenCodex-CSRF-Token", credential.value.csrfToken);
+  }
+  return headers;
+}
+
+function assertRotationAuthorityOrigin(origin: string, credential: { kind: "admin" } | { kind: "gui-session" }): void {
+  if (credential.kind === "admin" && new URL(origin).protocol !== "https:") {
+    throw new HubClientError("admin_http_refused", "Admin credentials may be sent only over HTTPS");
+  }
+}
+
+export async function startClientKeyRotation(
+  managementUrl: string,
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+  id: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<StartedClientKeyRotation> {
+  const origin = normalizeHubOrigin(managementUrl);
+  assertRotationAuthorityOrigin(origin, credential);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/api/keys/rotate`, {
+    method: "POST",
+    headers: rotationManagementHeaders(credential),
+    body: JSON.stringify({ id }),
+  }, options.timeoutMs);
+  if (!response.ok) throw new HubClientError("key_rotation_start_failed", `Hub refused key rotation (${response.status})`, response.status);
+  const value = parseJson(await boundedText(response, MANAGEMENT_BODY_LIMIT), "key_rotation_invalid");
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const issued = parseIssuedClientKey(value);
+  if (!raw || !issued || typeof raw.rotationId !== "string" || !raw.rotationId
+    || typeof raw.expiresAt !== "string" || Number.isNaN(Date.parse(raw.expiresAt))) {
+    throw new HubClientError("key_rotation_invalid", "Hub returned an invalid key rotation response", response.status);
+  }
+  return { ...issued, rotationId: raw.rotationId, expiresAt: raw.expiresAt };
+}
+
+export async function commitClientKeyRotation(
+  managementUrl: string,
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+  id: string,
+  rotationId: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<void> {
+  const origin = normalizeHubOrigin(managementUrl);
+  assertRotationAuthorityOrigin(origin, credential);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/api/keys/rotate/commit`, {
+    method: "POST",
+    headers: rotationManagementHeaders(credential),
+    body: JSON.stringify({ id, rotationId }),
+  }, options.timeoutMs);
+  if (!response.ok) throw new HubClientError("key_rotation_commit_failed", `Hub refused rotation commit (${response.status})`, response.status);
+}
+
+export async function abortClientKeyRotation(
+  managementUrl: string,
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+  id: string,
+  rotationId: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<void> {
+  const origin = normalizeHubOrigin(managementUrl);
+  assertRotationAuthorityOrigin(origin, credential);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/api/keys/rotate`, {
+    method: "DELETE",
+    headers: rotationManagementHeaders(credential),
+    body: JSON.stringify({ id, rotationId }),
+  }, options.timeoutMs);
+  if (!response.ok) throw new HubClientError("key_rotation_abort_failed", `Hub refused rotation abort (${response.status})`, response.status);
+}
+
 export async function downloadClientCatalog(
   serverUrl: string,
   admissionToken: string,
@@ -364,6 +447,11 @@ export async function probeClientKeyId(
   expectedKeyId: string,
   options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
 ): Promise<boolean> {
-  const catalog = await downloadClientCatalog(serverUrl, admissionToken, options);
-  return catalog.kind === "fresh" && catalog.keyId === expectedKeyId;
+  try {
+    const catalog = await downloadClientCatalog(serverUrl, admissionToken, options);
+    return catalog.kind === "fresh" && catalog.keyId === expectedKeyId;
+  } catch (error) {
+    if (error instanceof HubClientError && error.status === 401) return false;
+    throw error;
+  }
 }
