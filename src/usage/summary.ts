@@ -156,6 +156,7 @@ export interface UsageSummary {
 export interface UsageFilterEcho {
   provider: string | null;
   model: string | null;
+  apiKeyId: string | null;
   matched: boolean;
   /**
    * True when a retained row came from a combo attribution. Cost partitions
@@ -1129,6 +1130,11 @@ function normalizeFilterValue(input: string | null | undefined): string | null {
   return trimmed === "" ? null : trimmed.toLowerCase();
 }
 
+function normalizeExactFilterValue(input: string | null | undefined): string | null {
+  const trimmed = typeof input === "string" ? input.trim() : "";
+  return trimmed === "" ? null : trimmed;
+}
+
 /**
  * Narrow an already-summarised window to one provider and/or model.
  *
@@ -1152,12 +1158,13 @@ function normalizeFilterValue(input: string | null | undefined): string | null {
  */
 export function projectUsageSummary<T extends UsageSummary>(
   summary: T,
-  filter: { provider?: string | null; model?: string | null },
+  filter: { provider?: string | null; model?: string | null; apiKeyId?: string | null },
   entries?: PersistedUsageEntry[],
 ): T & { filter?: UsageFilterEcho } {
   const provider = normalizeFilterValue(filter.provider);
   const model = normalizeFilterValue(filter.model);
-  if (provider === null && model === null) return summary;
+  const apiKeyId = normalizeExactFilterValue(filter.apiKeyId);
+  if (provider === null && model === null && apiKeyId === null) return summary;
 
   const matches = (rowProvider: string, rowModel: string): boolean => {
     if (provider !== null && baseProviderLabel(rowProvider).toLowerCase() !== provider) return false;
@@ -1165,7 +1172,14 @@ export function projectUsageSummary<T extends UsageSummary>(
     return true;
   };
 
-  const source = entries ?? [];
+  // The apiKeyId filter drops whole ENTRIES, because a key owns the entry rather than any
+  // individual attempt within it. Provider and model filters below narrow to matching
+  // ATTRIBUTIONS instead: keeping a whole combo entry because one attempt matched drags the
+  // other attempts' tokens and cost into the filtered totals, so a two-attempt combo
+  // filtered to its cheap model would report the expensive model's spend too.
+  const source = apiKeyId === null
+    ? entries ?? []
+    : (entries ?? []).filter(entry => entry.apiKeyId === apiKeyId);
   let comboOverlap = false;
   const filtered: PersistedUsageEntry[] = [];
   for (const entry of source) {
@@ -1194,7 +1208,15 @@ export function projectUsageSummary<T extends UsageSummary>(
     days: projected.days.map(day => ({ ...day, models: day.models.filter(row => matches(row.provider, row.model)) })),
     models,
     providers: projected.providers.filter(row => retainedProviders.has(row.provider)),
-    accounts: [],
-    filter: { provider, model, matched, comboOverlap },
+    // Account rows are not provider-partitioned in a way this projection could
+    // honestly re-derive, and unfiltered account totals sitting beside filtered
+    // model totals would invite exactly the wrong reading — so a provider or model
+    // filter drops them.
+    //
+    // An apiKeyId-only filter is different: it selects whole entries, so the account
+    // rows projected from those entries are exactly the accounts that key used. They
+    // are honest under that filter and are kept.
+    accounts: provider === null && model === null ? projected.accounts : [],
+    filter: { provider, model, apiKeyId, matched, comboOverlap },
   };
 }
