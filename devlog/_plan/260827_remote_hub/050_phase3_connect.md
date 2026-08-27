@@ -97,7 +97,7 @@ Every existing path below was verified in the current tree. For NEW client paths
 | NEW | `src/client/state.ts` | Parse/validate `runtimeRole + config.json.client`, expose fail-closed connected/absent/invalid/mismatched states, and atomically commit/clear both keys through config mutation. |
 | NEW | `src/client/hub-client.ts` | Validate/normalize URLs; bounded `GET /readyz`, `POST /api/keys`, `GET /v1/catalog`; protocol/capability checks; redact all credential-bearing errors. |
 | NEW | `src/client/connect.ts` | Transaction coordinator, connected sync, rollback, and offline disconnect. No argv or presentation logic. |
-| NEW | `src/cli/connect.ts` | Parse connect/disconnect/status arguments, read the one-time credential from stdin or a named env var, call the coordinator, and render redacted human/JSON output. |
+| NEW | `src/cli/connect.ts` | Parse connect/disconnect/status arguments, read exactly one `--pairing-code-stdin` or `--admin-token-stdin` credential, call the coordinator, and render redacted human/JSON output. |
 | MODIFY | `src/types/config.ts` | Add `OcxClientConnectionConfig` and top-level `OcxConfig.client?`; the secret itself is not a field. |
 | MODIFY | `src/config.ts` | Add schema and field-scoped persistence behavior for `client`; malformed-present client state must be diagnosable and must never degrade into standalone routing. |
 | MODIFY | `src/lib/service-secrets.ts` | Add atomic owner-only write and fingerprint-checked removal beside existing path/read helpers. |
@@ -365,7 +365,7 @@ export function disconnectClient(
 
 ```text
 ocx connect <url> [--management-url <url>]
-            [--credential-stdin | --credential-env <NAME>]
+            [--pairing-code-stdin | --admin-token-stdin]
             [--clients codex,claude]
             [--management-transport direct|relay]
             [--allow-insecure-http] [--no-sync]
@@ -373,11 +373,13 @@ ocx connect status [--json]
 ocx disconnect [--keep-catalog] [--json]
 ```
 
-There is deliberately no `--token <value>`, `--admin-token <value>`, or pairing-code
-positional form. `--credential-env` stores only the variable name in argv; the value is
-read once and cleared from the coordinator's local reference after key issuance.
-`--credential-stdin` uses the bounded stdin helper. Parse errors redact unknown bare
-values and all credential-shaped option values.
+There is deliberately no `--token <value>`, `--admin-token <value>`, pairing-code
+positional form, or credential environment-variable form. Exactly one of
+`--pairing-code-stdin` and `--admin-token-stdin` uses the bounded stdin helper. Parse errors
+redact unknown bare values and all credential-shaped option values. The transient admin
+credential remains in memory until the connect transaction commits or rollback finishes,
+then its buffer and coordinator reference are zeroized; successful key issuance alone is
+not a terminal outcome.
 
 ## 4. Connect transaction and rollback
 
@@ -410,7 +412,9 @@ config fields absent. The still-in-memory admin credential or exchanged GUI sess
 attempts exact `DELETE /api/keys` for the just-created id. If hub cleanup is unreachable,
 the failure reports only the safe key id and exact revoke action; it never prints the
 key. Machine-local rollback success is mandatory and remote cleanup inability is
-explicit, never hidden as full rollback.
+explicit, never hidden as full rollback. Only after that cleanup attempt completes does
+the coordinator zeroize the transient admin credential; the success path zeroizes it
+immediately after the final state commit.
 
 `--no-sync` still performs readiness, key issuance, token placement, catalog download,
 and final state commit, but does not mutate Codex/Claude client files. The next
@@ -475,7 +479,7 @@ No test sends live hub traffic or reads the developer's homes.
 
 | Test file | Required cases |
 |---|---|
-| `tests/client-connect.test.ts` (NEW) | URL canonicalization; Phase-1 ready parser/mismatch strings; ready/pending/failed; same-major v1 acceptance; management URL advertisement; admin HTTPS direct key POST; pairing HTTPS session exchange then key POST; dual-opt-in pairing HTTP; admin HTTP refusal; raw grant rejection at `/api/keys`; bounded catalog; atomic role+state commit; each rollback point; no-sync; connected 200/304/401/timeout sync; no local discovery fake called; offline disconnect and partial restore. |
+| `tests/client-connect.test.ts` (NEW) | URL canonicalization; exact stdin-flag exclusivity and literal/env credential rejection; Phase-1 ready parser/mismatch strings; ready/pending/failed; same-major v1 acceptance; management URL advertisement; admin HTTPS direct key POST; pairing HTTPS session exchange then key POST; dual-opt-in pairing HTTP; admin HTTP refusal; raw grant rejection at `/api/keys`; admin credential retained through commit/rollback then zeroized; bounded catalog; atomic role+state commit; each rollback point; no-sync; connected 200/304/401/timeout sync; no local discovery fake called; offline disconnect and partial restore. |
 | `tests/service-secrets.test.ts` (NEW) | Exact path, 0600, Windows ACL seam, atomic replacement, symlink refusal, fingerprint, changed-file non-removal, no token in errors. |
 | `tests/codex-inject.test.ts` | Current standalone goldens byte-equal; explicit HTTPS target emits exact `base_url`, provider table, `env_key`; loopback-looking connected URL still requires admission; malformed target refused before journal. |
 | `tests/codex-inject-integration.test.ts` | Validate-only has zero writes; target commit records journal ownership; offline restore returns exact preimage; partial write rollback. |

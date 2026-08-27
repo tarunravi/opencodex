@@ -50,7 +50,8 @@ consumption of that credential is the only pairing exchange.
   `trustedTailscaleIngress: true` context. Direct/public-listener headers are ignored.
 - An empty/missing `allowedTailscaleUsers` list authorizes nobody remotely.
 - Pairing grants are stored only as SHA-256 digests, capped, expire after five minutes,
-  are deleted before session minting, and are never logged or returned again.
+  are deleted before session minting, and are never logged or returned again. They are not
+  bound to or invalidated with any data key.
 - Pairing-grant creation accepts only a short-lived capability bound to the exact runtime
   PID, port, method, path, nonce, expiry, and canonical browser origin. The reusable admin
   token and every other management principal are rejected on that route.
@@ -184,6 +185,10 @@ and claimed GUI origin; it never authorizes a mutation.
 non-loopback hub request it prefers configured `hub.managementPublicOrigin`; otherwise it
 keeps today's observed-origin behavior. It never reads forwarding headers.
 
+The Phase-1 `readyProtocolMetadata(config, req)` consumer follows the same rule: configured
+`hub.managementPublicOrigin` wins for hub readiness metadata, with observed request origin
+used only when the setting is absent.
+
 ### 5.3 Bootstrap meta consumer chain
 
 The compatibility meta name `opencodex-session-origin` remains and now explicitly means
@@ -235,6 +240,8 @@ memory-only and are never written to web storage.
     credential accepted. Admin/data/session credentials in headers do not substitute.
   - HTTPS issues `pairing`; non-loopback HTTP issues `insecure-http-pairing` only when the
     config opt-in is true. The grant is consumed before minting; all replays fail.
+  - Phase 4's fixed-target relay path allowlist admits this exact POST exchange in addition
+    to GET bootstrap; no other non-`/api/*` method/path is widened.
 
 `ocx gui pair [--origin <origin>] [--json]` defaults `--origin` to
 `hub.managementPublicOrigin`; it fails if neither exists. It resolves the identity-checked
@@ -268,11 +275,12 @@ All paths below exist in the current tree except files marked **NEW**.
 |---|---|---|
 | MODIFY | `src/types/config.ts` | Add `OcxHubConfig`, `OcxRemoteGuiConfig`, and optional `hub`/`remoteGui` fields. Extend the Phase-1 role type only by reference, not by new values. |
 | MODIFY | `src/config.ts` | Add strict nested schemas, canonical-origin/user-list validation, cross-field diagnostics, and persisted malformed-block degradation that preserves unrelated config. |
+| MODIFY | `src/remote/protocol.ts` | Consume `hub.managementPublicOrigin` in `readyProtocolMetadata(config, req)` so configured origin wins and observed request origin is the fallback. Preserve the Phase-1 wire shape and parser. |
 | NEW | `src/lib/gui-pair-capability.ts` | Own v1 method/path/header constants and HMAC create/verify functions bound to nonce, expiry, canonical browser origin, PID, and port. It accepts only the existing local-attestation secret shape. |
 | NEW | `src/server/gui-session.ts` | Own session/grant records, constants, bounded maps, digest-only grant storage, issuance policy, grant consumption, shared request admission predicate, and sliding renewal. No provider/router/Lab imports. |
 | MODIFY | `src/server/management-auth.ts` | Replace private `origin` records and duplicate authorization/principal checks with the shared GUI-session module. Preserve exported `issueGuiSession` as the loopback-compatible facade. Add pairing-grant state and exact `gui-pair-capability` principal/replay handling without changing admin-token initialization. |
 | MODIFY | `src/server/auth-cors.ts` | Prefer configured hub public origin only for non-loopback management requests; add exact fixed management preflight headers and exact-origin ACAO. Do not change data-plane CORS or credential admission. |
-| MODIFY | `src/server/index.ts` | Advertise GUI-pair capability v1 in `/healthz`; mount exact pairing-grant creation after capability admission, mount GET/POST bootstrap before GUI fallback, pass `trustedTailscaleIngress: false` on the public/ordinary loopback listeners, and preserve the line-1604 unknown-`/v1` guard. Do not make `startServer` async or add an await in its synchronous activation window. |
+| MODIFY | `src/server/index.ts` | Pass `(config, req)` to the `/readyz` protocol metadata builder so `hub.managementPublicOrigin` reaches the response; advertise GUI-pair capability v1 in `/healthz`; mount exact pairing-grant creation after capability admission, mount GET/POST bootstrap before GUI fallback, pass `trustedTailscaleIngress: false` on the public/ordinary loopback listeners, and preserve the line-1604 unknown-`/v1` guard. Do not make `startServer` async or add an await in its synchronous activation window. |
 | MODIFY | `src/server/proxy-liveness.ts` | Add optional `guiPairCapability` to the existing health identity projection so the local client can fail closed against an old/foreign listener without changing required liveness identity fields. |
 | MODIFY | `src/server/gui-static.ts` | Serialize escaped browser/server origin meta tags; keep `opencodex-session-origin` as browser-origin compatibility metadata. |
 | NEW | `src/cli/gui.ts` | Own `runGuiCommand(args, deps)`: existing no-subcommand open behavior plus `pair`; strict `--origin`/`--json` parsing and one-time grant output. |
@@ -285,7 +293,7 @@ All paths below exist in the current tree except files marked **NEW**.
 | MODIFY | `tests/server-management-auth.test.ts` | Extend the primary auth suite for every issuance/expiry/replay/origin/CSRF/admin negative; preserve the line-897 forged-Host test unchanged in meaning. |
 | MODIFY | `tests/native-profile-route-security.test.ts` | Update session fixture fields and prove native consent mutations still reject admin, wrong browser origin, wrong server destination, absent CSRF, and accept only the full remote-session predicate. |
 | MODIFY | `tests/server-auth.test.ts` | Extend management preflight tests for exactly the two added headers, allowed/rejected origins, and no data-plane header-policy drift. |
-| MODIFY | `tests/server-live.test.ts` | Extend the existing `/healthz` capability metadata coverage for GUI-pair v1 while keeping readiness/session secrets absent. |
+| MODIFY | `tests/server-live.test.ts` | Extend `/readyz` coverage so configured `hub.managementPublicOrigin` wins over the observed origin and absence falls back to the observed origin; extend `/healthz` capability metadata coverage for GUI-pair v1 while keeping readiness/session secrets absent. |
 | MODIFY | `tests/proxy-liveness.test.ts` | Extend health identity fixtures for optional GUI-pair capability detection and prove a foreign/malformed body cannot become an attested target. |
 | NEW | `tests/gui-pair-capability.test.ts` | Characterize payload binding, wrong method/path/origin/PID/port, malformed nonce/expiry, constant-time mismatch, and expiration for the operation capability, following `tests/local-management-capability.test.ts` and `tests/system-restart-contract-security.test.ts`. |
 | NEW | `tests/gui-pair-client.test.ts` | Characterize attestation, PID/port recheck, capability-version refusal, bodyless POST headers, one-attempt behavior, and redacted transport failures, following `tests/system-restart-client.test.ts` and `tests/local-provider-reload-client.test.ts`. |

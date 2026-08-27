@@ -157,7 +157,7 @@ The listener is GUI + management API only:
 
 - `GET`/`HEAD` packaged GUI assets and `/`.
 - `GET` extensionless SPA routes that the existing GUI fallback serves.
-- `GET /opencodex-session`.
+- `GET /opencodex-session` bootstrap and `POST /opencodex-session` pairing exchange.
 - `/api/*`, with existing management authentication, Origin, session, CSRF, body-size, and
   route authorization intact.
 - Everything else is deterministic JSON 404 before a handler runs, including all `/v1/*`,
@@ -202,6 +202,7 @@ Canonical hub setup shown in the guide (values are examples, not defaults):
 ocx config set runtimeRole hub
 ocx config set hostname 100.64.0.10
 ocx config set hub.managementPublicOrigin '"https://hub-name.tailnet-name.ts.net"'
+ocx config set corsAllowOrigins '["http://localhost:10100"]'
 ocx config set hub.managementIngress '{"enabled":true,"port":10101}'
 ocx config set remoteGui.allowedTailscaleUsers '["operator@example.com"]'
 
@@ -357,9 +358,8 @@ evidence; the sketch above is setup, not exact-head proof.
 
 1. On the hub, run `ocx gui pair` and copy the single-use, short-TTL code through the
    interactive channel. Do not record it.
-2. On the MacBook, run the Phase-3 connect command with the pairing code on stdin. The exact
-   Phase-3 signature must support transient `--pairing-code-stdin` (or its already-approved
-   equivalent) and must not accept a literal secret flag.
+2. On the MacBook, run the Phase-3 connect command with exactly one transient
+   `--pairing-code-stdin` or `--admin-token-stdin`; it must not accept a literal secret flag.
 3. Assert `ocx connect status --json` reports protocol v1, hub URL, management URL,
    management transport, and the non-secret client key id.
 4. Assert `serviceApiTokenFilePath()` exists owner-only and contains the auto-issued per-client

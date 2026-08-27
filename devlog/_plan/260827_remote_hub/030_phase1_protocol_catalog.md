@@ -33,6 +33,8 @@ runtime behavior. All code paths remain standalone-compatible when `runtimeRole`
   `x-opencodex-api-key: <our secret>` or `Authorization: Bearer <our secret>`.
   `x-api-key`, a foreign bearer, the admin token, and no credential are rejected on a
   non-loopback bind. The row is added to `AUTH_MATRIX` with `xApiKey: "rejected"`.
+- An admitted `/v1/catalog` response includes `x-opencodex-key-id` with the admitted
+  key's id. Rejected and unauthenticated responses never include this header.
 - A serialized catalog larger than `MAX_REMOTE_CATALOG_BYTES = 32 * 1024 * 1024` is not
   returned over `/v1/catalog`; it fails with HTTP 503 and the stable code
   `catalog_too_large`. The management route continues to expose the same serialized bytes
@@ -46,7 +48,8 @@ runtime behavior. All code paths remain standalone-compatible when `runtimeRole`
 - Protocol-v1 metadata in every ready/pending/failed `/readyz` body.
 - A parser/compatibility predicate for future `ocx connect`, including additive-field
   tolerance for a dev hub paired with the latest released client.
-- Shared catalog serialization, ETag, `If-None-Match`, size cap, and data-plane admission.
+- Shared catalog serialization, ETag, `If-None-Match`, size cap, data-plane admission, and
+  authenticated `x-opencodex-key-id` attribution.
 - Route placement before the unknown-`/v1/*` JSON-404 guard.
 - Focused and full remote-only verification commands.
 
@@ -126,8 +129,9 @@ after the 32 MiB bound passes.
 `/v1/catalog` uses `resolveResponsesApiAuth(req, policy)`, not `resolveApiAuth`, because the
 former is the existing dedicated-header/our-secret-Bearer matrix and rejects `x-api-key`
 (`src/server/auth-cors.ts:465-478`). It performs the existing data-plane origin check after
-admission. No Direct passthrough exists on this read-only route and no credential is
-forwarded.
+admission, then sets `x-opencodex-key-id` from that admitted key identity. Rejected and
+unauthenticated paths never emit the header. No Direct passthrough exists on this read-only
+route and no credential is forwarded.
 
 ## 4. Diff-level file-change map
 
@@ -137,18 +141,18 @@ All paths below exist in the current tree except the two files marked **NEW**.
 |---|---|---|
 | MODIFY | `src/types/config.ts` | Export `OcxRuntimeRole`; add optional `runtimeRole` to `OcxConfig` beside bind/runtime settings. |
 | MODIFY | `src/config.ts` | Add role schema and `runtimeRole` field validation; export `runtimeRole(config)`; reject invalid live candidates while preserving absence as standalone. Add degraded persisted-value diagnostics without deleting providers or `apiKeys`. |
-| NEW | `src/remote/protocol.ts` | Own protocol constants, readiness metadata type/parser, management-origin validation, compatibility result, and exact mismatch strings. This is a passive leaf and imports no router, lifecycle, Responses, provider, or Lab code. |
+| NEW | `src/remote/protocol.ts` | Own protocol constants, readiness metadata type/parser, `readyProtocolMetadata(config, req)`, management-origin validation, compatibility result, and exact mismatch strings. Phase 1 observes the request origin; accepting config from the start lets Phase 2 prefer `hub.managementPublicOrigin` without changing the consumer signature. This is a passive leaf and imports no router, lifecycle, Responses, provider, or Lab code. |
 | NEW | `src/server/catalog-download.ts` | Own `MAX_REMOTE_CATALOG_BYTES`, one persisted-catalog serialization result, byte-derived ETag matching, `/api/catalog` response construction, and bounded `/v1/catalog` response construction. |
 | MODIFY | `src/server/management/model-routes.ts` | Replace the inline `/api/catalog` read/`JSON.stringify` block at lines 334–345 with the shared response builder; preserve 404 and `x-opencodex-codex-version`. |
 | MODIFY | `src/server/auth-cors.ts` | Add the `/v1/catalog` `AUTH_MATRIX` row with bearer/dedicated accepted and `xApiKey` rejected. Do not change any existing row or credential precedence. |
-| MODIFY | `src/server/index.ts` | Add protocol metadata to the current `/readyz` body at lines 991–998. Mount exact `GET /v1/catalog` after readiness/management handling and before the unknown-`/v1/*` guard at line 1604; use `resolveResponsesApiAuth` plus the existing origin policy. Keep `startServer` synchronous and add no `await` between `Bun.serve` and `labActivationRequired`. |
+| MODIFY | `src/server/index.ts` | Add protocol metadata to the current `/readyz` body at lines 991–998 by passing `(config, req)` to the builder. Mount exact `GET /v1/catalog` after readiness/management handling and before the unknown-`/v1/*` guard at line 1604; use `resolveResponsesApiAuth` plus the existing origin policy and emit `x-opencodex-key-id` only from the admitted key identity. Keep `startServer` synchronous and add no `await` between `Bun.serve` and `labActivationRequired`. |
 | MODIFY | `src/server/proxy-liveness.ts` | Keep existing identity/status parsing additive; extend the internal body type/comments so protocol fields are recognized but do not make ordinary `ocx ready` reject a v0/legacy standalone server. Remote compatibility remains in `src/remote/protocol.ts`. |
 | MODIFY | `tests/config.test.ts` | Extend the existing config-default/validation sibling tests with absent/default, three valid roles, malformed live candidate, and malformed persisted role preservation cases. |
 | MODIFY | `tests/server-live.test.ts` | Extend the existing `GET /readyz` suite (lines 1220+) for exact protocol values on ready/pending/failed/draining, sanitized keys, management origin, method/path negatives, and no-auth behavior. |
 | MODIFY | `tests/proxy-liveness.test.ts` | Extend the current strict readiness parser/probe tests to prove additive protocol fields neither invalidate readiness nor bypass identity/status checks. |
 | MODIFY | `tests/api-catalog-route.test.ts` | Extend the existing `/api/catalog` sibling suite with fixed fixture bytes and version-header preservation after serializer extraction. |
-| MODIFY | `tests/server-auth.test.ts` | Extend live-server auth/order coverage with `/v1/catalog` header matrix, exact-path/method negatives, foreign/admin bearer rejection, bound overflow, ETag/304, and unknown-`/v1` guard preservation. |
-| MODIFY | `tests/api-key-attribution.test.ts` | Extend the existing live `AUTH_MATRIX` loop so `/v1/catalog` is a GET route and each cell reaches the real handler rather than the generic 404. |
+| MODIFY | `tests/server-auth.test.ts` | Extend live-server auth/order coverage with `/v1/catalog` admission matrix, exact admitted `x-opencodex-key-id`, header absence on every rejected/unauthenticated path, exact-path/method negatives, foreign/admin bearer rejection, bound overflow, ETag/304, and unknown-`/v1` guard preservation. |
+| MODIFY | `tests/api-key-attribution.test.ts` | Extend the existing live `AUTH_MATRIX` loop so `/v1/catalog` is a GET route, each cell reaches the real handler rather than the generic 404, and successful dedicated/Bearer admission echoes that key's id. |
 
 No other production or test file is in scope. If implementation proves another path is
 required, stop the phase and amend this document before editing it.
@@ -180,7 +184,7 @@ export type RemoteProtocolCompatibility =
   | { ok: true; metadata: RemoteReadyMetadata }
   | { ok: false; reason: "invalid" | "hub-too-new" | "hub-too-old"; message: string };
 
-export function readyProtocolMetadata(req: Request): RemoteReadyMetadata;
+export function readyProtocolMetadata(config: OcxConfig, req: Request): RemoteReadyMetadata;
 export function parseRemoteReadyMetadata(value: unknown): RemoteReadyMetadata | null;
 export function checkRemoteProtocolCompatibility(
   value: unknown,
@@ -223,11 +227,11 @@ an empty catalog. No function accepts a caller-provided catalog path.
 | P1-A04 | Start a server with a pending gate and request exact unauthenticated `GET /readyz`; repeat after ready, failed, and drain activation. | Existing HTTP/status/Retry-After contract holds and all three protocol fields remain identical across states. |
 | P1-A05 | Send POST, OPTIONS, `/readyz/`, and encoded `/readyz%2F`. | Existing deterministic JSON 404 path remains; no protocol document leaks through the GUI fallback. |
 | P1-A06 | Feed a v1 document plus unknown future fields to the new parser and to `validateReadyzBody`. | Both accept the document; readiness identity remains strict and remote parser preserves only validated protocol fields. |
-| P1-A07 | Feed `{protocol: 1, minimumClientProtocol: 2}` to a v1 client. | `hub-too-new` and the exact “Upgrade ocx on this client” string are returned before catalog access. |
-| P1-A08 | Feed `{protocol: 0, minimumClientProtocol: 0}` to a client requiring hub protocol 1. | `hub-too-old` and the exact “Upgrade ocx on the hub” string are returned. |
-| P1-A09 | Omit, mistype, overflow, or give a path-bearing `managementUrl`. | `invalid` and the exact malformed-metadata string are returned; no fallback to protocol 1. |
+| P1-A07 | Feed `{protocol: 2, minimumClientProtocol: 2}` to a protocol-v1 client. | `hub-too-new` and the exact “Upgrade ocx on this client” string are returned before catalog access. |
+| P1-A08 | Feed `{protocol: 1, minimumClientProtocol: 1}` to a protocol-v2 client requiring minimum hub protocol 2. | `hub-too-old` and the exact “Upgrade ocx on the hub” string are returned. |
+| P1-A09 | Supply zero, omit, mistype, overflow, set minimum above protocol, or give a path-bearing `managementUrl`. | The malformed-input class (`400`) returns `invalid` and the exact malformed-metadata string; it is never classified as a version mismatch and never falls back to protocol 1. |
 | P1-A10 | Persist a fixed catalog fixture; call authorized `/api/catalog` and authorized `/v1/catalog`. | Status 200 and response bytes are byte-identical; the ETag independently hashes those bytes. |
-| P1-A11 | Repeat `/v1/catalog` on non-loopback with dedicated header, our-secret Bearer, `x-api-key`, foreign Bearer, admin token, and no token. | First two reach 200; all remaining cases are 401. No case reaches the generic unknown-route 404. |
+| P1-A11 | Repeat `/v1/catalog` on non-loopback with dedicated header, our-secret Bearer, `x-api-key`, foreign Bearer, admin token, and no token. | First two reach 200 with `x-opencodex-key-id` equal to the admitted key id; all remaining cases are 401 without that header. No case reaches the generic unknown-route 404. |
 | P1-A12 | Call `/v1/catalog` with matching tag, weak matching tag, tag list, `*`, stale tag, and malformed tag. | Matches return 304/no body/same ETag; stale or malformed values return 200/full bytes. |
 | P1-A13 | Serialize exactly the cap and cap+1 fixtures through an injected serialization seam. | Exact cap returns 200; cap+1 returns 503 `catalog_too_large`, never a partial body. |
 | P1-A14 | Call POST `/v1/catalog`, GET `/v1/catalog/`, and an unrelated `/v1/does-not-exist`. | Every request returns the existing JSON 404 envelope; route ordering does not widen path/method matching. |

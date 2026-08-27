@@ -146,7 +146,7 @@ data plane still needs the token, management still needs admin-token/session.
 ## 4. ocx connect (client mode)
 
 ```text
-ocx connect <url> [--management-url <url>] [--token-env NAME | --token-stdin]
+ocx connect <url> [--management-url <url>] [--pairing-code-stdin | --admin-token-stdin]
                   [--clients codex,claude] [--management-transport direct|relay] [--no-sync]
 ocx disconnect [--keep-catalog]      ocx connect status [--json]
 ```
@@ -175,8 +175,8 @@ opt-in with ownership records.
 
 Explicit allowlist, default-404 (same failure mode as loopbackRouteAllowed):
 /healthz · /readyz · GET /api/machine/status · GET /api/machine/clients ·
-POST /api/machine/sync · PUT /api/machine/clients/:id · POST /api/machine/shim/* ·
-POST /api/machine/disconnect · POST /api/machine/hub-relay/* (opt-in only).
+POST /api/machine/sync · GET/POST /api/machine/shim · POST /api/machine/disconnect ·
+POST /api/machine/hub-relay (opt-in only).
 Mutations need local gui-session + CSRF (auto-minted on loopback, today's flow).
 
 Relay constraints (it is NOT a proxy): fixed destination = client.managementUrl;

@@ -66,7 +66,7 @@ activation remains unchanged and contains no new `await`.
   `POST /api/machine/disconnect`.
 - Opt-in fixed-target `/api/machine/hub-relay/*` selected only by
   `client.managementTransport === "relay"`.
-- GUI machine/shared target discovery, independent auth state, page-plane mapping,
+- GUI machine/shared target discovery, independent auth state, per-call plane routing,
   stable hub-offline states, and mode-aware stop/restart actions.
 - Connected usage = hub store filtered to this machine's `apiKeyId` by default, with an
   explicit hub-wide toggle; disconnected usage = local `usage.jsonl` unchanged.
@@ -102,10 +102,14 @@ parent exists. No generated `gui/dist` file is edited.
 | MODIFY | `tests/cli-start-journal-order.test.ts` | Prove connected start skips stale-process journal restore only for a matching durable client owner and starts no full data plane. |
 | NEW | `tests/client-machine-listener.test.ts` | Listener bind/allowlist/auth/API/startup/offline matrix. |
 | NEW | `tests/client-hub-relay.test.ts` | Fixed target, header separation, body caps, redirects, errors, and SSRF negatives. |
-| NEW | `gui/src/api-targets.ts` | Canonical `ApiTargets`, machine-status discovery, page-plane map, relay URL construction, and disconnected fallback. |
+| NEW | `gui/src/api-targets.ts` | Canonical `ApiTargets`, machine-status discovery, per-plane call-base selection, relay URL construction, and disconnected fallback. |
 | MODIFY | `gui/src/api.ts` | Replace `needsApiAuth`'s one same-origin slot with exact target classification and per-target in-memory session/CSRF state; attach both auth domains only on relay. |
-| MODIFY | `gui/src/App.tsx` | Discover targets before page fetches; map pages/actions to planes; machine health remains live when hub is down; connected stop becomes disconnect/recycle. |
+| MODIFY | `gui/src/App.tsx` | Discover targets before page fetches; supply both call bases instead of one page base; machine health remains live when hub is down; connected stop becomes disconnect/recycle. |
 | MODIFY | `gui/src/stop-proxy.ts` | Add mode-aware machine disconnect request while preserving existing standalone `/api/stop` behavior. |
+| MODIFY | `gui/src/pages/Startup.tsx` | Keep existing settings/startup-health/windows-tray/startup-action calls on the shared base; use the machine base only for new `/api/machine/*` status/shim sections. |
+| MODIFY | `gui/src/pages/Integrations.tsx` | Pass the shared base to all existing integration descendants, including ApiKeys and Grok; pass the machine base only to new local-client controls. |
+| MODIFY | `gui/src/pages/ApiKeys.tsx` | Keep existing `/api/keys`, `/v1/models`, and model-test calls on the shared base while mounted under Integrations. |
+| MODIFY | `gui/src/pages/Grok.tsx` | Keep existing `/api/grok*` calls on the shared base while mounted under Integrations. |
 | MODIFY | `gui/src/pages/Usage.tsx` | Add this-machine/hub-wide scope control, key-id query/cache key, source label, and hub-offline behavior without local fallback. |
 | MODIFY | `gui/src/pages/Storage.tsx` | Pass its selected shared `apiBase` through to `StorageWorkspace`. |
 | MODIFY | `gui/src/components/storage-workspace/StorageWorkspace.tsx` | Remove module-global `VITE_API_BASE`; use the supplied shared-plane base for Codex-log storage calls. |
@@ -119,12 +123,12 @@ parent exists. No generated `gui/dist` file is edited.
 | MODIFY | `gui/src/i18n/tr.ts` | Add the same keys. |
 | MODIFY | `gui/src/i18n/zh.ts` | Add the same keys. |
 | MODIFY | `gui/src/i18n/zh-TW.ts` | Add the same keys. |
-| NEW | `gui/tests/api-targets.test.ts` | Target discovery, page mapping, relay construction, and hub-down fallback. |
+| NEW | `gui/tests/api-targets.test.ts` | Target discovery, per-plane call-base selection, relay construction, and hub-down fallback. |
 | MODIFY | `gui/tests/api-auth-memory.test.ts` | Independent machine/shared sessions; direct/relay header matrix; no cross-target leakage; bootstrap validation. |
 | MODIFY | `gui/tests/api-auth-deadline.test.ts` | Per-target shared resolution/watchdog behavior. |
 | MODIFY | `gui/tests/usage-layout.test.ts` | Connected own-key default, hub-wide toggle, disconnected local source, cache partition, and offline rendering. |
 | MODIFY | `gui/tests/app-stop.test.ts` | Standalone stop vs connected disconnect/recycle. |
-| MODIFY | `gui/tests/integrations-routing.test.ts` | Integrations remains machine-plane while shared pages use hub. |
+| MODIFY | `gui/tests/integrations-routing.test.ts` | Existing Startup/Integrations/ApiKeys/Grok calls stay shared; only new local-client `/api/machine/*` calls use the machine base. |
 | MODIFY | `tests/core-lab-boundary.test.ts` | Existing protected-root and synchronous-start checks remain green; no rule weakening. |
 
 Verified reuse without edits: `src/server/gui-static.ts` serves assets/bootstrap;
@@ -287,8 +291,8 @@ Activation requires all of:
 2. `managementTransport === "relay"`;
 3. exact `/api/machine/hub-relay/` prefix;
 4. valid local machine session (custom headers for relay);
-5. suffix exactly `/opencodex-session` GET or inside `/api/` with an allowed HTTP
-   method.
+5. suffix exactly `/opencodex-session` with GET bootstrap or POST pairing exchange, or
+   inside `/api/` with an allowed HTTP method.
 
 The destination is `new URL(suffix, state.managementUrl)` after rejecting encoded
 slashes/backslashes, authority syntax, userinfo, query-host tricks, and path traversal.
@@ -329,17 +333,19 @@ export interface ApiTargets {
 
 export function standaloneApiTargets(initialBase: string): ApiTargets;
 export function targetsFromMachineStatus(initialBase: string, status: MachineStatusV1): ApiTargets;
-export function apiPlaneForPage(page: Page): ApiPlane;
-export function apiBaseForPage(page: Page, targets: ApiTargets): string;
+export function apiBaseForPlane(plane: ApiPlane, targets: ApiTargets): string;
 export async function discoverApiTargets(initialBase: string, signal?: AbortSignal): Promise<ApiTargets>;
 ```
 
-Page mapping is explicit:
+Routing is selected at each call site, not once for a page:
 
-| Plane | Pages/actions |
-|---|---|
-| Shared | Dashboard, Providers, Models, Subagents, Logs, Usage, Storage, Codex Set. |
-| Machine | Startup, Integrations, health/version, Codex app-server restart, shim actions, disconnect. |
+| Call sites | Plane | Rule |
+|---|---|---|
+| Existing Startup calls (`/api/settings`, `/api/startup-health`, `/api/windows-tray`, `/api/startup-action`) | Shared | Preserve hub-backed behavior. |
+| Existing Integrations descendants, including ApiKeys (`/api/keys`, `/v1/models`, model tests) and Grok (`/api/grok*`) | Shared | Preserve provider/config/catalog ownership on the hub. |
+| Dashboard, Providers, Models, Subagents, Logs, Usage, Storage, Codex Set existing calls | Shared | Continue to use the hub target. |
+| New local status/client/sync/shim/disconnect calls | Machine | Only explicit `/api/machine/*` routes use the machine target. |
+| Shell health/version and connected disconnect/recycle | Machine | Remain available independently of hub reachability. |
 
 In a standalone full server, `/api/machine/status` returns 404 and discovery returns one
 same-origin target, preserving existing behavior. A connected machine status response
@@ -381,11 +387,13 @@ clears/prompts only that target and cannot wipe the other target's newer session
 
 ### `gui/src/App.tsx`
 
-App blocks page resource mounting until target discovery settles, then passes the mapped
-base. Health/version polls machine. Connected hub failure leaves shell, navigation,
-Startup, Integrations, disconnect, and local status usable; shared pages render one
-stable hub-offline state and never substitute machine data. In connected mode the power
-action uses `POST /api/machine/disconnect`; in standalone it remains `POST /api/stop`.
+App blocks page resource mounting until target discovery settles, then passes both bases
+to mixed pages rather than assigning one plane to the whole page. Health/version polls
+machine. Connected hub failure leaves shell, navigation, disconnect, and new local-machine
+sections usable; existing shared sections inside Startup and Integrations render the same
+stable hub-offline state as other shared calls and never substitute machine data. In
+connected mode the power action uses `POST /api/machine/disconnect`; in standalone it
+remains `POST /api/stop`.
 
 `StorageWorkspace` must receive the shared base from `Storage.tsx`; its current
 module-global `VITE_API_BASE` at `gui/src/components/storage-workspace/StorageWorkspace.tsx:20`
@@ -445,12 +453,12 @@ appearing after disconnect.
 | `tests/api-usage.test.ts` | Exact `apiKeyId` response/echo; old and other-key rows excluded; no match; combined filters; filtered request cannot poison cache; unfiltered next request remains whole hub. |
 | `tests/usage-summary.test.ts` | Pure projection totals/days/models/providers/accounts consistency; exact-case id; combo attempts; absent id; provider/model/key cross-product. |
 | `tests/core-lab-boundary.test.ts` | Protected roots import no client subsystem; `startServer` remains non-async and no new top-level-window await. |
-| `gui/tests/api-targets.test.ts` (NEW) | Standalone 404 fallback; valid direct/relay status; page map; exact bases; machine-status network failure not standalone; encoded relay paths. |
+| `gui/tests/api-targets.test.ts` (NEW) | Standalone 404 fallback; valid direct/relay status; per-plane call bases; machine-status network failure not standalone; encoded relay paths. |
 | `gui/tests/api-auth-memory.test.ts` | Two simultaneous sessions; direct headers; relay dual headers; machine custom stripping contract; cross-target 401 races; server/browser-origin mismatch; unknown target receives nothing; no web storage. |
 | `gui/tests/api-auth-deadline.test.ts` | One target watchdog does not block/clear the other; direct and relay bootstrap timeout states. |
 | `gui/tests/usage-layout.test.ts` | Connected default key query; hub-wide omission; disconnected local query; source-qualified cache keys; hub-down no local fetch; scope labels/a11y. |
 | `gui/tests/app-stop.test.ts` | Standalone `/api/stop`; connected `/api/machine/disconnect`; refusal re-enables action; accepted recycle tolerates connection drop. |
-| `gui/tests/integrations-routing.test.ts` | Startup/Integrations machine base; Providers/Usage/Storage shared base under direct and relay. |
+| `gui/tests/integrations-routing.test.ts` | Existing Startup/Integrations/ApiKeys/Grok calls use the shared base; only new `/api/machine/*` local controls use the machine base under direct and relay. |
 
 ## 8. Acceptance criteria with activation grounding
 

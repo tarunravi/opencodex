@@ -16,9 +16,9 @@ the workstation. Full-suite execution is serialized with other `lidge-ai` suite 
 - Recoverable per-client data-key rotation with a one-time secret response, bounded overlap,
   client-side atomic token-file replacement, explicit commit/abort, and stable `apiKeyId` usage
   attribution.
-- Remote-session self-logout, automatic session invalidation after key commit/delete, and
-  disconnect-time best-effort revocation without making hub availability a prerequisite for
-  offline local restore.
+- Remote-session self-logout plus explicit operator data-key revocation from the hub GUI or
+  `ocx connect revoke` with an admin credential. Disconnect performs no hub-side revocation and
+  remains available while the hub is offline.
 - Pairing issuance/redemption limits, one-use semantics, bounded active state, and safe 429s.
 - Protocol negotiation matrix tests covering the v1 compatibility floor and feature detection.
 - Adversarial `/v1/catalog` consumer tests for decompressed size, malformed JSON, invalid schema,
@@ -53,7 +53,7 @@ the workstation. Full-suite execution is serialized with other `lidge-ai` suite 
 | Header-smuggling attempt | Hub request parser/proxy chain | Reject transfer-encoding, conflicting content-length, connection-nominated headers, CR/LF values, and upgrade paths. |
 | Protocol-skewed peer | Local client files / silent misroute | Negotiate before any local write; reject incompatible floors with explicit upgrade error; unknown features stay off. |
 | Rotation crash between hub and client | Client availability | Old and pending keys overlap for a bounded window; commit only after new-key probe; abort/expiry preserves old key. |
-| Session surviving credential change | Revoked client access | Key commit/delete invalidates sessions and pairing grants bound to that `apiKeyId`; current in-flight data turn may finish, next admission fails. |
+| Disconnected client whose data key still exists | Hub data admission | Disconnect changes local state only; an operator explicitly deletes the key in the hub GUI or runs `ocx connect revoke --admin-token-stdin`. |
 | Logs/evidence | Tokens, codes, identities | Record ids/prefixes/counts/status only; privacy scan; no raw secret, email, Origin query, request body, or account id. |
 
 Security level: ASVS L2 for the remote management/session surface. Applicable architecture,
@@ -68,7 +68,7 @@ planning base and must exist before Phase 6 begins. If an earlier phase delibera
 different exact owner path, amend this file mechanically before implementation rather than adding
 a second owner.
 
-### 2.1 Key rotation and session invalidation
+### 2.1 Key rotation, self-logout, and operator revocation
 
 | Path | Change | Exact responsibility |
 | --- | --- | --- |
@@ -76,13 +76,15 @@ a second owner.
 | `src/config.ts` | MODIFY | Validate/degrade pending rotation independently so one malformed pending record cannot reset providers or revoke the current key. |
 | `src/server/auth-cors.ts` | MODIFY | Admit an unexpired pending key under the same configured `apiKeyId`; never return or serialize its secret. |
 | `src/server/management/api-key-rotation.ts` | NEW | Single owner for start/commit/abort/expiry cleanup and constant-time rotation-id comparison. |
-| `src/server/management/oauth-account-routes.ts` | MODIFY | Add the three rotation operations next to existing `/api/keys` CRUD and call session invalidation after commit/delete. Existing GET continues to mask all secrets. |
+| `src/server/management/oauth-account-routes.ts` | MODIFY | Add the three rotation operations next to existing `/api/keys` CRUD. Existing GET continues to mask all secrets; key deletion remains an explicit operator action. |
 | `src/server/management/session-routes.ts` | NEW | `POST /api/session/logout` self-revocation route; requires the current `gui-session` and CSRF. Admin token receives 403, not a promoted session. |
 | `src/server/management-api.ts` | MODIFY | Wire `handleSessionRoutes` and the narrow session-control dependency into `ManagementContext`. |
-| `src/server/management/context.ts` | MODIFY | Carry only the revocation interface, never the raw admin token or session map. |
-| `src/server/management-auth.ts` | MODIFY | Associate remote sessions with optional `apiKeyId`; export narrow current/by-key invalidation helpers; preserve one shared auth predicate. |
+| `src/server/management/context.ts` | MODIFY | Carry only the current-session logout interface, never the raw admin token or session map. |
+| `src/server/management-auth.ts` | MODIFY | Export a narrow current-session invalidation helper for explicit self-logout; preserve one shared auth predicate and add no key binding to pairing grants or sessions. |
 | `src/client/connect.ts` | MODIFY | Implement `ocx connect rotate`: transient authority, start rotation, atomically replace token file, validate new key, commit, and restore+abort on failure. |
-| `src/client/state.ts` | MODIFY | Persist non-secret key id and pending operation metadata only; never persist admin/pairing authority or old/new secret. |
+| `src/client/hub-client.ts` | MODIFY (Phase-3 owner) | Add bounded rotation/revoke management calls, authenticated catalog key-id probe, and redacted errors beside the existing ready/key/catalog calls. |
+| `src/client/state.ts` | MODIFY | Persist `pendingOperation: {kind:"rotate",newKeyIssuedAt,oldKeyBackupPath}` through the full backup/replace/probe/commit or recovery chain; never persist admin/pairing authority or old/new secret. |
+| `src/cli/connect.ts` | MODIFY (Phase-3 owner) | Parse `rotate` and operator-only `revoke`, enforce exact stdin flags, reject literal/env secret forms, and render redacted recovery status. |
 | `src/cli/access.ts` | MODIFY | Add management-side `ocx access key rotate <id>` start/commit/abort UX with one-time secret warning; no literal secret flags. |
 | `src/cli/registry.ts` | MODIFY | Document rotation command shapes and transient-authority requirement. |
 | `gui/src/pages/ApiKeys.tsx` | MODIFY | Load pending status, start/commit/abort rotation, and render the new secret exactly once. |
@@ -99,7 +101,8 @@ a second owner.
 | `tests/api-keys-routes.test.ts` | MODIFY | Rotation route contract, masking, pending overlap, commit, abort, expiry, malformed inputs, and delete invalidation. |
 | `tests/data-plane-admission-identity.test.ts` | MODIFY | Current and pending secret map to one id; expired/committed/aborted secrets do not admit. |
 | `tests/api-key-attribution.test.ts` | MODIFY | Traffic before/during/after rotation remains one `apiKeyId` bucket. |
-| `tests/server-management-auth.test.ts` | MODIFY | Session self-logout/by-key invalidation and admin-token refusal. |
+| `tests/server-management-auth.test.ts` | MODIFY | Explicit session self-logout, absence of key-bound grant/session invalidation, and admin-token consent refusal. |
+| `tests/client-connect.test.ts` | MODIFY (Phase-3 owner) | Rotation/revoke parser flags, `.prev` crash recovery, pending-operation lifecycle, uncertain commit, and operator-only key deletion. |
 | `gui/tests/apikeys-actions.test.tsx` | MODIFY | Start/commit/abort wire actions and one-time secret handling. |
 | `gui/tests/apikeys-mutation-timeout.test.tsx` | MODIFY | Rotation controls recover after bounded network failure. |
 | `gui/tests/apikeys-workspace.test.tsx` | MODIFY | Accessible rendered states and confirmations. |
@@ -109,14 +112,14 @@ a second owner.
 
 | Path | Change | Exact responsibility |
 | --- | --- | --- |
-| `src/server/gui-session.ts` | MODIFY (Phase-2 owner) | Extend the existing digest-only pairing/session owner with bounded attempt stores, source-key derivation, 429 result, expiry, and by-key revocation. |
+| `src/server/gui-session.ts` | MODIFY (Phase-2 owner) | Extend the existing digest-only pairing/session owner with bounded attempt stores, source-key derivation, 429 result, and expiry; grants remain independent of data keys. |
 | `src/remote/protocol.ts` | MODIFY (Phase-1 owner) | Extend the existing pure parser/interval-compatibility owner with additive feature intersection; no I/O or local writes. |
-| `src/client/catalog.ts` | MODIFY | Bounded decompressed read, strict remote catalog validation, ETag/LKG handling, and atomic-write precondition. |
-| `src/client/relay.ts` | MODIFY | Fixed-target URL construction, request/response header rebuilding, redirect refusal, body/stream caps, and redacted errors. |
+| `src/client/hub-client.ts` | MODIFY (Phase-3 owner) | Bounded decompressed read, strict remote catalog validation, ETag/LKG handling, and atomic-write precondition. |
+| `src/client/hub-relay.ts` | MODIFY (Phase-4 owner) | Fixed-target URL construction, request/response header rebuilding, redirect refusal, body/stream caps, and redacted errors. |
 | `tests/server-management-auth.test.ts` | MODIFY (Phase-2 owner) | Deterministic pairing attempt/TTL/capacity/replay/race matrix in the existing primary session suite. |
 | `tests/proxy-liveness.test.ts` | MODIFY (Phase-1 owner) | Protocol metadata parsing remains additive while ordinary readiness identity remains strict. |
 | `tests/cli-ready-subprocess.test.ts` | MODIFY | Full released-process skew matrix and no-write mismatch outcomes. |
-| `tests/remote-catalog.test.ts` | MODIFY (Phase-1/3 owner) | Oversized/malformed/schema/ETag/LKG/no-write adversarial matrix. |
+| `tests/remote-catalog.test.ts` | ADD BY PHASE 6 | Oversized/malformed/schema/ETag/LKG/no-write adversarial matrix for the Phase-3 `hub-client` owner. |
 | `tests/client-hub-relay.test.ts` | MODIFY (Phase-4 owner) | SSRF, redirect, authority, smuggling, header stripping, and bounded streaming negatives. |
 | `tests/bounded-body.test.ts` | MODIFY only if shared helper changes | Reuse exact-cap/one-byte-over/trickle semantics; do not duplicate the helper contract in client tests. |
 | `tests/credential-redirect-guard.test.ts` | EXTEND/REUSE | Existing sibling evidence for credential-bearing redirect refusal. |
@@ -266,31 +269,40 @@ No response except successful start contains the pending secret.
 `ocx connect rotate` requires one transient `--pairing-code-stdin` or
 `--admin-token-stdin`; neither is persisted. It performs:
 
-1. Read current key id and current token into memory; create no output containing either secret.
-2. Start rotation; receive pending secret once.
+1. Read current key id and current token into memory; write the old token to
+   `<tokenfile>.prev` with the same owner-only 0600/ACL rules and fsync it.
+2. Start rotation; receive pending secret once, then persist
+   `pendingOperation: {kind:"rotate",newKeyIssuedAt,oldKeyBackupPath}` before replacement.
 3. Write pending secret to a same-directory owner-only temp, harden it with the same
    `serviceApiTokenFilePath()` rules, fsync, and atomically replace the token file.
 4. Probe authenticated `/v1/catalog` with the new key and verify the expected client key id via
    the safe response/diagnostic contract.
-5. Commit rotation. Commit invalidates old-key admission, sessions, and pairing grants bound to
-   that key id. An already-admitted in-flight turn may complete; the next old-key request is 401.
-6. If steps 3–5 fail before a confirmed commit, restore the old token atomically and abort the
-   pending rotation. If commit outcome is uncertain, probe with both keys: exactly one accepted
-   result determines the local file; never replay commit blindly.
+5. Commit rotation. Commit invalidates old-key admission only; pairing grants and GUI sessions
+   are not key-bound. An already-admitted in-flight turn may complete; the next old-key request
+   is 401. After verified commit, delete `<tokenfile>.prev` and clear `pendingOperation`.
+6. If steps 2–5 fail before a confirmed commit, restore the old token atomically from
+   `<tokenfile>.prev`, abort the pending rotation, then delete the backup and clear the operation.
+   If commit outcome is uncertain, probe with both keys: exactly one accepted result determines
+   the local file; never replay commit blindly.
+
+On startup/status, `src/client/state.ts` treats a rotate `pendingOperation` as a recovery gate:
+verify that `oldKeyBackupPath` is exactly `<tokenfile>.prev`, require an owner-only regular file,
+probe current and backup keys using the authenticated catalog key-id echo, then complete the same
+commit-or-restore chain. Missing, unsafe, or doubly accepted/rejected evidence stops with an exact
+recovery instruction and never deletes either candidate blindly.
 
 The GUI exposes the same lifecycle for an operator updating a client manually, with explicit
 copy-once and commit-after-client-probe wording. Closing the modal does not imply commit; pending
 state remains visible and abortable until expiry.
 
-## 4. Session invalidation contract
+## 4. Session self-logout contract
 
-Phase-2 `GuiSessionRecord` gains optional `apiKeyId` for sessions created from a client-bound
-pairing grant. Loopback and Tailscale sessions without a client association may omit it.
+Phase-2 pairing grants and `GuiSessionRecord` remain independent of data-key ids. Rotation,
+disconnect, and key deletion therefore do not implicitly log out a browser session.
 
 ```ts
 export interface ManagementSessionControl {
   revokeCurrent(req: Request): boolean;
-  revokeForApiKeyId(apiKeyId: string): number;
 }
 
 export function createManagementSessionControl(
@@ -298,14 +310,17 @@ export function createManagementSessionControl(
 ): ManagementSessionControl;
 ```
 
-`handleManagementAPI` receives this narrow control (directly or through `ManagementContext`),
-not the session map and never the admin token. `POST /api/session/logout` requires
+`handleManagementAPI` receives this narrow current-session control (directly or through
+`ManagementContext`), not the session map and never the admin token.
+`POST /api/session/logout` requires
 `principal === "gui-session"`, same browser Origin, and CSRF. Admin-token calls return 403.
 
-Rotation commit and key deletion call `revokeForApiKeyId` only after config persistence commits.
-A persistence failure leaves key and sessions unchanged. `ocx disconnect` calls self-logout
-best-effort before local restore; hub-down still restores from the local journal and reports that
-remote session expiry/revocation could not be confirmed.
+`ocx disconnect` performs local restore only and sends no hub revocation request. To revoke the
+still-valid data key, an operator uses the hub GUI's existing key deletion or
+`ocx connect revoke --admin-token-stdin`; the CLI requires the transient admin credential,
+deletes the exact configured key id, and clears no local state unless deletion is confirmed.
+Explicit GUI self-logout remains available independently. A hub-down disconnect succeeds locally
+and reports that operator revocation remains outstanding.
 
 ## 5. Pairing rate limits
 
@@ -337,7 +352,8 @@ Fixed starting limits (configurable downward only is unnecessary in v1):
 - Expired grant/source entries are pruned synchronously on pairing operations; no core timer.
 - `Retry-After` is integer seconds, bounded by the remaining window, and contains no identity.
 - Constant-time code comparison; generic invalid/expired/consumed response; no existence oracle.
-- Rotation commit/key delete revoke unconsumed grants associated with that client key id.
+- Pairing grants have no client-key association; rotation, key deletion, and disconnect do not
+  scan or revoke the grant store.
 
 Rate-limit logs contain only reason, ingress class, and aggregate count. No code, raw IP,
 Tailscale user/email, Origin, token, or account id.
@@ -376,7 +392,7 @@ Required matrix:
 | p2/min2 | p1/min1 | hub dropped v1 floor | Reject `hub-too-new` before write. |
 | p1/min1 | p2/min2 | dev client requires newer hub | Reject hub-too-old before write. |
 | p1/min1/unknown-X | p1/min1 | additive unknown feature | Accept; unknown feature remains disabled. |
-| missing/NaN/fraction/negative/min>protocol or invalid `managementUrl` | p1 | malformed or legacy non-v1 hub | Exact Phase-1 `invalid` message; zero local writes. |
+| missing/zero/NaN/fraction/negative/min>protocol or invalid `managementUrl` | p1 | malformed-input class (`400`), never a version mismatch | Exact Phase-1 `invalid` message; zero local writes. |
 | valid descriptor, `/readyz` pending/failed | any | startup not ready | Do not negotiate or write; preserve existing readiness behavior. |
 
 The guaranteed live pair is dev hub ↔ latest published protocol-v1 client and the reverse.
@@ -413,7 +429,7 @@ Every rejection asserts token/catalog/state/journal bytes are unchanged.
 
 ## 8. Relay SSRF and header-smuggling negatives
 
-`src/client/relay.ts` is not a general proxy. Its destination is the validated
+`src/client/hub-relay.ts` is not a general proxy. Its destination is the validated
 `connectionState.managementUrl` captured when the listener starts. A request cannot supply or
 override scheme, host, port, userinfo, fragment, DNS result, or redirect target.
 
@@ -468,11 +484,11 @@ Phase 6 extends them rather than creating parallel “hardening2” files.
 | --- | --- | --- |
 | rotation start | Existing key, no pending rotation, admin/session authority | New key returned once; old+pending both admit under same id; list masks both. |
 | second start | Existing unexpired pending rotation | 409; no third secret/state change. |
-| client commit | New key written + authenticated catalog succeeds | Pending promoted atomically; old next request 401; id/usage bucket stable; sessions/grants invalidated. |
-| client write/probe fail | Fail temp write, hardening, rename, or new-key probe | Old file restored/unchanged; pending aborted or expires; old key remains valid. |
-| uncertain commit | Drop commit response after server may commit | Probe old+new; choose sole accepted key; no blind replay. |
+| client commit | New key written + authenticated catalog succeeds | Pending promoted atomically; old next request 401; id/usage bucket stable; `.prev` deleted and pending operation cleared; sessions/grants unchanged. |
+| client write/probe fail | Fail backup/temp write, hardening, rename, or new-key probe | Old file restored/unchanged from `.prev`; pending aborted or expires; old key remains valid. |
+| uncertain commit/crash | Drop commit response or restart with pending operation | Probe current+`.prev`; choose sole accepted key; finish commit-or-restore chain; no blind replay. |
 | pending expiry | Fake clock past 10 minutes | Pending rejected/removed; old accepted. |
-| delete key | Delete configured key with bound sessions/grants | Admission, sessions, and grants revoked after persistence only. |
+| operator revoke | Hub GUI delete or `ocx connect revoke --admin-token-stdin` for configured id | Data-key admission revoked after persistence; sessions/grants unchanged; disconnect alone made no hub request. |
 | self logout | GUI session + Origin + CSRF | Current session removed; replay 401. Admin-token call 403. |
 | pairing bad guesses | Same grant/source repeated with fake clock | Fifth grant failure burns; source threshold yields 429 + bounded Retry-After; no identity leak. |
 | pairing replay/race | Two concurrent valid redemptions | Exactly one session; other generic failure. |
@@ -503,8 +519,8 @@ The Remote Hub guide in all eight locales must cover:
 - admin token ordinary-management scope and permanent inability to mint consent sessions;
 - systemd/launchd, Docker volume/secret/probes, headless OAuth, rotation, rollback, and protocol
   upgrade errors;
-- troubleshooting for hub down, stale catalog, rotated token, protocol mismatch, lost pairing,
-  plain HTTP, and remote-session expiry/invalidation.
+- troubleshooting for hub down, stale catalog, rotated token/`.prev` recovery, protocol mismatch,
+  lost pairing, plain HTTP, remote-session logout/expiry, and outstanding operator revocation.
 
 Reference pages list exact config keys/defaults and endpoint auth. No page may call `/healthz`
 readiness, claim usage mirroring, suggest putting a token on argv, suggest `0.0.0.0:10101`, trust
@@ -527,7 +543,8 @@ Docker secret guidance, or dependency installation is security-review-required u
   migration, error, or recovery branch.
 - [ ] Data keys authorize only the data matrix and `/v1/catalog`; rotation endpoints remain
   management-authenticated and transient authority is never persisted.
-- [ ] Session Origin/serverOrigin/browserOrigin, CSRF, TTL, renewal, logout, key invalidation,
+- [ ] Session Origin/serverOrigin/browserOrigin, CSRF, TTL, renewal, explicit logout, absence of
+  key-bound invalidation,
   replay, and wrong-ingress tests are linked.
 - [ ] Pairing entropy, one-use, TTL, attempt/capacity limits, race behavior, 429, and redacted
   logging tests are linked.
@@ -548,9 +565,10 @@ the same readiness report.
 
 ## 12. Acceptance criteria
 
-- [ ] Per-client rotation is recoverable, bounded, stable-id-attributed, secret-safe, and invalidates
-  the old key/session/grants only after commit.
-- [ ] Session self-logout and disconnect behavior are explicit; admin-token consent remains 403.
+- [ ] Per-client rotation is recoverable through `pendingOperation` + `<tokenfile>.prev`, bounded,
+  stable-id-attributed, secret-safe, and invalidates only old-key admission after commit.
+- [ ] Session self-logout, local-only disconnect, and explicit operator revoke behavior are
+  distinct; admin-token consent remains 403.
 - [ ] Pairing attempt and capacity state are bounded, deterministic under fake time, one-use under
   races, and privacy-safe.
 - [ ] Every protocol matrix row is reachable and proves no-write behavior before incompatibility.
