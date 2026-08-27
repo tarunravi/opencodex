@@ -32,11 +32,21 @@ function managementOrigin(value: unknown): string | null {
   }
 }
 
+function observedManagementOrigin(req: Request): string | null {
+  try {
+    const requestUrl = new URL(req.url);
+    const host = req.headers.get("Host") ?? requestUrl.host;
+    return managementOrigin(`${requestUrl.protocol}//${host}`);
+  } catch {
+    return null;
+  }
+}
+
 export function readyProtocolMetadata(config: OcxConfig, req: Request): RemoteReadyMetadata {
   // Phase 2 will consult config.hub.managementPublicOrigin here. Keeping the
   // parameter now fixes the consumer signature without changing Phase 1 behavior.
   void config;
-  const managementUrl = managementOrigin(new URL(req.url).origin);
+  const managementUrl = observedManagementOrigin(req);
   if (!managementUrl) throw new Error("Readiness request does not have an HTTP(S) management origin");
   return {
     protocol: REMOTE_HUB_PROTOCOL,
