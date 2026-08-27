@@ -357,6 +357,20 @@ describe("opencodex config defaults", () => {
     }
   });
 
+  test("an unrelated save cannot erase malformed-present client state", () => {
+    const raw = {
+      ...getDefaultConfig(),
+      runtimeRole: "client",
+      client: { apiKeyId: "half-present", key: "must-not-be-reemitted" },
+    };
+    writeConfig(raw);
+    const before = readFileSync(getConfigPath(), "utf8");
+    const loaded = loadConfig();
+    loaded.codexAutoStart = false;
+    expect(() => saveConfig(loaded)).toThrow("malformed or mismatched remote client state");
+    expect(readFileSync(getConfigPath(), "utf8")).toBe(before);
+  });
+
   test("malformed classifier config is normalized at load, even with subagentEffort absent (#1697)", () => {
     // normalizePersistedClaudeCode used to be reached only through a subagentEffort short-circuit,
     // so a config whose ONLY defect was elsewhere in claudeCode was never normalized. These

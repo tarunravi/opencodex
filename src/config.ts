@@ -2768,6 +2768,9 @@ export const withExpectedConfigGenerationSync: WithExpectedConfigGenerationSync 
  */
 function persistConfigUnlocked(config: OcxConfig): boolean {
   const configPath = getConfigPath();
+  const rawBeforeWrite = readRawConfigJson();
+  const clientPersistenceError = failClosedClientPersistenceError(rawBeforeWrite, config);
+  if (clientPersistenceError) throw new Error(clientPersistenceError);
   // External editors can add provider rows the live config deliberately does
   // not route with yet; merge them at the serialization boundary so an
   // unrelated in-process save cannot erase the provider or its overlay.
@@ -2895,13 +2898,38 @@ export function mutatePersistedConfig<T>(
 
       const projected = projectCustomModelCatalogMigration(
         commitBase.diagnostics.config,
-        confirmedConfig,
+        projectConfigRebaseProvenance(confirmedConfig),
       );
       if (persistConfigUnlocked(projected)) bumpGenerationForCooperatingConfigWrite();
       return { status: "committed", value: confirmed.value };
     }
     return { status: "unavailable", reason: "conflict" };
   });
+}
+
+function failClosedClientPersistenceError(
+  raw: Record<string, unknown> | undefined,
+  candidate: OcxConfig,
+): string | null {
+  if (!raw) return null;
+  const rawHasClient = Object.hasOwn(raw, "client") && raw.client !== undefined;
+  const rawRole = raw.runtimeRole;
+  const rawRoleValid = rawRole === undefined
+    || rawRole === "standalone"
+    || rawRole === "hub"
+    || rawRole === "client";
+  const rawClientValid = !rawHasClient || clientConnectionSchema.safeParse(raw.client).success;
+  const rawPairValid = rawRoleValid
+    && ((rawRole === "client" && rawHasClient && rawClientValid)
+      || (rawRole !== "client" && !rawHasClient));
+  if (rawPairValid) return null;
+
+  const candidateValid = candidate.runtimeRole === "client"
+    && clientConnectionSchema.safeParse(candidate.client).success;
+  const deletions = configRebaseDeletionKeys(candidate);
+  const explicitClear = deletions.has("client") && deletions.has("runtimeRole");
+  if (candidateValid || explicitClear) return null;
+  return "config write refused: malformed or mismatched remote client state must be repaired or explicitly cleared";
 }
 
 export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolean {

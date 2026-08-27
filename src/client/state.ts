@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import {
   getConfigPath,
+  deleteConfigTopLevelKey,
   mutatePersistedConfig,
   readConfigDiagnostics,
 } from "../config";
@@ -82,8 +83,8 @@ export function clearClientConnection(
     if (!config.client || config.runtimeRole !== "client" || config.client.apiKeyId !== expectedApiKeyId) {
       return { changed: false, value: "conflict" as const };
     }
-    delete config.client;
-    delete config.runtimeRole;
+    deleteConfigTopLevelKey(config, "client");
+    deleteConfigTopLevelKey(config, "runtimeRole");
     return { changed: true, value: "committed" as const };
   });
   if (outcome.status === "unavailable") return "conflict";
