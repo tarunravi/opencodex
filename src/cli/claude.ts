@@ -21,9 +21,20 @@ import { resolveClaudeAuthMode } from "../claude/auth-mode";
 import { withProcessRuntimeProvenance } from "../lib/bun-runtime";
 import { selfLaunchArgv } from "../lib/self-launch-argv";
 import { ANTHROPIC_PARENT_ENV_SLOTS, trustedNodeLauncherContext, type AnthropicParentEnvSlot } from "./launcher-context";
+import { readClientConnectionState } from "../client/state";
+import { readServiceApiTokenState } from "../lib/service-secrets";
+import { DEFAULT_CATALOG_PATH } from "../codex/paths";
+import { readFileSync } from "node:fs";
+import { aliasForNative, aliasForRoute } from "../claude/alias";
+import { desktop3pAlias } from "../claude/desktop-3p";
 
 export interface ClaudeLaunchEnv {
   [key: string]: string | undefined;
+}
+
+export interface ClaudeRoutingTarget {
+  baseUrl: string;
+  admissionToken: string;
 }
 
 /**
@@ -61,6 +72,20 @@ function targetsLocalClaudeProxy(value: string | undefined, port: number): boole
   }
 }
 
+function targetsClaudeRoutingTarget(value: string | undefined, target: ClaudeRoutingTarget): boolean {
+  if (!value) return false;
+  try {
+    const actual = new URL(value);
+    const expected = new URL(target.baseUrl);
+    return actual.origin === expected.origin
+      && (actual.pathname === "/" || actual.pathname === "")
+      && !actual.username
+      && !actual.password;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Pure env assembly (unit-tested): never sets ANTHROPIC_API_KEY (setting both
  * token vars triggers Claude Code's auth-conflict warning, 003 E1), and never
@@ -70,11 +95,14 @@ function targetsLocalClaudeProxy(value: string | undefined, port: number): boole
  */
 export function buildClaudeEnv(
   config: OcxConfig,
-  port: number,
+  portOrTarget: number | ClaudeRoutingTarget,
   base: ClaudeLaunchEnv,
   contextWindows: Record<string, number> = {},
   deps: ClaudeEnvDeps = {},
 ): ClaudeLaunchEnv {
+  const explicitTarget = typeof portOrTarget === "number" ? null : portOrTarget;
+  const port = typeof portOrTarget === "number" ? portOrTarget : null;
+  const managedBaseUrl = explicitTarget ? new URL(explicitTarget.baseUrl).origin : `http://127.0.0.1:${port}`;
   const env: ClaudeLaunchEnv = { ...base };
   // Step 1 — strip OUR OWN dummy from the inherited environment before anything reads
   // or writes the token slot. setDefault below preserves any non-empty value, so a
@@ -120,9 +148,9 @@ export function buildClaudeEnv(
   if (deps.allowRootSkipPermissions === true) {
     setDefault("IS_SANDBOX", "1");
   }
-  setDefault("ANTHROPIC_BASE_URL", `http://127.0.0.1:${port}`);
+  setDefault("ANTHROPIC_BASE_URL", managedBaseUrl);
   const existingBaseUrl = env.ANTHROPIC_BASE_URL;
-  if (existingBaseUrl) {
+  if (existingBaseUrl && port !== null) {
     try {
       const parsed = new URL(existingBaseUrl);
       const effectivePort = parsed.port === "" ? 80 : Number(parsed.port);
@@ -154,16 +182,20 @@ export function buildClaudeEnv(
   // the user's Claude login. Only inject a token when the proxy actually requires an
   // admission key; otherwise Claude Code keeps its own OAuth and sends it to us —
   // native claude models then pass through verbatim (see server/claude-messages.ts).
-  const ownTokens = ownAdmissionTokens(config);
-  const targetsLocalProxy = targetsLocalClaudeProxy(env.ANTHROPIC_BASE_URL, port);
+  const ownTokens = explicitTarget ? [explicitTarget.admissionToken] : ownAdmissionTokens(config);
+  const targetsLocalProxy = explicitTarget
+    ? targetsClaudeRoutingTarget(env.ANTHROPIC_BASE_URL, explicitTarget)
+    : targetsLocalClaudeProxy(env.ANTHROPIC_BASE_URL, port!);
+  const isOwnAdmissionToken = (value: string): boolean =>
+    ownTokens.includes(value) || isProxyAdmissionSecret(value, config);
   const inheritedApiKey = env.ANTHROPIC_API_KEY;
-  if (typeof inheritedApiKey === "string" && isProxyAdmissionSecret(inheritedApiKey, config)) {
+  if (typeof inheritedApiKey === "string" && isOwnAdmissionToken(inheritedApiKey)) {
     delete env.ANTHROPIC_API_KEY;
   }
   const hasUserApiKey = Boolean(env.ANTHROPIC_API_KEY?.trim());
   const inheritedAuthToken = env.ANTHROPIC_AUTH_TOKEN;
   const inheritedTokenIsOurs = typeof inheritedAuthToken === "string"
-    && isProxyAdmissionSecret(inheritedAuthToken, config);
+    && isOwnAdmissionToken(inheritedAuthToken);
   // system-env may have injected the proxy's admission key into the parent. A
   // proof-bound external BASE_URL is still user-owned, so never let our inherited
   // key follow it. A user API key also wins on a local launch; remove only the token
@@ -199,7 +231,7 @@ export function buildClaudeEnv(
     && typeof finalAuthToken === "string"
     && (
       finalAuthToken.trim() === PROXY_MARKER
-      || isProxyAdmissionSecret(finalAuthToken, config)
+      || isOwnAdmissionToken(finalAuthToken)
     );
   if (resolved.origin === "auto-unknown") {
     console.error("⚠ Claude 인증을 확인하지 못했습니다 — 구독 방식으로 진행합니다. GUI에서 인증 모드를 직접 지정하면 이 판단을 덮어쓸 수 있습니다.");
@@ -282,6 +314,38 @@ export async function fetchClaudeContextWindows(config: OcxConfig, port: number,
   }
 }
 
+export function readConnectedClaudeContextWindows(path = DEFAULT_CATALOG_PATH): Record<string, number> {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { models?: unknown };
+    if (!Array.isArray(parsed.models)) return {};
+    const out: Record<string, number> = {};
+    const put = (key: string, value: number) => { if (out[key] === undefined) out[key] = value; };
+    for (const row of parsed.models) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+      const entry = row as Record<string, unknown>;
+      const slug = typeof entry.slug === "string" ? entry.slug : "";
+      const contextWindow = typeof entry.context_window === "number" && entry.context_window > 0
+        ? entry.context_window
+        : undefined;
+      if (!slug || contextWindow === undefined) continue;
+      put(slug, contextWindow);
+      const slash = slug.indexOf("/");
+      if (slash > 0 && slash < slug.length - 1) {
+        const provider = slug.slice(0, slash);
+        const id = slug.slice(slash + 1);
+        put(aliasForRoute(provider, id), contextWindow);
+        put(desktop3pAlias(provider, id), contextWindow);
+      } else {
+        put(aliasForNative(slug), contextWindow);
+        put(desktop3pAlias("native", slug), contextWindow);
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 async function ensureProxyForClaude(): Promise<number | null> {
   const live = await findLiveProxy();
   if (live) return live.port;
@@ -340,21 +404,45 @@ export async function cmdClaude(args: string[]): Promise<number> {
     console.error("Claude inbound is disabled (config.claudeCode.enabled=false — flip the Claude ON toggle in the GUI or edit config).");
     return 1;
   }
-  const port = await ensureProxyForClaude();
-  if (!port) {
-    console.error("❌ Proxy did not become healthy after starting.");
+  const clientState = readClientConnectionState();
+  if (clientState.kind === "invalid" || clientState.kind === "mismatched") {
+    console.error(`Client state is ${clientState.kind}: ${clientState.reason}`);
     return 1;
   }
-  const contextWindows = await fetchClaudeContextWindows(config, port);
+  let route: number | ClaudeRoutingTarget;
+  let contextWindows: Record<string, number>;
+  if (clientState.kind === "connected") {
+    if (!clientState.value.selectedClients.includes("claude")) {
+      console.error("Claude is not selected for this remote hub connection.");
+      return 1;
+    }
+    const token = readServiceApiTokenState();
+    if (token.kind !== "present" || token.fingerprint !== clientState.value.tokenFingerprint) {
+      console.error(token.kind === "absent" ? "Connected service token is missing." : "Connected service token ownership changed.");
+      return 1;
+    }
+    route = { baseUrl: clientState.value.serverUrl, admissionToken: token.token };
+    contextWindows = readConnectedClaudeContextWindows();
+  } else {
+    const port = await ensureProxyForClaude();
+    if (!port) {
+      console.error("❌ Proxy did not become healthy after starting.");
+      return 1;
+    }
+    route = port;
+    contextWindows = await fetchClaudeContextWindows(config, port);
+  }
   const allowRootSkipPermissions = shouldAllowRootSkipPermissions(args);
-  const env = buildClaudeEnv(config, port, process.env, contextWindows, { allowRootSkipPermissions });
+  const env = buildClaudeEnv(config, route, process.env, contextWindows, { allowRootSkipPermissions });
   if (allowRootSkipPermissions) {
     console.error(rootSkipPermissionsNotice(env));
   }
   // Pre-write the CLI's gateway-model cache (devlog 030): without a token the CLI
   // never refreshes it, so the picker would keep showing yesterday's aliases.
   try {
-    const cachePath = await refreshGatewayModelCacheFromProxy(port, { admissionConfig: config });
+    const cachePath = typeof route === "number"
+      ? await refreshGatewayModelCacheFromProxy(route, { admissionConfig: config })
+      : await refreshGatewayModelCacheFromProxy(route, { admissionConfig: config });
     if (cachePath === null) {
       console.error("⚠ Gateway model cache could not be refreshed; the model picker may be stale.");
     }
@@ -363,14 +451,16 @@ export async function cmdClaude(args: string[]): Promise<number> {
     console.error(`⚠ Gateway model cache could not be refreshed: ${message}`);
   }
   // Sync roster agents (devlog 070): subagentModels + self -> ~/.claude/agents/ocx-*.md.
-  try {
-    const written = injectClaudeAgentDefs(config, contextWindows);
-    if (written === null) {
-      console.error("⚠ Claude agent definitions could not be synced; check ~/.claude/agents permissions.");
+  if (typeof route === "number") {
+    try {
+      const written = injectClaudeAgentDefs(config, contextWindows);
+      if (written === null) {
+        console.error("⚠ Claude agent definitions could not be synced; check ~/.claude/agents permissions.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`⚠ Claude agent definitions could not be synced: ${message}`);
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`⚠ Claude agent definitions could not be synced: ${message}`);
   }
   return await new Promise<number>(resolve => {
     const inv = commandInvocation("claude", args);

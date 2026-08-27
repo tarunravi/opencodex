@@ -1300,6 +1300,10 @@ async function handleStatus() {
   console.log(`   Runtime: ${status.json.paths.runtime}`);
   console.log(`   Runtime source: ${status.json.runtime.source}${status.json.runtime.overrideEnv ? ` (${status.json.runtime.overrideEnv})` : ""}`);
   console.log(`   Default provider: ${status.json.defaultProvider}`);
+  console.log(`   Remote hub: ${status.json.connection.state}${status.json.connection.serverUrl ? ` (${status.json.connection.serverUrl})` : ""}`);
+  if (status.json.connection.state === "invalid" || status.json.connection.state === "mismatched") {
+    console.log(`   ⚠️  ${status.json.connection.reason}`);
+  }
   console.log(`   Codex autostart: ${status.json.codexAutostart ? "enabled" : "disabled"}`);
   console.log(`   Restart safety: ${startupHealthSummary(status.json.startup)}`);
   console.log(`   ${formatStartupRoutingDetail(status.json.startup)}`);

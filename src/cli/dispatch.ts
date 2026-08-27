@@ -59,6 +59,16 @@ const commandRunners: Record<string, CommandRunner> = {
     return Number(process.exitCode ?? 0);
   },
   start: async deps => {
+    const { readClientConnectionState } = await import("../client/state");
+    const clientState = readClientConnectionState();
+    if (clientState.kind === "connected") {
+      console.error("Client mode does not start a local provider proxy in Remote Hub Phase 3; use 'ocx sync'.");
+      return 1;
+    }
+    if (clientState.kind === "invalid" || clientState.kind === "mismatched") {
+      console.error(`Client state is ${clientState.kind}: ${clientState.reason}`);
+      return 1;
+    }
     await deps.handleStart();
     return Number(process.exitCode ?? 0);
   },
@@ -245,6 +255,14 @@ const commandRunners: Record<string, CommandRunner> = {
     return 0;
   },
   ensure: async deps => {
+    const { readClientConnectionState } = await import("../client/state");
+    const clientState = readClientConnectionState();
+    if (clientState.kind !== "disconnected") {
+      console.error(clientState.kind === "connected"
+        ? "Client mode does not start a local provider proxy; use 'ocx sync'."
+        : `Client state is ${clientState.kind}: ${clientState.reason}`);
+      return 1;
+    }
     await deps.handleEnsure();
     return Number(process.exitCode ?? 0);
   },
@@ -317,6 +335,29 @@ const commandRunners: Record<string, CommandRunner> = {
     // Separate flag on purpose: --restart-codex promises app-server-only scope,
     // and quitting the desktop app ends live conversations.
     const restartDesktopApp = syncArgs.includes("--restart-desktop-app");
+    const { readClientConnectionState } = await import("../client/state");
+    const clientState = readClientConnectionState();
+    if (clientState.kind === "invalid" || clientState.kind === "mismatched") {
+      console.error(`Client state is ${clientState.kind}: ${clientState.reason}`);
+      return 1;
+    }
+    if (clientState.kind === "connected") {
+      try {
+        const { syncConnectedClient } = await import("../client/connect");
+        const result = await syncConnectedClient({ restartCodex });
+        console.log(result.stale
+          ? "Hub unavailable; retained and applied the last-known-good remote catalog (stale)."
+          : "Remote hub catalog synchronized.");
+        if (result.catalogWritten || result.cacheSynced) {
+          afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
+          if (restartDesktopApp) await handleDesktopAppRestart(console);
+        }
+        return 0;
+      } catch (error) {
+        console.error(`Connected sync failed without local fallback: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+      }
+    }
     const live = await deps.findLiveProxy();
     const synced = await syncModelsToCodex(
       live?.port,
@@ -371,6 +412,14 @@ const commandRunners: Record<string, CommandRunner> = {
   v2: async deps => {
     const { cmdV2 } = await import("./v2");
     return await cmdV2(deps.args.slice(1), {}, async () => (await deps.findLiveProxy())?.port);
+  },
+  connect: async deps => {
+    const { handleConnectCommand } = await import("./connect");
+    return await handleConnectCommand(deps.args.slice(1));
+  },
+  disconnect: async deps => {
+    const { handleDisconnectCommand } = await import("./connect");
+    return await handleDisconnectCommand(deps.args.slice(1));
   },
   "sync-cache": async deps => {
     const cacheArgs = deps.args.slice(1);
