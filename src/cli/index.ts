@@ -59,7 +59,6 @@ import { isProcessAlive, ProxyOwnershipRefusedError, stopProxy } from "../lib/pr
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
 import { assertNotAdminToken, diagnoseService, isServiceOwnershipError, proxyStillLiveAfterStop, serviceCommand, serviceEnvironmentOwnedHere, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalledDetailed, uninstallServiceIfInstalled, uninstallServiceDetailed } from "../service";
 import { formatStartupRoutingDetail, startupHealthSummary } from "../codex/autostart-health";
-import { drainAndShutdown, isRecyclingForExit, startServer } from "../server";
 import { injectSystemEnv, reconcileShellHook, revertSystemEnv, uninstallShellHook } from "../server/system-env";
 import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { startTokenGuardian } from "../oauth/token-guardian";
@@ -270,6 +269,16 @@ async function handleStart(options: { block?: boolean } = {}) {
     process.exit(1);
   }
 
+  const clientState = readClientConnectionState();
+  if (clientState.kind === "invalid" || clientState.kind === "mismatched") {
+    throw new Error(`client startup refused: ${clientState.reason}`);
+  }
+  if (clientState.kind === "connected") {
+    const { startClientRuntime } = await import("../client/runtime");
+    await startClientRuntime({ port: requestedPort, block: options.block });
+    return;
+  }
+
   // Interactive-only update prompt. Must run BEFORE we bind a port / write a
   // PID: choosing "Update now" installs globally and exits, so we never want a
   // live daemon holding resources while it overwrites its own binary.
@@ -279,6 +288,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   // between the probe and Bun.serve. Soft starts may re-pick; hard-pinned `--port` retries
   // the same port only (never hop — that was the remaining PR #152 gap).
   let port = await chooseListenPort(requestedPort);
+  const { drainAndShutdown, isRecyclingForExit, startServer } = await import("../server");
   // One private readiness gate for this startServer invocation, captured by the
   // listener's closure. handleStart owns it and transitions it after the
   // post-startup sync settles. A second startServer in the same process would

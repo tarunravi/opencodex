@@ -39,7 +39,7 @@ function tabMark(tab: IntegrationTab): string | null {
   return INTEGRATION_MARKS[tab] ?? null;
 }
 
-export default function Integrations({ apiBase }: { apiBase: string }) {
+export default function Integrations({ apiBase, machineApiBase = apiBase, connected = false }: { apiBase: string; machineApiBase?: string; connected?: boolean }) {
   const t = useT();
   const [tab, setTab] = useState<IntegrationTab>(readIntegrationTab);
   /*
@@ -51,7 +51,33 @@ export default function Integrations({ apiBase }: { apiBase: string }) {
     () => new Set([readIntegrationTab()]),
   );
   const tabRefs = useRef<Map<IntegrationTab, HTMLButtonElement> | null>(null);
+  const [machineClients, setMachineClients] = useState<string[]>([]);
+  const [machineSyncing, setMachineSyncing] = useState(false);
   if (tabRefs.current === null) tabRefs.current = new Map();
+
+  useEffect(() => {
+    if (!connected) { setMachineClients([]); return; }
+    const controller = new AbortController();
+    void fetch(`${machineApiBase}/api/machine/clients`, { signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then((value: { selectedClients?: unknown } | null) => {
+        if (!controller.signal.aborted && Array.isArray(value?.selectedClients)) {
+          setMachineClients(value.selectedClients.filter((item): item is string => typeof item === "string"));
+        }
+      }).catch(() => {});
+    return () => controller.abort();
+  }, [connected, machineApiBase]);
+
+  const syncMachine = async () => {
+    setMachineSyncing(true);
+    try {
+      await fetch(`${machineApiBase}/api/machine/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+    } finally { setMachineSyncing(false); }
+  };
 
   /*
    * Every tab change goes through here, whether it came from a click or from
@@ -104,6 +130,13 @@ export default function Integrations({ apiBase }: { apiBase: string }) {
         <h2>{t("nav.integrations")}</h2>
       </div>
       <p className="page-sub">{t("integrations.subtitle")}</p>
+      {connected && (
+        <section className="notice" aria-label={t("connection.clients.title")}>
+          <strong>{t("connection.clients.title")}</strong>
+          <span>{machineClients.length > 0 ? machineClients.join(", ") : t("connection.clients.none")}</span>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={machineSyncing} onClick={() => void syncMachine()}>{t(machineSyncing ? "connection.clients.syncing" : "connection.clients.sync")}</button>
+        </section>
+      )}
 
       <div className="page-tabs" role="tablist" aria-label={t("integrations.tabsLabel")}>
         {TABS.map(definition => (
