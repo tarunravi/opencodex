@@ -551,7 +551,7 @@ describe("recoverable connected key rotation", () => {
         console.log(JSON.stringify({
           result,
           state: readClientConnectionState(),
-          token: fs.readFileSync(path.join(process.env.OPENCODEX_HOME, "service-api-token"), "utf8").trim(),
+          tokenIsNew: fs.readFileSync(path.join(process.env.OPENCODEX_HOME, "service-api-token"), "utf8").trim() === newKey,
           backup: fs.existsSync(path.join(process.env.OPENCODEX_HOME, "service-api-token.prev")),
           commitCalls,
           credentialZeroed: credential.every(value => value === 0),
@@ -567,7 +567,7 @@ describe("recoverable connected key rotation", () => {
       expect(child.status).toBe(0);
       const result = JSON.parse(child.stdout.trim().split("\n").at(-1) ?? "{}") as Record<string, any>;
       expect(result.commitCalls).toBe(2);
-      expect(result.token).toBe(newKey);
+      expect(result.tokenIsNew).toBe(true);
       expect(result.backup).toBe(false);
       expect(result.state).toMatchObject({ kind: "connected", value: { apiKeyId: "client-key-1" } });
       expect(result.state.value.pendingOperation).toBeUndefined();
