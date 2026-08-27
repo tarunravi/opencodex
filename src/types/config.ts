@@ -219,6 +219,14 @@ export interface OcxApiKeyEntry {
   name: string;
   key: string;
   createdAt: string;
+  pendingRotation?: OcxPendingApiKeyRotation;
+}
+
+export interface OcxPendingApiKeyRotation {
+  id: string;
+  key: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 /**

@@ -65,6 +65,12 @@ import type { PersistedUsageAttempt } from "../../usage/log";
 import { AUTH_MATRIX, isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
 import { applySystemEnvToggle } from "../system-env";
 import { buildApiAccessEndpoints } from "./api-access";
+import {
+  abortApiKeyRotation,
+  commitApiKeyRotation,
+  removeExpiredApiKeyRotations,
+  startApiKeyRotation,
+} from "./api-key-rotation";
 
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
@@ -579,6 +585,10 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   // API Keys management
   // ---------------------------------------------------------------------------
   if (url.pathname === "/api/keys" && req.method === "GET") {
+    if (removeExpiredApiKeyRotations(config)) {
+      saveConfigPreservingClaudeCode(config);
+      reconcileLiveStateStores();
+    }
     const keys = config.apiKeys ?? [];
     const endpoints = buildApiAccessEndpoints(config, {
       requestUrl: req.url,
@@ -596,6 +606,11 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
         name: k.name,
         prefix: k.key.slice(0, 17) + "...",
         createdAt: k.createdAt,
+        ...(k.pendingRotation ? { pendingRotation: {
+          id: k.pendingRotation.id,
+          createdAt: k.pendingRotation.createdAt,
+          expiresAt: k.pendingRotation.expiresAt,
+        } } : {}),
         usage: rollup.get(k.id) ?? { requests7d: 0, totalRequests: 0 },
       })),
       // Dataset-level and singular: it describes the usage log, not any one key.
@@ -604,6 +619,50 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       authMatrix: AUTH_MATRIX,
       ...endpoints,
     }, 200, req, config);
+  }
+
+  if (url.pathname === "/api/keys/rotate" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    if (!body || Object.keys(body).length !== 1 || typeof body.id !== "string" || !body.id) {
+      return jsonResponse({ error: "invalid body" }, 400, req, config);
+    }
+    const result = startApiKeyRotation(config, body.id);
+    if ("error" in result) {
+      return jsonResponse({ error: result.error === "not-found" ? "key not found" : "rotation already pending" }, result.error === "not-found" ? 404 : 409, req, config);
+    }
+    saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
+    return jsonResponse(result, 201, req, config);
+  }
+
+  if (url.pathname === "/api/keys/rotate/commit" && req.method === "POST") {
+    const body = await readJsonBody(req);
+    if (!body || Object.keys(body).length !== 2 || typeof body.id !== "string" || !body.id
+      || typeof body.rotationId !== "string" || !body.rotationId) {
+      return jsonResponse({ error: "invalid body" }, 400, req, config);
+    }
+    const result = commitApiKeyRotation(config, body.id, body.rotationId);
+    if ("error" in result) {
+      if (result.error === "expired") saveConfigPreservingClaudeCode(config);
+      return jsonResponse({ error: result.error === "not-found" ? "key rotation not found" : `rotation ${result.error}` }, result.error === "not-found" ? 404 : 409, req, config);
+    }
+    saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
+    return jsonResponse({ ok: true }, 200, req, config);
+  }
+
+  if (url.pathname === "/api/keys/rotate" && req.method === "DELETE") {
+    const body = await readJsonBody(req);
+    if (!body || Object.keys(body).length !== 2 || typeof body.id !== "string" || !body.id
+      || typeof body.rotationId !== "string" || !body.rotationId) {
+      return jsonResponse({ error: "invalid body" }, 400, req, config);
+    }
+    if (!abortApiKeyRotation(config, body.id, body.rotationId)) {
+      return jsonResponse({ error: "key rotation not found or mismatched" }, 409, req, config);
+    }
+    saveConfigPreservingClaudeCode(config);
+    reconcileLiveStateStores();
+    return jsonResponse({ ok: true }, 200, req, config);
   }
 
   if (url.pathname === "/api/keys" && req.method === "POST") {

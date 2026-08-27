@@ -374,6 +374,10 @@ export function resolveDataPlaneAdmissionSecret(
   if (secretEquals(actual, configuredApiAuthToken(config))) return { kind: "environment", source };
   for (const k of config.apiKeys ?? []) {
     if (secretEquals(actual, k.key)) return { kind: "configured", keyId: k.id, source };
+    const pending = k.pendingRotation;
+    if (pending && Date.parse(pending.expiresAt) > Date.now() && secretEquals(actual, pending.key)) {
+      return { kind: "configured", keyId: k.id, source };
+    }
   }
   return null;
 }
