@@ -31,3 +31,34 @@ Open contradiction (to resolve this round): shared-token-allowed (Q3 answer) vs
 per-machine usage view (new requirement) — attribution is keyed on apiKeyId, so a
 shared token collapses all machines into one bucket.
 
+## Round 3 answers (2026-08-28)
+
+- **Q-A = a (auto-issue per-client key at connect).** Storage question resolved in
+  code: the key is NEVER written to config.toml (env_key contract); it lands in the
+  existing owner-only token file (serviceApiTokenFilePath, src/lib/service-secrets.ts:5,
+  0600 + ACL hardening) which the shim already reads into OPENCODEX_API_AUTH_TOKEN when
+  the env is empty (src/codex/shim.ts:699-701 unix, :1000-1001 batch, :1043 ps).
+  disconnect deletes the file. The shared-token-vs-attribution contradiction is CLOSED:
+  per-client keys are the connect default, so per-machine usage attribution works.
+- **Q-C = a.** Protocol v1 negotiated via /readyz; same-major interop with
+  feature-detection; guaranteed pair = dev hub ↔ latest release client; older peers get
+  an explicit "hub protocol too new/old, upgrade ocx" error. Phase 1 hard requirement.
+- **Q-B: OPEN ASSUMPTION (low)** — usage page default while connected = "this machine"
+  slice with a toggle to hub-wide; not answered explicitly, adopting the recommended
+  default; reversible in Phase 4 GUI work.
+
+## Final contradiction rescan (round 3)
+
+- Shared-token vs attribution: RESOLVED (per-client default; shared token remains a
+  degraded documented mode where usage collapses into one bucket).
+- Pairing-grant issuance vs POST /api/keys authority: connect needs admin-class
+  authority ONCE — satisfied by pairing code (rung 3/4) or admin token; neither is
+  persisted on the client. No contradiction.
+- Dogfood release-compat vs stacked delivery: protocol version lives in Phase 1 (stack
+  base), so every later phase rides it. No ordering conflict.
+- Remaining OPEN ASSUMPTIONS: Q-B default; session TTL exact value (12h sliding,
+  tunable); relay streaming backpressure deferred to Phase 6.
+
+Interview readiness: Goal/Constraint/Success/Ontology all covered by asked-and-answered
+rounds 1-3. Ready for I -> P.
+
