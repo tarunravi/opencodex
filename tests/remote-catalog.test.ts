@@ -76,10 +76,18 @@ describe("remote catalog adversarial consumer", () => {
     expect(refreshed.kind).toBe("fresh");
   });
 
-  test("a second 304 without LKG is a protocol error and non-JSON content is refused", async () => {
+  test("any 304 is a protocol error and non-JSON content is refused", async () => {
+    // The client sends no conditional request — /v1/catalog emits no validator (Phase 1,
+    // D2) — so a 304 can only come from a hub that is misconfigured or being impersonated.
+    // Earlier revisions of this phase distinguished "304 with no last-known-good" from
+    // "304 whose ETag disagrees with the one we sent"; neither situation is reachable now,
+    // and the single refusal below is strictly wider than both.
     await expect(downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       fetchImpl: async () => new Response(null, { status: 304 }),
-    })).rejects.toMatchObject({ code: "catalog_304_without_lkg" });
+    })).rejects.toMatchObject({ code: "catalog_unexpected_304" });
+    await expect(downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
+      fetchImpl: async () => new Response(null, { status: 304, headers: { ETag: '"other"' } }),
+    })).rejects.toMatchObject({ code: "catalog_unexpected_304" });
     await expect(downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       fetchImpl: async () => new Response('{"models":[]}', { headers: { "Content-Type": "text/html" } }),
     })).rejects.toMatchObject({ code: "catalog_content_type_invalid" });
