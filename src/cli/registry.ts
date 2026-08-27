@@ -103,6 +103,8 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
       "Status: ocx connect status [--json]",
       "Rotate or recover: ocx connect rotate (--pairing-code-stdin | --admin-token-stdin) [--json]",
       "Revoke while connected: ocx connect revoke --admin-token-stdin [--json]",
+      "Machine resources: /api/machine/status, /api/machine/shim, /api/machine/clients, /api/machine/sync, /api/machine/disconnect, and the fixed /api/machine/hub-relay namespace.",
+      "Remote browser self-logout uses /api/session/logout from the GUI; it is distinct from client disconnect and key revocation.",
       "Credentials are accepted only through stdin; argv and environment credential forms are not supported.",
     ],
   },
@@ -273,7 +275,10 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     name: "access",
     usage: "ocx access <key|endpoints|models|test> ...",
     summary: "Manage OpenCodex admission API keys and inspect external endpoints.",
-    details: ["Key rotation start returns the replacement secret once; commit or abort it with the returned rotation id."],
+    details: [
+      "Key rotation start uses POST /api/keys/rotate and returns the replacement secret once.",
+      "Commit uses POST /api/keys/rotate/commit; abort uses DELETE /api/keys/rotate with the returned rotation id.",
+    ],
   },
   { name: "api-key", usage: "ocx api-key <list|create|rotate|remove> ...", summary: "Alias of ocx access key." },
   {

@@ -160,6 +160,56 @@ function headersWithinLimit(headers: Headers): boolean {
   return true;
 }
 
+function boundedRelayResponseStream(
+  body: ReadableStream<Uint8Array>,
+  limit: number,
+  signal: AbortSignal,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let bytes = 0;
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    signal.removeEventListener("abort", onAbort);
+    try { reader.releaseLock(); } catch { /* a pending read may still own it */ }
+  };
+  const onAbort = () => {
+    if (finished) return;
+    try { void reader.cancel(signal.reason).catch(() => undefined).finally(finish); }
+    catch { finish(); }
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          finish();
+          controller.close();
+          return;
+        }
+        bytes += next.value.byteLength;
+        if (bytes > limit) {
+          try { await reader.cancel(new RangeError("hub relay response body too large")); } catch { /* best effort */ }
+          finish();
+          controller.error(new RangeError("hub relay response body too large"));
+          return;
+        }
+        controller.enqueue(next.value);
+      } catch (error) {
+        finish();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason); } catch { /* best effort */ }
+      finish();
+    },
+  });
+}
+
 export async function relayHubManagementRequest(
   req: Request,
   suffix: string,
@@ -227,16 +277,9 @@ export async function relayHubManagementRequest(
     try { await upstream.body?.cancel(); } catch { /* best effort */ }
     return relayError(502, "hub relay response body too large");
   }
-  let streamed = 0;
-  const responseBody = method === "HEAD" || !upstream.body ? null : upstream.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      streamed += chunk.byteLength;
-      if (streamed > HUB_RELAY_RESPONSE_BODY_MAX_BYTES) {
-        throw new RangeError("hub relay response body too large");
-      }
-      controller.enqueue(chunk);
-    },
-  }));
+  const responseBody = method === "HEAD" || !upstream.body
+    ? null
+    : boundedRelayResponseStream(upstream.body, HUB_RELAY_RESPONSE_BODY_MAX_BYTES, signal);
   return new Response(responseBody, {
     status: upstream.status,
     statusText: upstream.statusText,
