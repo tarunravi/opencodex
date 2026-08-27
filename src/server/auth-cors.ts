@@ -403,6 +403,7 @@ export const AUTH_MATRIX: readonly ApiAuthMatrixRow[] = [
   // passthrough, so the two bearer domains still never mix. `x-api-key` is still rejected.
   { endpoint: "/v1/responses", bearer: "accepted", dedicated: "accepted", xApiKey: "rejected" },
   { endpoint: "/v1/chat/completions", bearer: "accepted", dedicated: "accepted", xApiKey: "rejected" },
+  { endpoint: "/v1/catalog", bearer: "accepted", dedicated: "accepted", xApiKey: "rejected" },
   { endpoint: "/v1/messages", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
   { endpoint: "/v1/models", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
   // #809: least-privilege catalog read for remote Codex clients. Same admission set as
