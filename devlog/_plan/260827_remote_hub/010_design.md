@@ -35,7 +35,8 @@ never promoted to gui-session).
 ```text
                               HUB (any machine)
                 ┌───────────────────────────────────────┐
-Codex/Claude ──▶│ /v1/*  (data token, x-opencodex-api-key)│
+Codex/Claude ──▶│ /v1/* (data token: Bearer via env_key,   │
+                │        or x-opencodex-api-key — #1686)   │
                 │ providers · OAuth · routing · catalog  │
                 │ /api/* (shared management plane)       │
                 │ optional loopback mgmt ingress :10101  │◀─ tailscale serve (HTTPS)
@@ -105,20 +106,30 @@ Issuance ladder (config-selected, strictest first):
    GUI + /api only, allowlist style like loopbackRouteAllowed) fronted by
    `tailscale serve`; trust Tailscale-User-* headers ONLY on that ingress (Tailscale
    strips inbound spoofs and requires a loopback backend — official docs). Browser gets
-   real HTTPS (ts.net cert), so secure-context features work.
+   real HTTPS (ts.net cert), so secure-context features work. Identity is necessary
+   but NOT sufficient: the header proves who, an operator-configured
+   `remoteGui.allowedTailscaleUsers` allowlist decides whether that who may mint a
+   session. On a shared tailnet, an empty allowlist means nobody mints remotely.
 3. pairing — `ocx gui pair` on the hub prints a single-use, short-TTL, origin-bound
    grant that can only mint a session. For generic HTTPS terminators.
-4. trusted-tailnet (documented opt-in: remoteGui.allowInsecureHttp + trustTailnet) —
-   exact configured origins on a plain-HTTP tailnet may bootstrap sessions. This is the
-   "don't over-harden" valve the user asked for: private tailnet, sole operator →
-   usable GUI with one config line, warned visibly, never default.
+4. insecure-http pairing (documented opt-in: `remoteGui.allowInsecureHttp`) — the SAME
+   single-use pairing grant as rung 3, allowed to travel over a plain-HTTP tailnet
+   origin. This is the "don't over-harden" valve the user asked for: private tailnet,
+   sole operator → run `ocx gui pair` once on the hub, paste the code, GUI works.
+   Audit note (blocker 1, folded): the earlier "trusted-tailnet" variant that minted
+   sessions from Host/Origin alone is DROPPED — headers are forgeable by anything with
+   TCP reach, so it would have granted consent routes with zero credential, strictly
+   weaker than the admin token. Issuance always consumes a real credential; only the
+   transport hardening is relaxable, and the relaxation is loudly warned.
 
 Supporting changes: operator-configured `hub.managementPublicOrigin` (never derive the
 public origin from forwarding headers — fixes today's TLS-terminator mismatch);
 management CORS must allow x-opencodex-api-key / x-opencodex-gui-origin /
 x-opencodex-csrf-token for allowlisted origins with exact-origin ACAO (currently
-managementCorsHeaders never widens the header list, so a cross-origin GUI cannot even
-preflight — verified src/server/auth-cors.ts:199-205).
+managementCorsHeaders calls corsHeaders() without the request, so the echo path never
+engages — verified src/server/auth-cors.ts:199-206. x-opencodex-api-key is already in
+STATIC_ALLOWED_REQUEST_HEADERS; the two headers genuinely missing from preflight are
+x-opencodex-gui-origin and x-opencodex-csrf-token, read at management-auth.ts:469/475).
 
 Secure-context reality (research doc): plain-HTTP remote origins lose crypto.subtle
 (used in gui/src/log-conversation-id.ts:26) and async clipboard. Two-plane helps here:
@@ -196,6 +207,28 @@ disconnect-while-hub-down → journal-based offline restore · plain-HTTP → re
 
 ## 8. Roadmap → 020_roadmap.md (6 dependency-ordered phases, one PABCD cycle each)
 
+### Phase-2 consumer chain (audit blocker 3, folded)
+
+GuiSessionRecord.origin is not private state. The serverOrigin/browserOrigin split must
+enumerate and update, in doc 040 before Phase 2's P:
+- src/server/index.ts:1609-1614 serveSessionBootstrap + the opencodex-session-origin
+  meta-tag contract in gui-static serving;
+- gui/src/api.ts:94-96 and 154-156 (memorySessionOrigin validation,
+  SESSION_REBOOTSTRAP_PATH reader);
+- tests/native-profile-route-security.test.ts:136;
+- tests/server-management-auth.test.ts:897 ("non-loopback binding never issues a GUI
+  session from a forged loopback Host") must stay green: every new issuance mode is
+  strictly config-opt-in, defaults byte-identical to today.
+
+### /v1/catalog admission contract (audit blocker 4, folded)
+
+/v1/catalog uses the data-plane admission matrix as-is: x-opencodex-api-key OR a
+Bearer that is one of our admission secrets (AUTH_MATRIX, auth-cors.ts:397-406 — the
+#1686 substitution rule; the injector's env_key emits Bearer, inject.ts:231-237).
+No Direct-passthrough route exists on this path, so no reservation conflict; the only
+integration concern is route ordering ahead of the unknown-/v1 JSON-404 guard
+(index.ts:1604).
+
 ## 9. Open questions for the maintainer
 
 1. First release: require tailscale-identity/pairing for remote sessions, trustTailnet
@@ -213,4 +246,3 @@ disconnect-while-hub-down → journal-based offline restore · plain-HTTP → re
 Remote session issuance without weakening the consent principal; browser/server origin
 split across direct+relay transports; injector generalization without regressing
 journal/restore ownership.
-
