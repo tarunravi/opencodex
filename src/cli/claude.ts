@@ -333,10 +333,12 @@ export function readConnectedClaudeContextWindows(path = DEFAULT_CATALOG_PATH): 
       if (slash > 0 && slash < slug.length - 1) {
         const provider = slug.slice(0, slash);
         const id = slug.slice(slash + 1);
-        put(aliasForRoute(provider, id), contextWindow);
+        const routeAlias = aliasForRoute(provider, id);
+        if (routeAlias) put(routeAlias, contextWindow);
         put(desktop3pAlias(provider, id), contextWindow);
       } else {
-        put(aliasForNative(slug), contextWindow);
+        const nativeAlias = aliasForNative(slug);
+        if (nativeAlias) put(nativeAlias, contextWindow);
         put(desktop3pAlias("native", slug), contextWindow);
       }
     }

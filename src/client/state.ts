@@ -69,7 +69,7 @@ export function commitClientConnection(
     return { changed: !unchanged, value: undefined };
   });
   if (outcome.status === "committed" || outcome.status === "unchanged") return outcome.status;
-  throw new Error(`client state commit unavailable: ${outcome.reason}`);
+  throw new Error(`client state commit unavailable: ${"reason" in outcome ? outcome.reason : "unknown"}`);
 }
 
 export function clearClientConnection(
