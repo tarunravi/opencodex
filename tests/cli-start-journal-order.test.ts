@@ -152,6 +152,45 @@ afterEach(async () => {
 });
 
 describe("start and ensure journal ownership (#1230)", () => {
+  test("startup preserves only a client journal matching the final committed api key id", async () => {
+    for (const matches of [true, false]) {
+      const fx = fixture();
+      const original = '# original client baseline\nmodel_provider = "openai"\n';
+      const injected = '# connected remote routing\nmodel_provider = "opencodex"\n';
+      writeFileSync(fx.configPath, injected);
+      writeFileSync(join(fx.ocxHome, "config.json"), JSON.stringify({
+        port: 0,
+        providers: {},
+        defaultProvider: "openai",
+        runtimeRole: "client",
+        client: {
+          serverUrl: "https://hub.example.test",
+          managementUrl: "https://hub.example.test",
+          managementTransport: "direct",
+          selectedClients: ["codex"],
+          tokenEnv: "OPENCODEX_API_AUTH_TOKEN",
+          apiKeyId: matches ? "client-key-1" : "different-key",
+          tokenFingerprint: "a".repeat(64),
+          protocolVersion: 1,
+          connectedAt: "2026-08-28T00:00:00.000Z",
+        },
+      }));
+      writeFileSync(fx.journalPath, JSON.stringify({
+        version: 1,
+        originalConfig: Buffer.from(original).toString("base64"),
+        originalProfile: null,
+        owner: { kind: "client", apiKeyId: "client-key-1" },
+        pid: 999_999,
+        timestamp: new Date().toISOString(),
+      }));
+
+      const result = await runCli(fx, ["status", "--json"]);
+      expect(result.exitCode).toBe(0);
+      expect(readFileSync(fx.configPath, "utf8")).toBe(matches ? injected : original);
+      expect(existsSync(fx.journalPath)).toBe(matches);
+    }
+  }, 30_000);
+
   test("a healthy proxy owner preserves the journal for both start and ensure", async () => {
     const fx = fixture();
     const owner = await startOwner(fx);
