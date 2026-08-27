@@ -9,6 +9,7 @@ import {
   runCodexHistoryJob,
 } from "../codex/history-job";
 import { reconcileJournal } from "../codex/journal";
+import { readClientConnectionState } from "../client/state";
 import {
   codexAutoStartEnabled,
   getConfigDir,
@@ -224,7 +225,12 @@ async function findProxyOwnerBeforeJournalRecovery(
   // The probe established that the snapshotted owner is stale. Compare before
   // deleting so a concurrent start that rewrote the PID file keeps its state.
   removePidIfValueIs(pidSnapshot);
-  if (!currentExternalCodexModelProvider()) reconcileJournal();
+  if (!currentExternalCodexModelProvider()) {
+    const clientState = readClientConnectionState();
+    reconcileJournal(clientState.kind === "connected"
+      ? { activeClientApiKeyId: clientState.value.apiKeyId }
+      : undefined);
+  }
   return { live: null, pidSnapshot };
 }
 

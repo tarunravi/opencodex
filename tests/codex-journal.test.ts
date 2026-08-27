@@ -126,6 +126,39 @@ describe("codex-journal", () => {
     expect(existsSync(journalPath)).toBe(true);
   });
 
+  test("client-owned journal survives only the matching committed api key id", () => {
+    const journalPath = join(testDir, "opencodex-journal.json");
+    const original = "# original client baseline\n";
+    const injected = "# connected routing\n";
+    writeFileSync(join(testDir, "config.toml"), injected, "utf8");
+    writeFileSync(journalPath, JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from(original).toString("base64"),
+      originalProfile: null,
+      owner: { kind: "client", apiKeyId: "client-key-1" },
+      pid: 999999,
+      timestamp: new Date().toISOString(),
+    }), "utf8");
+
+    const preserved = runScript(testDir, `
+      const { reconcileJournal } = require("./src/codex/journal");
+      console.log(JSON.stringify({ restored: reconcileJournal({ activeClientApiKeyId: "client-key-1" }) }));
+    `);
+    expect(preserved.status).toBe(0);
+    expect(JSON.parse(preserved.stdout).restored).toBe(false);
+    expect(readFileSync(join(testDir, "config.toml"), "utf8")).toBe(injected);
+    expect(existsSync(journalPath)).toBe(true);
+
+    const restored = runScript(testDir, `
+      const { reconcileJournal } = require("./src/codex/journal");
+      console.log(JSON.stringify({ restored: reconcileJournal({ activeClientApiKeyId: "different-key" }) }));
+    `);
+    expect(restored.status).toBe(0);
+    expect(JSON.parse(restored.stdout).restored).toBe(true);
+    expect(readFileSync(join(testDir, "config.toml"), "utf8")).toBe(original);
+    expect(existsSync(journalPath)).toBe(false);
+  });
+
   test("removeJournal cleans up", () => {
     const journalPath = join(testDir, "opencodex-journal.json");
     writeFileSync(journalPath, "{}", "utf8");
