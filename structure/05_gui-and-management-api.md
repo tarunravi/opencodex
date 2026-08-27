@@ -61,11 +61,25 @@ management token creation, validation, or permission hardening fails, every `/ap
 must be checked explicitly because an `icacls` timeout is a soft failure in the shared secret helper.
 
 Local dashboard page entry requires a loopback binding, a valid parseable loopback `Host`, and an
-exact request origin. A non-loopback dashboard uses the management token flow instead. The server
-issues an in-memory session for five minutes, capped at 128 live sessions. The session is bound to the
-exact protocol, host, and port; state-changing requests additionally require the session CSRF token.
-The dashboard never attaches its management session to `/v1/*` requests, and pages containing a
-session bootstrap are served with `Cache-Control: no-store`.
+exact request origin. A hub may additionally enable `hub.managementIngress`, a second management
+surface bound exactly to `127.0.0.1` for a local Tailscale Serve or operator TLS frontend. That
+listener serves only packaged GUI/SPA routes, `GET`/`POST /opencodex-session`, and `/api/*`; all data,
+health, readiness, WebSocket, and unknown-static routes receive a JSON 404 before dispatch.
+
+Tailscale identity headers authorize session issuance only when the request arrived on that specific
+listener and the exact login appears in `remoteGui.allowedTailscaleUsers`. The public listener and
+the unauthenticated data-loopback listener always pass `trustedTailscaleIngress: false`, regardless
+of `Host`, `Origin`, `Forwarded`, `X-Forwarded-*`, or `Tailscale-User-*` values. A generic TLS proxy
+cannot establish that identity and uses the existing single-use, digest-only, origin-bound pairing
+exchange. Pairing accepts no admin/data credential substitute and consumes a grant only after the
+full origin predicate succeeds.
+
+The server issues a local in-memory session for five minutes or a remote session for twelve hours,
+with 128 live sessions maximum. Every session is bound to the exact server and browser origins;
+state-changing requests additionally require the session CSRF token. A raw admin token remains
+ordinary management authority only and cannot satisfy consent routes. The dashboard never attaches
+its management session to `/v1/*` requests, and pages containing a session bootstrap are served with
+`Cache-Control: no-store`.
 
 Proxy admission credentials must never reach an upstream provider. The forwarding guard rejects the
 `ocx_data_`, `ocx_admin_`, and `ocx_session_` prefixes, historical keys matching
