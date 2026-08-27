@@ -194,3 +194,7 @@ OpenAI backend 需要 ChatGPT 登入與啟用的 ChatGPT `forward` 供應商。C
 視覺僅對發送到其供應商 `noVisionModels` 中模型的圖片啟用。OpenAI 的登入／forward 需求與搜尋相同；明確選擇的 Anthropic 在無可用憑證時 fail closed。成功的 `data:` 描述使用以 backend、模型、細節、圖片位元組與正規化訊息 context 為 key 的有界快取。命中與同回合重複不消耗限制。遠端 `https:` 圖片與失敗或空的描述不被快取。
 
 Anthropic OAuth sidecar 重用 opencodex 既有的 Claude Code OAuth 指紋。請對預期帳號與工作負載進行浸泡測試。
+
+## Remote Hub 金鑰與預設值
+
+`runtimeRole` 預設為 `standalone`。Hub 使用 `hub.managementPublicOrigin`、僅限迴路的 `hub.managementIngress`（缺省為 `enabled:false`）與正確的 `remoteGui.allowedTailscaleUsers`（缺省為空）。用戶端金鑰保存在 `service-api-token` 而不是 `config.json`；輪替期間可能暫時存在 `service-api-token.prev`。用量不會鏡像。

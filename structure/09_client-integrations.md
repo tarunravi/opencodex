@@ -97,3 +97,7 @@ Behavior changes require real writer tests against a temporary home and state st
 cover accepted derived metadata, protected connection edits, protected authoritative context,
 catalog changes after a derived rewrite, and legacy-record fail-closed behavior. Synthetic
 fingerprint-only tests are supplementary; they cannot prove the status and writer paths agree.
+
+## Remote connection lifecycle
+
+Remote clients journal and restore native integrations locally while model traffic travels directly to the hub. Catalog writes occur only after protocol negotiation and full remote schema validation. The management relay is launcher-scoped and fixed to the connection's management origin. Claude/Codex launch behavior remains integration-scoped. Key rotation uses `pendingOperation` plus `.prev`; disconnect restores locally without hub-side revocation or usage mirroring.

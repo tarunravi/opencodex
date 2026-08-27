@@ -158,3 +158,7 @@ destination, and key boundary instead of being silently canonicalized onto the n
 OAuth presets resolve discovery against the same canonical registry transport as normal routing
 before any adapter-specific transport override, so a stale configured `baseUrl` cannot receive an
 OAuth bearer token.
+
+## Remote Hub hardening ownership
+
+`src/remote/protocol.ts` owns pure interval/feature negotiation. `src/client/hub-client.ts` owns bounded, schema-validated remote catalog consumption and key-id probes. `src/client/hub-relay.ts` is a fixed-authority management relay with URL, header, body, redirect, and stream bounds. The public data listener remains the direct client→hub path; the loopback management ingress never serves data-plane routes.
