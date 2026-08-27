@@ -105,7 +105,7 @@ parent exists. No generated `gui/dist` file is edited.
 | NEW | `gui/src/api-targets.ts` | Canonical `ApiTargets`, machine-status discovery, per-plane call-base selection, relay URL construction, and disconnected fallback. |
 | NEW | `gui/src/connect-pairing.ts` | Own the visible pairing-code form and activation flow: paste a one-time code, POST the exact `/opencodex-session` exchange through the selected direct/relay shared target, and install the returned session only in the shared target's in-memory auth slot. |
 | MODIFY | `gui/src/api.ts` | Replace `needsApiAuth`'s one same-origin slot with exact target classification and per-target in-memory session/CSRF state; attach both auth domains only on relay. |
-| MODIFY | `gui/src/App.tsx` | Discover targets before page fetches; supply both call bases instead of one page base; machine health remains live when hub is down; connected stop becomes disconnect/recycle. |
+| MODIFY | `gui/src/App.tsx` | Discover targets before page fetches; supply both call bases instead of one page base; machine health remains live when hub is down; connected stop becomes disconnect/recycle; import and MOUNT the `connect-pairing` form in the connected-without-hub-session state (banner slot above page content) so the pairing UI is reachable, not just defined. |
 | MODIFY | `gui/src/stop-proxy.ts` | Add mode-aware machine disconnect request while preserving existing standalone `/api/stop` behavior. |
 | MODIFY | `gui/src/pages/Startup.tsx` | Keep existing settings/startup-health/windows-tray/startup-action calls on the shared base; use the machine base only for new `/api/machine/*` status/shim sections. |
 | MODIFY | `gui/src/pages/Integrations.tsx` | Pass the shared base to all existing integration descendants, including ApiKeys and Grok; pass the machine base only to new local-client controls. |
@@ -458,6 +458,7 @@ appearing after disconnect.
 | `tests/core-lab-boundary.test.ts` | Protected roots import no client subsystem; `startServer` remains non-async and no new top-level-window await. |
 | `gui/tests/api-targets.test.ts` (NEW) | Standalone 404 fallback; valid direct/relay status; per-plane call bases; machine-status network failure not standalone; encoded relay paths. |
 | `gui/tests/api-auth-memory.test.ts` | Two simultaneous sessions; direct headers; relay dual headers; pasted pairing code exchanges through the selected shared target and stores only the returned shared session in memory; machine custom stripping contract; cross-target 401 races; server/browser-origin mismatch; unknown target receives nothing; no web storage. |
+| `gui/tests/connect-pairing.test.ts` (NEW) | RENDERED form test: connected-without-hub-session state mounts the pairing form from App; submitting a pasted code fires the exact POST exchange; success hides the form and populates the shared auth slot; failure renders the error state without clearing the input. |
 | `gui/tests/api-auth-deadline.test.ts` | One target watchdog does not block/clear the other; direct and relay bootstrap timeout states. |
 | `gui/tests/usage-layout.test.ts` | Connected default key query; hub-wide omission; disconnected local query; source-qualified cache keys; hub-down no local fetch; scope labels/a11y. |
 | `gui/tests/app-stop.test.ts` | Standalone `/api/stop`; connected `/api/machine/disconnect`; refusal re-enables action; accepted recycle tolerates connection drop. |
@@ -480,7 +481,7 @@ appearing after disconnect.
 | P4-A11 | Standalone full server opens the same GUI. | `/api/machine/status` 404 selects same-origin targets; all current pages, auth, stop, usage, and injector output remain unchanged. |
 | P4-A12 | Shared direct session 401s while machine session is renewed (and inverse). | Each target resolves/clears only its own in-memory state; no token crosses target and no prompt fan-out occurs. |
 | P4-A13 | GUI PR is prepared for review. | PR description uses the repository template and includes screenshots of connected this-machine Usage plus hub-offline machine shell (or a maintainer-approved `gui-screenshot-waived` exception). |
-| P4-A14 | Relay-connected GUI has no hub session; user pastes a fresh Phase-2 pairing code and submits the pairing form. | `gui/src/connect-pairing.ts` sends the exact POST exchange through `/api/machine/hub-relay/opencodex-session`, the relay forwards browser `Origin` verbatim, and the returned session/CSRF/origins are stored only in the shared target's in-memory slot. |
+| P4-A14 | Relay-connected GUI has no hub session; user pastes a fresh Phase-2 pairing code and submits the pairing form. | The form is MOUNTED from `gui/src/App.tsx` in that state (rendered test `gui/tests/connect-pairing.test.ts`), `gui/src/connect-pairing.ts` sends the exact POST exchange through `/api/machine/hub-relay/opencodex-session`, the relay forwards browser `Origin` verbatim, and the returned session/CSRF/origins are stored only in the shared target's in-memory slot. |
 
 ## 9. Verification — remote only on `lidge-ai`
 

@@ -86,7 +86,7 @@ a second owner.
 | `src/client/hub-client.ts` | MODIFY (Phase-3 owner) | Add bounded rotation/revoke management calls, authenticated catalog key-id probe, and redacted errors beside the existing ready/key/catalog calls. |
 | `src/client/state.ts` | MODIFY | Validate and persist `pendingOperation: {kind:"rotate",rotationId,newKeyIssuedAt,oldKeyBackupPath}` through the full backup/replace/probe/commit or recovery chain; never persist admin/pairing authority or old/new secret. |
 | `src/cli/connect.ts` | MODIFY (Phase-3 owner) | Parse `rotate` and connected-only operator `revoke`, enforce exact stdin flags, reject literal/env secret/id forms, and render redacted recovery status. |
-| `src/lib/service-secrets.ts` | MODIFY (Phase-3 owner) | Own `.prev` creation and restoration as `writeTokenBackup` / `restoreTokenBackup`, reusing the token file's owner-only, regular-file, fsync, and atomic-replace rules. |
+| `src/lib/service-secrets.ts` | MODIFY (Phase-3 owner) | Own `.prev` creation, restoration, and orphan handling as `writeTokenBackup` / `restoreTokenBackup` / `removeOrphanTokenBackup`, reusing the token file's owner-only, regular-file, fsync, and atomic-replace rules. |
 | `src/cli/access.ts` | MODIFY | Add management-side `ocx access key rotate <id>` start/commit/abort UX with one-time secret warning; no literal secret flags. |
 | `src/cli/registry.ts` | MODIFY | Document rotation command shapes and transient-authority requirement. |
 | `gui/src/pages/ApiKeys.tsx` | MODIFY | Load pending status, start/commit/abort rotation, and render the new secret exactly once. |
@@ -105,7 +105,7 @@ a second owner.
 | `tests/api-key-attribution.test.ts` | MODIFY | Traffic before/during/after rotation remains one `apiKeyId` bucket. |
 | `tests/server-management-auth.test.ts` | MODIFY | Explicit session self-logout, absence of key-bound grant/session invalidation, and admin-token consent refusal. |
 | `tests/client-connect.test.ts` | MODIFY (Phase-3 owner) | Rotation/revoke parser flags, issued `apiKeyId` state chain, connected-only revoke/disconnected refusal, `.prev` crash recovery, pending-operation lifecycle, doubly-accepted commit, uncertain commit, and operator-only key deletion. |
-| `tests/service-secrets.test.ts` | MODIFY (Phase-3 owner) | `writeTokenBackup` / `restoreTokenBackup` exact-path, owner-only mode/ACL, symlink/refusal, fsync/atomic replacement, and redacted failure cases. |
+| `tests/service-secrets.test.ts` | MODIFY (Phase-3 owner) | `writeTokenBackup` / `restoreTokenBackup` / `removeOrphanTokenBackup` exact-path, owner-only mode/ACL, symlink/refusal, fsync/atomic replacement, orphan crash-window cases (crash BEFORE marker persistence → orphan removed; crash AFTER → recovery gate runs), and redacted failure cases. |
 | `gui/tests/apikeys-actions.test.tsx` | MODIFY | Start/commit/abort wire actions and one-time secret handling. |
 | `gui/tests/apikeys-mutation-timeout.test.tsx` | MODIFY | Rotation controls recover after bounded network failure. |
 | `gui/tests/apikeys-workspace.test.tsx` | MODIFY | Accessible rendered states and confirmations. |
@@ -292,6 +292,15 @@ or replace the backup directly.
 2. Start rotation; receive pending secret once, then persist
    `pendingOperation: {kind:"rotate",rotationId,newKeyIssuedAt,oldKeyBackupPath}` before
    replacement.
+
+   Crash window between steps 1 and 2: a `.prev` file with NO persisted `pendingOperation`
+   is an orphan duplicate of the still-active secret. Startup/status therefore checks the
+   inverse gate too: `.prev` present + no rotate `pendingOperation` → the rotation never
+   started on the hub, the live token file is authoritative — call
+   `removeOrphanTokenBackup` (owner-only unlink with the same symlink/regular-file
+   refusals) and log one redacted line. Activation scenario: kill the CLI between backup
+   write and marker persistence; next `ocx connect status` removes the orphan and reports
+   clean state (covered in tests/service-secrets.test.ts and tests/client-connect.test.ts).
 3. Write pending secret to a same-directory owner-only temp, harden it with the same
    `serviceApiTokenFilePath()` rules, fsync, and atomically replace the token file.
 4. Probe authenticated `/v1/catalog` with the new key and verify the expected client key id via
