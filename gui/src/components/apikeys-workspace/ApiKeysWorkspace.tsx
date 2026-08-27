@@ -137,6 +137,9 @@ export default function ApiKeysWorkspace({
   const [rotationFailed, setRotationFailed] = useState(false);
 
   const selected = selectedId ? (keys.find(k => k.id === selectedId) ?? null) : null;
+  const selectedRotationId = selected
+    ? (rotationSecret?.id === selected.id ? rotationSecret.rotationId : selected.pendingRotation?.id)
+    : undefined;
   const mutationPending = deleting || renamePending || rotationPending;
 
   const runRotation = async (operation: "start" | "commit" | "abort") => {
@@ -144,9 +147,7 @@ export default function ApiKeysWorkspace({
     setRotationPending(true);
     setRotationFailed(false);
     try {
-      const rotationId = rotationSecret?.id === selected.id
-        ? rotationSecret.rotationId
-        : selected.pendingRotation?.id;
+      const rotationId = selectedRotationId;
       const ok = operation === "start"
         ? (await onRotationStart?.(selected.id)) ?? false
         : rotationId
@@ -357,10 +358,12 @@ export default function ApiKeysWorkspace({
                 </div>
                 <div className="awi-section" aria-live="polite">
                   <h3 className="awi-section-title">{t("api.rotation.title")}</h3>
-                  {selected.pendingRotation ? (
+                  {selectedRotationId ? (
                     <>
                       <p className="muted">{t("api.rotation.pending")}</p>
-                      <p className="muted">{t("api.rotation.expires")} {formatCreatedDate(selected.pendingRotation.expiresAt, localeTag)}</p>
+                      {selected.pendingRotation && (
+                        <p className="muted">{t("api.rotation.expires")} {formatCreatedDate(selected.pendingRotation.expiresAt, localeTag)}</p>
+                      )}
                       {rotationSecret?.id === selected.id && (
                         <div className="api-key-reveal" role="status">
                           <p>{t("api.rotation.secretOnce")}</p>
