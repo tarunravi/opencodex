@@ -4131,8 +4131,15 @@ describe("GET /v1/catalog remote data plane", () => {
       });
       expect(response.status).toBe(200);
       expect(response.headers.get("x-opencodex-key-id")).toBeNull();
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls.flat().join(" ")).not.toContain(unsafeId);
+      // Other subsystems (config repair, provider migration) may warn during startup;
+      // this contract is about the remote-catalog warning specifically: exactly one,
+      // and it never echoes the unsafe id.
+      const remoteCatalogWarns = warnSpy.mock.calls
+        .map(call => call.map(String).join(" "))
+        .filter(line => line.includes("[remote-catalog]"));
+      expect(remoteCatalogWarns).toHaveLength(1);
+      expect(remoteCatalogWarns[0]).not.toContain(unsafeId);
+      expect(warnSpy.mock.calls.flat().map(String).join(" ")).not.toContain(unsafeId);
     } finally {
       await server.stop(true);
       warnSpy.mockRestore();
