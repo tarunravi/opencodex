@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import {
   getConfigPath,
   deleteConfigTopLevelKey,
+  getDefaultConfig,
   mutatePersistedConfig,
   readConfigDiagnostics,
+  saveConfig,
 } from "../config";
 import type { OcxClientConnectionConfig } from "../types";
 
@@ -71,6 +73,18 @@ export function commitClientConnection(
     return { changed: !unchanged, value: undefined };
   });
   if (outcome.status === "committed" || outcome.status === "unchanged") return outcome.status;
+  if (outcome.status === "unavailable" && outcome.reason === "missing") {
+    // First ocx run on a fresh machine: ocx connect is the expected first command in
+    // client mode, so there is no config.json yet. mutatePersistedConfig correctly
+    // refuses to invent one (a lost config must fail closed), but a genuinely absent
+    // file is the bootstrap case, not corruption — seed defaults plus the client
+    // block atomically. Found on the first MacBook↔oracle dogfood connect.
+    const seeded = getDefaultConfig();
+    seeded.runtimeRole = "client";
+    seeded.client = structuredClone(state);
+    saveConfig(seeded);
+    return "committed";
+  }
   throw new Error(`client state commit unavailable: ${"reason" in outcome ? outcome.reason : "unknown"}`);
 }
 
