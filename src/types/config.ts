@@ -268,6 +268,28 @@ export interface OcxRemoteGuiConfig {
   allowInsecureHttp?: boolean;
 }
 
+export type OcxConnectedClientId = "codex" | "claude";
+
+export interface OcxClientConnectionConfig {
+  serverUrl: string;
+  managementUrl: string;
+  managementTransport: "direct" | "relay";
+  selectedClients: OcxConnectedClientId[];
+  tokenEnv: "OPENCODEX_API_AUTH_TOKEN";
+  apiKeyId: string;
+  tokenFingerprint: string;
+  protocolVersion: 1;
+  connectedAt: string;
+  catalogEtag?: string;
+  catalogSyncedAt?: string;
+  pendingOperation?: {
+    kind: "rotate";
+    rotationId: string;
+    newKeyIssuedAt: string;
+    oldKeyBackupPath: string;
+  };
+}
+
 export interface OcxConfig {
   port: number;
   /** Runtime topology role. Absence preserves the historical standalone behavior. */
@@ -276,6 +298,8 @@ export interface OcxConfig {
   hub?: OcxHubConfig;
   /** Opt-in remote dashboard issuance policy. Presence is inert outside the hub role. */
   remoteGui?: OcxRemoteGuiConfig;
+  /** Remote-hub client state. The admission secret is stored only in service-api-token. */
+  client?: OcxClientConnectionConfig;
   /** Opt in to one identical-turn retry when a Responses completion has no text or tool call. */
   emptyCompletionRetry?: boolean;
   /**

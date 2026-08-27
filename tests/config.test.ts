@@ -272,6 +272,87 @@ describe("opencodex config defaults", () => {
     }
   });
 
+  test("remote client state round-trips without accepting a secret field", () => {
+    const client = {
+      serverUrl: "https://hub.example.test",
+      managementUrl: "https://manage.example.test:443",
+      managementTransport: "direct" as const,
+      selectedClients: ["codex", "claude"] as const,
+      tokenEnv: "OPENCODEX_API_AUTH_TOKEN" as const,
+      apiKeyId: "issued-key-id",
+      tokenFingerprint: "a".repeat(64),
+      protocolVersion: 1 as const,
+      connectedAt: "2026-08-28T00:00:00.000Z",
+      catalogEtag: '"sha256-example"',
+      catalogSyncedAt: "2026-08-28T00:01:00.000Z",
+      pendingOperation: {
+        kind: "rotate" as const,
+        rotationId: "rotation-1",
+        newKeyIssuedAt: "2026-08-28T00:02:00.000Z",
+        oldKeyBackupPath: join(testDir, "service-api-token.prev"),
+      },
+    };
+    const result = validateConfigCandidate({
+      ...getDefaultConfig(),
+      runtimeRole: "client",
+      client,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      config: {
+        runtimeRole: "client",
+        client: {
+          serverUrl: "https://hub.example.test",
+          managementUrl: "https://manage.example.test",
+          apiKeyId: "issued-key-id",
+        },
+      },
+    });
+    if (!result.ok) return;
+    saveConfig(result.config);
+    expect(loadConfig().client).toEqual(result.config.client);
+    expect(readFileSync(getConfigPath(), "utf8")).not.toContain("ocx_data_");
+
+    expect(validateConfigCandidate({
+      ...getDefaultConfig(),
+      runtimeRole: "client",
+      client: { ...client, key: "ocx_data_forbidden" },
+    })).toMatchObject({ ok: false, error: expect.stringContaining("client") });
+  });
+
+  test("remote client state rejects half-present and malformed rotation recovery state", () => {
+    const validClient = {
+      serverUrl: "https://hub.example.test",
+      managementUrl: "https://hub.example.test",
+      managementTransport: "direct",
+      selectedClients: ["codex"],
+      tokenEnv: "OPENCODEX_API_AUTH_TOKEN",
+      apiKeyId: "issued-key-id",
+      tokenFingerprint: "b".repeat(64),
+      protocolVersion: 1,
+      connectedAt: "2026-08-28T00:00:00.000Z",
+    };
+    expect(validateConfigCandidate({ ...getDefaultConfig(), runtimeRole: "client" })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("requires a complete client connection"),
+    });
+    expect(validateConfigCandidate({ ...getDefaultConfig(), client: validClient })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("requires runtimeRole client"),
+    });
+    for (const pendingOperation of [
+      { kind: "rotate", newKeyIssuedAt: "2026-08-28T00:00:00.000Z", oldKeyBackupPath: join(testDir, "service-api-token.prev") },
+      { kind: "rotate", rotationId: "r", newKeyIssuedAt: "not-a-time", oldKeyBackupPath: join(testDir, "service-api-token.prev") },
+      { kind: "rotate", rotationId: "r", newKeyIssuedAt: "2026-08-28T00:00:00.000Z", oldKeyBackupPath: join(testDir, "foreign.prev") },
+    ]) {
+      expect(validateConfigCandidate({
+        ...getDefaultConfig(),
+        runtimeRole: "client",
+        client: { ...validClient, pendingOperation },
+      })).toMatchObject({ ok: false, error: expect.stringContaining("client.pendingOperation") });
+    }
+  });
+
   test("malformed classifier config is normalized at load, even with subagentEffort absent (#1697)", () => {
     // normalizePersistedClaudeCode used to be reached only through a subagentEffort short-circuit,
     // so a config whose ONLY defect was elsewhere in claudeCode was never normalized. These
