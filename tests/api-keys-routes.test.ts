@@ -55,7 +55,16 @@ async function keysRequest(
   method: string,
   body?: unknown,
 ): Promise<{ status: number; json: Record<string, unknown> }> {
-  const res = await fetch(new URL("/api/keys", server.url), {
+  return managementRequest(server, "/api/keys", method, body);
+}
+
+async function managementRequest(
+  server: { url: URL },
+  path: string,
+  method: string,
+  body?: unknown,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const res = await fetch(new URL(path, server.url), {
     method,
     headers: { "Content-Type": "application/json", "x-opencodex-api-key": ADMIN_TOKEN },
     ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
@@ -64,6 +73,59 @@ async function keysRequest(
   try { json = await res.json() as Record<string, unknown>; } catch { /* empty body */ }
   return { status: res.status, json };
 }
+
+describe("API key rotation", () => {
+  test("overlaps under one id, masks the pending secret, and commits atomically", async () => {
+    saveConfig(baseConfig());
+    const server = startServer(0);
+    try {
+      const created = await keysRequest(server, "POST", { name: "client" });
+      const oldKey = created.json.key as string;
+      const id = created.json.id as string;
+      const started = await managementRequest(server, "/api/keys/rotate", "POST", { id });
+      expect(started.status).toBe(201);
+      const newKey = started.json.key as string;
+      const rotationId = started.json.rotationId as string;
+      expect(newKey).toMatch(/^ocx_data_[0-9a-f]{40}$/);
+      expect(newKey).not.toBe(oldKey);
+      expect(isDataPlaneAdmissionSecret(oldKey, loadConfig())).toBe(true);
+      expect(isDataPlaneAdmissionSecret(newKey, loadConfig())).toBe(true);
+
+      const listed = await keysRequest(server, "GET");
+      expect(JSON.stringify(listed.json)).not.toContain(newKey);
+      expect((listed.json.keys as Array<Record<string, unknown>>)[0]?.pendingRotation).toMatchObject({ id: rotationId });
+      expect((await managementRequest(server, "/api/keys/rotate", "POST", { id })).status).toBe(409);
+
+      const committed = await managementRequest(server, "/api/keys/rotate/commit", "POST", { id, rotationId });
+      expect(committed.status).toBe(200);
+      expect(isDataPlaneAdmissionSecret(oldKey, loadConfig())).toBe(false);
+      expect(isDataPlaneAdmissionSecret(newKey, loadConfig())).toBe(true);
+      expect((loadConfig().apiKeys ?? [])[0]?.id).toBe(id);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("abort preserves the old key and malformed bodies cannot alter pending state", async () => {
+    saveConfig(baseConfig());
+    const server = startServer(0);
+    try {
+      const created = await keysRequest(server, "POST", { name: "client" });
+      const id = created.json.id as string;
+      const oldKey = created.json.key as string;
+      expect((await managementRequest(server, "/api/keys/rotate", "POST", { id, extra: true })).status).toBe(400);
+      const started = await managementRequest(server, "/api/keys/rotate", "POST", { id });
+      const newKey = started.json.key as string;
+      const rotationId = started.json.rotationId as string;
+      expect((await managementRequest(server, "/api/keys/rotate/commit", "POST", { id, rotationId, extra: true })).status).toBe(400);
+      expect((await managementRequest(server, "/api/keys/rotate", "DELETE", { id, rotationId })).status).toBe(200);
+      expect(isDataPlaneAdmissionSecret(oldKey, loadConfig())).toBe(true);
+      expect(isDataPlaneAdmissionSecret(newKey, loadConfig())).toBe(false);
+    } finally {
+      await server.stop(true);
+    }
+  });
+});
 
 beforeEach(() => {
   testHome = mkdtempSync(join(tmpdir(), "ocx-api-keys-routes-"));

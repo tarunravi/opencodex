@@ -1,7 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -157,7 +157,7 @@ describe("remote hub client boundary", () => {
 
     await expect(downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       maxBytes: 4,
-      fetchImpl: async () => new Response('{"models":[]}'),
+      fetchImpl: async () => new Response('{"models":[]}', { headers: { "Content-Type": "application/json" } }),
     })).rejects.toThrow("allowed size");
   });
 
@@ -476,5 +476,125 @@ describe("connected sync and disconnect conflicts", () => {
       expect(run.parsed.state.kind).toBe("disconnected");
       expect(run.parsed.journalExists).toBe(false);
     } finally { run.cleanup(); }
+  });
+});
+
+describe("recoverable connected key rotation", () => {
+  test("a dropped first commit is recovered from doubly-accepted current and .prev keys", () => {
+    const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-client-rotation-"));
+    const oldKey = `ocx_data_${"1".repeat(40)}`;
+    const newKey = `ocx_data_${"2".repeat(40)}`;
+    const oldFingerprint = createHash("sha256").update(oldKey).digest("hex");
+    writeFileSync(join(opencodexHome, "config.json"), JSON.stringify({
+      port: 10100,
+      providers: {},
+      defaultProvider: "openai",
+      runtimeRole: "client",
+      client: {
+        serverUrl: "https://hub.example.test",
+        managementUrl: "https://hub.example.test",
+        managementTransport: "direct",
+        selectedClients: ["claude"],
+        tokenEnv: "OPENCODEX_API_AUTH_TOKEN",
+        apiKeyId: "client-key-1",
+        tokenFingerprint: oldFingerprint,
+        protocolVersion: 1,
+        connectedAt: "2026-08-28T00:00:00.000Z",
+      },
+    }));
+    writeFileSync(join(opencodexHome, "service-api-token"), `${oldKey}\n`, { mode: 0o600 });
+    const script = `
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const { rotateConnectedClientKey } = require("./src/client/connect");
+      const { readClientConnectionState } = require("./src/client/state");
+      let commitCalls = 0;
+      let committed = false;
+      const oldKey = ${JSON.stringify(oldKey)};
+      const newKey = ${JSON.stringify(newKey)};
+      const fetchImpl = async (input, init = {}) => {
+        const url = String(input);
+        if (url.endsWith("/api/keys/rotate") && init.method === "POST") return Response.json({
+          id: "client-key-1", name: "client", key: newKey,
+          createdAt: "2026-08-28T00:00:01.000Z", rotationId: "rotation-1",
+          expiresAt: "2026-08-28T00:10:01.000Z",
+        }, { status: 201 });
+        if (url.endsWith("/api/keys/rotate/commit")) {
+          commitCalls += 1;
+          if (commitCalls === 1) throw new Error("dropped commit response");
+          committed = true;
+          return Response.json({ ok: true });
+        }
+        if (url.endsWith("/v1/catalog")) {
+          const token = new Headers(init.headers).get("x-opencodex-api-key");
+          const accepted = token === newKey || (!committed && token === oldKey);
+          return accepted
+            ? new Response('{"models":[]}', { headers: { "Content-Type": "application/json", "X-OpenCodex-Key-Id": "client-key-1" } })
+            : Response.json({ error: "unauthorized" }, { status: 401 });
+        }
+        throw new Error("unexpected request " + url);
+      };
+      (async () => {
+        const credential = new TextEncoder().encode("ocx_admin_rotation_test");
+        const result = await rotateConnectedClientKey({ credential: { kind: "admin", value: credential } }, { fetchImpl });
+        console.log(JSON.stringify({
+          result,
+          state: readClientConnectionState(),
+          token: fs.readFileSync(path.join(process.env.OPENCODEX_HOME, "service-api-token"), "utf8").trim(),
+          backup: fs.existsSync(path.join(process.env.OPENCODEX_HOME, "service-api-token.prev")),
+          commitCalls,
+          credentialZeroed: credential.every(value => value === 0),
+        }));
+      })();
+    `;
+    const child = spawnSync(process.execPath, ["--eval", script], {
+      cwd: repoRoot,
+      env: { ...process.env, OPENCODEX_HOME: opencodexHome },
+      encoding: "utf8",
+    });
+    try {
+      expect(child.status).toBe(0);
+      const result = JSON.parse(child.stdout.trim().split("\n").at(-1) ?? "{}") as Record<string, any>;
+      expect(result.commitCalls).toBe(2);
+      expect(result.token).toBe(newKey);
+      expect(result.backup).toBe(false);
+      expect(result.state).toMatchObject({ kind: "connected", value: { apiKeyId: "client-key-1" } });
+      expect(result.state.value.pendingOperation).toBeUndefined();
+      expect(result.credentialZeroed).toBe(true);
+    } finally {
+      rmSync(opencodexHome, { recursive: true, force: true });
+    }
+  });
+
+  test("status removes a .prev orphan only when no rotation marker exists", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-client-orphan-"));
+    const token = `ocx_data_${"3".repeat(40)}`;
+    const fingerprint = createHash("sha256").update(token).digest("hex");
+    writeFileSync(join(home, "config.json"), JSON.stringify({
+      port: 10100, providers: {}, defaultProvider: "openai", runtimeRole: "client",
+      client: {
+        serverUrl: "https://hub.example.test", managementUrl: "https://hub.example.test",
+        managementTransport: "direct", selectedClients: ["claude"], tokenEnv: "OPENCODEX_API_AUTH_TOKEN",
+        apiKeyId: "client-key-1", tokenFingerprint: fingerprint, protocolVersion: 1,
+        connectedAt: "2026-08-28T00:00:00.000Z",
+      },
+    }));
+    writeFileSync(join(home, "service-api-token"), `${token}\n`, { mode: 0o600 });
+    writeFileSync(join(home, "service-api-token.prev"), `${token}\n`, { mode: 0o600 });
+    const previous = process.env.OPENCODEX_HOME;
+    process.env.OPENCODEX_HOME = home;
+    try {
+      const errors: string[] = [];
+      const spy = spyOn(console, "error").mockImplementation(value => errors.push(String(value)));
+      try { expect(await handleConnectCommand(["status", "--json"])).toBe(0); }
+      finally { spy.mockRestore(); }
+      expect(existsSync(join(home, "service-api-token.prev"))).toBe(false);
+      expect(readFileSync(join(home, "service-api-token"), "utf8").trim()).toBe(token);
+      expect(errors.join(" ")).not.toContain(token);
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
