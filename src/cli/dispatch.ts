@@ -348,10 +348,7 @@ const commandRunners: Record<string, CommandRunner> = {
         console.log(result.stale
           ? "Hub unavailable; retained and applied the last-known-good remote catalog (stale)."
           : "Remote hub catalog synchronized.");
-        if (result.catalogWritten || result.cacheSynced) {
-          afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
-          if (restartDesktopApp) await handleDesktopAppRestart(console);
-        }
+        await handleConnectedSyncCatalogWrite(result, restartCodex, restartDesktopApp);
         return 0;
       } catch (error) {
         console.error(`Connected sync failed without local fallback: ${error instanceof Error ? error.message : String(error)}`);
@@ -910,4 +907,14 @@ async function handleDesktopAppRestart(log: Pick<Console, "log" | "error">): Pro
         log.log("Codex desktop app restarted; its model picker will re-read the catalog.");
       }
   }
+}
+
+async function handleConnectedSyncCatalogWrite(
+  result: { catalogWritten: boolean; cacheSynced: boolean },
+  restartCodex: boolean,
+  restartDesktopApp: boolean,
+): Promise<void> {
+  if (!result.catalogWritten && !result.cacheSynced) return;
+  afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
+  if (restartDesktopApp) await handleDesktopAppRestart(console);
 }
