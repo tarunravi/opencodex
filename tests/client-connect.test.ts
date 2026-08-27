@@ -172,6 +172,17 @@ describe("remote hub client boundary", () => {
       ])).toBe(2);
       expect(errors.join(" ")).not.toContain("super-secret-value");
       expect(errors.join(" ")).toContain("<redacted>");
+      errors.length = 0;
+      expect(await handleConnectCommand([
+        "rotate",
+        "--admin-token-stdin",
+        "--admin-token=rotation-secret-value",
+      ])).toBe(2);
+      expect(errors.join(" ")).not.toContain("rotation-secret-value");
+      expect(errors.join(" ")).toContain("<redacted>");
+      errors.length = 0;
+      expect(await handleConnectCommand(["revoke", "client-key-override", "--admin-token-stdin"])).toBe(2);
+      expect(errors.join(" ")).not.toContain("client-key-override");
     } finally {
       spy.mockRestore();
     }
