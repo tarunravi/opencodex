@@ -129,7 +129,15 @@ function mintSession(
     issuance,
   };
   state.sessions.set(token, session);
-  return { token, ...session };
+  return {
+    token,
+    serverOrigin: session.serverOrigin,
+    browserOrigin: session.browserOrigin,
+    csrfToken: session.csrfToken,
+    issuance: session.issuance,
+    get expiresAt() { return session.expiresAt; },
+    set expiresAt(value) { session.expiresAt = value; },
+  };
 }
 
 function tailscaleLoginAllowed(req: Request, config: OcxConfig): boolean {

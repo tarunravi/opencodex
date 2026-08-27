@@ -203,9 +203,15 @@ describe("native-main profile routes at the management admission boundary", () =
         "x-opencodex-gui-origin": "https://dashboard.example.test",
         "x-opencodex-csrf-token": session.csrfToken,
       };
+      const withoutHeader = (name: string): Record<string, string> => Object.fromEntries(
+        Object.entries(base).filter(([header]) => header !== name),
+      );
       expect((await request({ ...base, "x-opencodex-gui-origin": "https://evil.example.test" })).status).toBe(401);
       expect((await request({ ...base, Origin: "https://evil.example.test" })).status).toBe(401);
-      expect((await request({ ...base, Host: server.url.host })).status).toBe(401);
+      expect((await request(withoutHeader("Origin"))).status).toBe(401);
+      expect((await request(withoutHeader("x-opencodex-gui-origin"))).status).toBe(401);
+      expect((await request(withoutHeader("x-opencodex-csrf-token"))).status).toBe(401);
+      expect((await request({ ...base, Host: `127.0.0.1:${server.port}` })).status).toBe(401);
       expect((await request({ ...base, "x-opencodex-csrf-token": "" })).status).toBe(401);
       expect(calls).toEqual([]);
       expect((await request(base)).status).toBe(200);
