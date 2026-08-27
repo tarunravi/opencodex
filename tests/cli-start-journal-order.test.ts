@@ -184,8 +184,8 @@ describe("start and ensure journal ownership (#1230)", () => {
         timestamp: new Date().toISOString(),
       }));
 
-      const result = await runCli(fx, ["status", "--json"]);
-      expect(result.exitCode).toBe(0);
+      const result = await runCli(fx, ["start"]);
+      expect(result.exitCode).toBe(1);
       expect(readFileSync(fx.configPath, "utf8")).toBe(matches ? injected : original);
       expect(existsSync(fx.journalPath)).toBe(matches);
     }

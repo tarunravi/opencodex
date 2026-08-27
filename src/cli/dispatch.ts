@@ -23,6 +23,7 @@ import { stripGrokConfig } from "../grok/inject";
 import { afterCatalogWriteHandleAppServers } from "../codex/app-server-processes";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { isJsonOption, takeFlag } from "./runtime-api";
+import type { ClientConnectionState } from "../client/state";
 
 export interface CliDispatchDeps {
   args: string[];
@@ -61,6 +62,7 @@ const commandRunners: Record<string, CommandRunner> = {
   start: async deps => {
     const { readClientConnectionState } = await import("../client/state");
     const clientState = readClientConnectionState();
+    await reconcileClientJournalBeforeLifecycle(clientState);
     if (clientState.kind === "connected") {
       console.error("Client mode does not start a local provider proxy in Remote Hub Phase 3; use 'ocx sync'.");
       return 1;
@@ -257,6 +259,7 @@ const commandRunners: Record<string, CommandRunner> = {
   ensure: async deps => {
     const { readClientConnectionState } = await import("../client/state");
     const clientState = readClientConnectionState();
+    await reconcileClientJournalBeforeLifecycle(clientState);
     if (clientState.kind !== "disconnected") {
       console.error(clientState.kind === "connected"
         ? "Client mode does not start a local provider proxy; use 'ocx sync'."
@@ -917,4 +920,14 @@ async function handleConnectedSyncCatalogWrite(
   if (!result.catalogWritten && !result.cacheSynced) return;
   afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
   if (restartDesktopApp) await handleDesktopAppRestart(console);
+}
+
+async function reconcileClientJournalBeforeLifecycle(
+  state: ClientConnectionState,
+): Promise<void> {
+  if (state.kind === "disconnected") return;
+  const { reconcileJournal } = await import("../codex/journal");
+  reconcileJournal(state.kind === "connected"
+    ? { activeClientApiKeyId: state.value.apiKeyId }
+    : undefined);
 }
