@@ -62,3 +62,14 @@ shared token collapses all machines into one bucket.
 Interview readiness: Goal/Constraint/Success/Ontology all covered by asked-and-answered
 rounds 1-3. Ready for I -> P.
 
+## Round 4 answer (2026-08-28) — usage rendering settled
+
+Maintainer's rule, adopted verbatim as the design: **connected → render the hub's
+usage (my apiKeyId slice); not connected → render the local usage.jsonl.** No local
+mirroring of the connect-period usage (option b rejected as unnecessary complexity);
+the connect-period history lives on the hub and is visible there. Grounding:
+usage persists where the serving proxy runs (appendUsageEntry →
+~/.opencodex/usage.jsonl, src/usage/log.ts:166-167, 521-523), so this rule is just
+"render the store that actually recorded the traffic" — zero data duplication,
+no schema change. Q-B default (this-machine slice with hub-wide toggle) stands as
+the connected view's default.
