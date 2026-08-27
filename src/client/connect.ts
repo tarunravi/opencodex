@@ -638,4 +638,3 @@ export async function revokeConnectedClientKey(
     credential.value.fill(0);
   }
 }
-  probeClientKeyId,

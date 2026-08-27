@@ -332,7 +332,7 @@ export default function ApiKeys({ apiBase, active = true }: { apiBase: string; a
         signal: bounded.signal,
       });
       const data = await readJsonOrThrow<StartRotationResponse>(res, t("api.rotation.startFailed"));
-      if (typeof data.key !== "string" || !data.key || typeof data.rotationId !== "string" || !data.rotationId) return false;
+      if (!data || typeof data.key !== "string" || !data.key || typeof data.rotationId !== "string" || !data.rotationId) return false;
       setRotationSecret({ id, key: data.key, rotationId: data.rotationId });
       refreshKeys();
       return true;
