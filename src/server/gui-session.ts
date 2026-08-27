@@ -30,7 +30,20 @@ export interface GuiPairingGrantRecord {
   serverOrigin: string;
   browserOrigin: string;
   expiresAt: number;
+  failedAttempts?: number;
 }
+
+export interface PairingAttemptContext {
+  ingress: "public" | "hub-management";
+  peerAddress: string | null;
+  tailscaleUser: string | null;
+  browserOrigin: string;
+}
+
+export type PairingAttemptResult =
+  | { allowed: true }
+  | { allowed: false; retryAfterSeconds: number; reason: "grant" | "source" | "capacity" };
+type PairingAttemptRefusal = Extract<PairingAttemptResult, { allowed: false }>;
 
 export interface GuiSessionState {
   sessions: Map<string, GuiSessionRecord>;
@@ -50,11 +63,16 @@ export const LOOPBACK_GUI_SESSION_TTL_MS = 5 * 60_000;
 export const REMOTE_GUI_SESSION_TTL_MS = 12 * 60 * 60_000;
 export const GUI_PAIRING_GRANT_TTL_MS = 5 * 60_000;
 export const GUI_SESSION_LIMIT = 128;
-export const GUI_PAIRING_GRANT_LIMIT = 64;
+export const GUI_PAIRING_GRANT_LIMIT = 128;
 export const GUI_PAIRING_GRANT_RATE_LIMIT = 8;
 export const GUI_PAIRING_GRANT_RATE_WINDOW_MS = 60_000;
 
 const pairingGrantCreations = new WeakMap<GuiSessionState, number[]>();
+const pairingSourceAttempts = new WeakMap<GuiSessionState, Map<string, { failures: number; windowStartedAt: number }>>();
+const PAIRING_SOURCE_WINDOW_MS = 10 * 60_000;
+const PAIRING_SOURCE_FAILURE_LIMIT = 10;
+const PAIRING_SOURCE_LIMIT = 1_024;
+const PAIRING_GRANT_FAILURE_LIMIT = 5;
 
 export class GuiPairingGrantRateLimitError extends Error {
   constructor() {
@@ -179,6 +197,43 @@ function pairingGrantDigest(grant: string): string {
   return createHash("sha256").update(grant).digest("base64url");
 }
 
+function pairingSourceKey(context: PairingAttemptContext): string {
+  const identity = context.ingress === "hub-management" && context.tailscaleUser
+    ? `tailscale:${context.tailscaleUser}`
+    : context.peerAddress
+      ? `peer:${context.peerAddress}`
+      : "anonymous";
+  return createHash("sha256").update(identity).digest("base64url");
+}
+
+function recordSourceFailure(
+  state: GuiSessionState,
+  context: PairingAttemptContext,
+  now: number,
+): PairingAttemptResult {
+  let attempts = pairingSourceAttempts.get(state);
+  if (!attempts) {
+    attempts = new Map();
+    pairingSourceAttempts.set(state, attempts);
+  }
+  for (const [key, record] of attempts) {
+    if (record.windowStartedAt + PAIRING_SOURCE_WINDOW_MS <= now) attempts.delete(key);
+  }
+  const key = pairingSourceKey(context);
+  let record = attempts.get(key);
+  if (!record) {
+    if (attempts.size >= PAIRING_SOURCE_LIMIT) {
+      return { allowed: false, retryAfterSeconds: 1, reason: "capacity" };
+    }
+    record = { failures: 0, windowStartedAt: now };
+    attempts.set(key, record);
+  }
+  record.failures += 1;
+  if (record.failures < PAIRING_SOURCE_FAILURE_LIMIT) return { allowed: true };
+  const remaining = Math.max(1, record.windowStartedAt + PAIRING_SOURCE_WINDOW_MS - now);
+  return { allowed: false, retryAfterSeconds: Math.ceil(remaining / 1000), reason: "source" };
+}
+
 function findPairingGrant(
   grant: string,
   state: GuiSessionState,
@@ -245,8 +300,24 @@ export function consumeGuiPairingGrant(
   body: unknown,
   config: OcxConfig,
   state: GuiSessionState,
+  now?: number,
+): GuiSessionBootstrap | null;
+export function consumeGuiPairingGrant(
+  req: Request,
+  body: unknown,
+  config: OcxConfig,
+  state: GuiSessionState,
+  now: number,
+  attemptContext: PairingAttemptContext,
+): GuiSessionBootstrap | PairingAttemptRefusal | null;
+export function consumeGuiPairingGrant(
+  req: Request,
+  body: unknown,
+  config: OcxConfig,
+  state: GuiSessionState,
   now = Date.now(),
-): GuiSessionBootstrap | null {
+  attemptContext?: PairingAttemptContext,
+): GuiSessionBootstrap | PairingAttemptRefusal | null {
   if (req.method !== "POST" || hasAlternateCredential(req) || config.runtimeRole !== "hub") return null;
   // Scheme check FIRST, before the grant is parsed or looked up.
   //
@@ -264,14 +335,42 @@ export function consumeGuiPairingGrant(
   const grant = strictPairingGrantBody(body);
   const browserOrigin = canonicalGuiBrowserOrigin(req.headers.get("Origin"));
   if (!grant || !browserOrigin) return null;
+  const context = attemptContext ?? {
+    ingress: "public",
+    peerAddress: null,
+    tailscaleUser: null,
+    browserOrigin,
+  };
+  const sourceRecord = attemptContext
+    ? pairingSourceAttempts.get(state)?.get(pairingSourceKey(context))
+    : undefined;
+  if (sourceRecord && sourceRecord.windowStartedAt + PAIRING_SOURCE_WINDOW_MS > now
+    && sourceRecord.failures >= PAIRING_SOURCE_FAILURE_LIMIT) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((sourceRecord.windowStartedAt + PAIRING_SOURCE_WINDOW_MS - now) / 1000)),
+      reason: "source",
+    };
+  }
   const found = findPairingGrant(grant, state);
-  if (!found) return null;
+  if (!found) {
+    const source = recordSourceFailure(state, context, now);
+    return attemptContext && !source.allowed ? source : null;
+  }
   const [digest, record] = found;
   if (record.expiresAt <= now) {
     state.pairingGrants.delete(digest);
     return null;
   }
-  if (browserOrigin !== record.browserOrigin) return null;
+  if (browserOrigin !== record.browserOrigin) {
+    record.failedAttempts = (record.failedAttempts ?? 0) + 1;
+    const source = recordSourceFailure(state, context, now);
+    if (record.failedAttempts >= PAIRING_GRANT_FAILURE_LIMIT) {
+      state.pairingGrants.delete(digest);
+      return attemptContext ? { allowed: false, retryAfterSeconds: 1, reason: "grant" } : null;
+    }
+    return attemptContext && !source.allowed ? source : null;
+  }
   const serverOrigin = managementRequestOrigin(req, config);
   if (serverOrigin !== record.serverOrigin) return null;
   // Re-checked against the grant's own recorded origin rather than only the request's:

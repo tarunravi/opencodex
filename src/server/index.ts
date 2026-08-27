@@ -191,6 +191,7 @@ import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveS
 import { handleSearch } from "./search";
 import { fetchAllModels, handleManagementAPI, VERSION, type ManagementApiDeps } from "./management-api";
 import {
+  createManagementSessionControl,
   initializeManagementAuthState,
   issueGuiSession,
   managementPrincipal,
@@ -640,6 +641,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   applyProxyEnv(config);
   assertServerAuthConfig(config);
   const managementAuth = deps.managementAuthState ?? initializeManagementAuthState(config);
+  const managementSessionControl = createManagementSessionControl(managementAuth);
   let userCostOverlayReconciler: { stop(): void } | null = null;
   // Arm synchronously before listen. A pending journal therefore makes __main__ unusable
   // before any request can resolve its physical credential, while health/management/Pool stay live.
@@ -1218,7 +1220,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             }), req, config);
           }
         }
-        const mgmtResponse = await handleManagementAPI(req, url, config, deps.managementApi, principal);
+        const mgmtResponse = await handleManagementAPI(req, url, config, deps.managementApi, principal, managementSessionControl);
         if (mgmtResponse) return withManagementCors(mgmtResponse, req, config);
         return withManagementCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
       }
@@ -1933,11 +1935,22 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             || typeof (body as Record<string, unknown>).grant !== "string") {
             return withManagementCors(Response.json({ error: "invalid pairing exchange body" }, { status: 400, headers: { "Cache-Control": "no-store" } }), req, config);
           }
-          const session = managementAuth.available
-            ? consumeGuiPairingGrant(req, body, config, managementAuth)
+          const pairing = managementAuth.available
+            ? consumeGuiPairingGrant(req, body, config, managementAuth, Date.now(), {
+              ingress: ingress === "hub-management" ? "hub-management" : "public",
+              peerAddress: requestServer.requestIP(req)?.address ?? null,
+              tailscaleUser: ingress === "hub-management" ? req.headers.get("Tailscale-User-Login") : null,
+              browserOrigin: req.headers.get("Origin") ?? "",
+            })
             : null;
-          return session
-            ? withManagementCors(serveSessionBootstrap(session), req, config)
+          if (pairing && "allowed" in pairing && pairing.allowed === false) {
+            return withManagementCors(Response.json({ error: "pairing exchange refused" }, {
+              status: 429,
+              headers: { "Cache-Control": "no-store", "Retry-After": String(pairing.retryAfterSeconds) },
+            }), req, config);
+          }
+          return pairing
+            ? withManagementCors(serveSessionBootstrap(pairing), req, config)
             : withManagementCors(new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } }), req, config);
         }
         return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, policy);
