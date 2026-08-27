@@ -996,10 +996,12 @@ describe("management and data-plane credential separation", () => {
     expect(consumeGuiPairingGrant(
       exchange("https://dashboard.example.test", "localhost:10100"), { grant: created.grant }, config, state, now + 1,
     )).toBeNull();
-    expect(consumeGuiPairingGrant(
-      exchange("https://dashboard.example.test", "hub.example.test", { "x-opencodex-api-key": "admin-secret" }),
-      { grant: created.grant }, config, state, now + 1,
-    )).toBeNull();
+    for (const alternateCredential of ["admin-secret", "data-secret", "ocx_session_not-a-grant"]) {
+      expect(consumeGuiPairingGrant(
+        exchange("https://dashboard.example.test", "hub.example.test", { "x-opencodex-api-key": alternateCredential }),
+        { grant: created.grant }, config, state, now + 1,
+      )).toBeNull();
+    }
     const session = consumeGuiPairingGrant(
       exchange("https://dashboard.example.test"), { grant: created.grant }, config, state, now + 1,
     );
@@ -1082,8 +1084,22 @@ describe("management and data-plane credential separation", () => {
     expect(session.expiresAt).toBe(before);
     expect(authorizeGuiSessionRequest(request({ "x-opencodex-csrf-token": "wrong" }, "POST"), config, state, issuedAt + 4)).toMatchObject({ ok: false, reason: "csrf" });
     expect(session.expiresAt).toBe(before);
+    const missingCsrf = new Request("https://hub.example.test/api/config", {
+      method: "POST",
+      headers: {
+        Host: "hub.example.test",
+        Origin: "https://dashboard.example.test",
+        "x-opencodex-api-key": session.token,
+        "x-opencodex-gui-origin": "https://dashboard.example.test",
+      },
+    });
+    expect(authorizeGuiSessionRequest(missingCsrf, config, state, issuedAt + 4)).toMatchObject({ ok: false, reason: "csrf" });
+    expect(session.expiresAt).toBe(before);
     expect(authorizeGuiSessionRequest(request({}, "POST"), config, state, issuedAt + 5)).toMatchObject({ ok: true, principal: "gui-session" });
     expect(session.expiresAt).toBe(issuedAt + 5 + REMOTE_GUI_SESSION_TTL_MS);
+    session.expiresAt = issuedAt + 6;
+    expect(authorizeGuiSessionRequest(request(), config, state, issuedAt + 7)).toMatchObject({ ok: false, reason: "expired" });
+    expect(state.sessions.has(session.token)).toBe(false);
   });
 
   test("the live pairing route refuses admin authority and exchanges only a capability-created grant", async () => {
@@ -1107,20 +1123,27 @@ describe("management and data-plane credential separation", () => {
         secret, nonce, GUI_PAIR_METHOD, GUI_PAIR_PATH, "https://dashboard.example.test",
         process.pid, server.port, expiresAt,
       )!;
+      const capabilityHeaders = {
+        "content-length": "0",
+        [GUI_PAIR_EXPECTED_PID_HEADER]: String(process.pid),
+        [GUI_PAIR_NONCE_HEADER]: nonce,
+        [GUI_PAIR_EXPIRES_AT_HEADER]: String(expiresAt),
+        [GUI_PAIR_BROWSER_ORIGIN_HEADER]: "https://dashboard.example.test",
+        [GUI_PAIR_CAPABILITY_HEADER]: capability,
+      };
       const createdResponse = await fetch(new URL(GUI_PAIR_PATH, server.url), {
         method: "POST",
-        headers: {
-          "content-length": "0",
-          [GUI_PAIR_EXPECTED_PID_HEADER]: String(process.pid),
-          [GUI_PAIR_NONCE_HEADER]: nonce,
-          [GUI_PAIR_EXPIRES_AT_HEADER]: String(expiresAt),
-          [GUI_PAIR_BROWSER_ORIGIN_HEADER]: "https://dashboard.example.test",
-          [GUI_PAIR_CAPABILITY_HEADER]: capability,
-        },
+        headers: capabilityHeaders,
       });
       expect(createdResponse.status).toBe(201);
       expect(createdResponse.headers.get("cache-control")).toBe("no-store");
       const created = await createdResponse.json() as { grant: string };
+      expect(state.pairingGrants.size).toBe(1);
+      const replayedCapability = await fetch(new URL(GUI_PAIR_PATH, server.url), {
+        method: "POST",
+        headers: capabilityHeaders,
+      });
+      expect(replayedCapability.status).toBe(401);
       expect(state.pairingGrants.size).toBe(1);
 
       const adminExchange = await fetch(new URL("/opencodex-session", server.url), {

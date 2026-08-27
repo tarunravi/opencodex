@@ -77,6 +77,33 @@ describe("GUI pairing client", () => {
     expect(calls).toBe(1);
   });
 
+  test("stops after one failed attestation or transport attempt", async () => {
+    let calls = 0;
+    const unattested = await requestBoundGuiPairingGrant(target, browserOrigin, {
+      readRuntime: () => ({ ...target, attestationSecret: secret }),
+      createChallenge: () => nonce,
+      fetchImpl: async () => {
+        calls += 1;
+        return Response.json({ service: "opencodex", pid: target.pid, port: target.port });
+      },
+    });
+    expect(unattested).toEqual({ kind: "unavailable", reason: "attestation" });
+    expect(calls).toBe(1);
+
+    calls = 0;
+    const transport = await requestBoundGuiPairingGrant(target, browserOrigin, {
+      readRuntime: () => ({ ...target, attestationSecret: secret }),
+      createChallenge: () => nonce,
+      fetchImpl: async () => {
+        calls += 1;
+        throw new Error("response body contains secret-that-must-be-redacted");
+      },
+    });
+    expect(transport).toEqual({ kind: "unavailable", reason: "transport" });
+    expect(JSON.stringify(transport)).not.toContain("secret-that-must-be-redacted");
+    expect(calls).toBe(1);
+  });
+
   test("sends one bodyless origin-bound capability and redacts rejected bodies", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const now = 1_800_000_000_000;
