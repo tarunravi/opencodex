@@ -25,6 +25,7 @@ import type { OcxConfig } from "../src/types";
 import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
+const previousAdminToken = process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
 const previousHome = process.env.OPENCODEX_HOME;
 let testDir = "";
 
@@ -44,6 +45,18 @@ function baseConfig(loopbackPort: number | null): OcxConfig {
       ? {}
       : { unauthenticatedLoopbackListener: { enabled: true, port: loopbackPort } }),
   } as unknown as OcxConfig;
+}
+
+function hubIngressConfig(managementPort: number, loopbackPort: number | null = null): OcxConfig {
+  return {
+    ...baseConfig(loopbackPort),
+    runtimeRole: "hub",
+    hub: {
+      managementPublicOrigin: "https://hub.example.test",
+      managementIngress: { enabled: true, port: managementPort },
+    },
+    remoteGui: { allowedTailscaleUsers: ["alice@example.test"] },
+  };
 }
 
 /** A free port to hand the loopback listener, chosen the same way production would not reuse. */
@@ -83,15 +96,115 @@ beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), "ocx-loopback-listener-"));
   process.env.OPENCODEX_HOME = testDir;
   process.env.OPENCODEX_API_AUTH_TOKEN = "public-secret";
+  process.env.OPENCODEX_ADMIN_AUTH_TOKEN = "admin-secret";
 });
 
 afterEach(() => {
   if (previousApiToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
   else process.env.OPENCODEX_API_AUTH_TOKEN = previousApiToken;
+  if (previousAdminToken === undefined) delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+  else process.env.OPENCODEX_ADMIN_AUTH_TOKEN = previousAdminToken;
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   if (testDir && existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   testDir = "";
+});
+
+describe("hub management ingress", () => {
+  test("binds only loopback and serves GUI plus authenticated management routes", async () => {
+    const managementPort = await freePort();
+    const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: managementPort });
+    saveConfig(hubIngressConfig(managementPort));
+    const server = startServer(publicPort);
+    try {
+      const page = await fetch(`http://127.0.0.1:${managementPort}/`, {
+        headers: { Host: "hub.example.test", "Tailscale-User-Login": "alice@example.test" },
+      });
+      expect(page.status).not.toBe(404);
+
+      const management = await fetch(`http://127.0.0.1:${managementPort}/api/config`, {
+        headers: {
+          Host: "hub.example.test",
+          Origin: "https://hub.example.test",
+          "x-opencodex-api-key": "admin-secret",
+        },
+      });
+      expect(management.status).toBe(200);
+
+      const address = firstNonLoopbackIPv4();
+      if (address) {
+        const refused = await new Promise<boolean>(resolve => {
+          const socket = connect({ host: address, port: managementPort });
+          const settle = (value: boolean) => { socket.destroy(); resolve(value); };
+          socket.setTimeout(2_000);
+          socket.once("connect", () => settle(false));
+          socket.once("error", () => settle(true));
+          socket.once("timeout", () => settle(true));
+        });
+        expect(refused).toBe(true);
+      }
+    } finally {
+      await server.stop(true);
+    }
+  }, SERVER_BUDGET_MS);
+
+  test("default-denies every data, health, readiness, WebSocket, and unknown-static route", async () => {
+    const managementPort = await freePort();
+    const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: managementPort });
+    saveConfig(hubIngressConfig(managementPort));
+    const server = startServer(publicPort);
+    const base = `http://127.0.0.1:${managementPort}`;
+    try {
+      const denied: Array<{ path: string; headers?: Record<string, string> }> = [
+        { path: "/v1/catalog" },
+        { path: "/healthz" },
+        { path: "/readyz" },
+        { path: "/v1/responses", headers: { Connection: "Upgrade", Upgrade: "websocket" } },
+        { path: "/missing-static.js" },
+      ];
+      for (const entry of denied) {
+        const response = await fetch(`${base}${entry.path}`, { headers: entry.headers });
+        expect({ path: entry.path, status: response.status }).toEqual({ path: entry.path, status: 404 });
+        expect(response.headers.get("content-type")).toContain("application/json");
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a failed management bind rolls back both earlier listeners", async () => {
+    const managementPort = await freePort();
+    const loopbackPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: managementPort });
+    const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: loopbackPort });
+    const squatter = Bun.serve({
+      port: managementPort,
+      hostname: "127.0.0.1",
+      fetch: () => new Response("occupied"),
+    });
+    saveConfig(hubIngressConfig(managementPort, loopbackPort));
+    try {
+      expect(() => startServer(publicPort)).toThrow();
+      for (const port of [publicPort, loopbackPort]) {
+        const rebound = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+        await rebound.stop(true);
+      }
+    } finally {
+      await squatter.stop(true);
+    }
+  });
+
+  test("normal shutdown closes public, data-loopback, and management listeners", async () => {
+    const managementPort = await freePort();
+    const loopbackPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: managementPort });
+    const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: loopbackPort });
+    saveConfig(hubIngressConfig(managementPort, loopbackPort));
+    const server = startServer(publicPort);
+    await server.stop(true);
+    for (const port of [publicPort, loopbackPort, managementPort]) {
+      const rebound = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+      await rebound.stop(true);
+    }
+  });
 });
 
 describe("unauthenticated loopback listener", () => {
@@ -534,6 +647,10 @@ describe("seams the runtime cannot defend", () => {
     // host with no external IPv4 — and on that host the 0.0.0.0 ablation would pass. This
     // holds everywhere.
     expect(serverSource).toMatch(/port: loopbackListenerPort,\s*\n\s*hostname: "127\.0\.0\.1",/);
+  });
+
+  test("the hub management ingress binds 127.0.0.1 explicitly", () => {
+    expect(serverSource).toMatch(/port: managementIngressPort,\s*\n\s*hostname: "127\.0\.0\.1",/);
   });
 });
 

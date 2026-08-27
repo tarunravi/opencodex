@@ -410,6 +410,30 @@ describe("service install auth preflight", () => {
     expect(() => assertServiceAuthEnvironment()).not.toThrow();
   });
 
+  test("hub-mode launchd and systemd installs reuse the protected data-token file", () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    process.env.OPENCODEX_API_AUTH_TOKEN = "phase5-data-secret";
+    saveConfig({
+      port: 10100,
+      hostname: "0.0.0.0",
+      runtimeRole: "hub",
+      hub: {
+        managementPublicOrigin: "https://hub.example.test",
+        managementIngress: { enabled: true, port: 10101 },
+      },
+      providers: { openai: { adapter: "openai-chat", baseUrl: "https://api.example.test/v1" } },
+      defaultProvider: "openai",
+    } as OcxConfig);
+
+    expect(() => assertServiceAuthEnvironment()).not.toThrow();
+    for (const definition of [buildUnit(), buildPlist()]) {
+      expectTextToContainPath(definition, serviceApiTokenFilePath());
+      expect(definition).not.toContain("phase5-data-secret");
+    }
+  });
+
   test("rejects restore operations from a different CODEX_HOME than service install", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
