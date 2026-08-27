@@ -157,6 +157,7 @@ describe("hub management ingress", () => {
     try {
       const denied: Array<{ path: string; headers?: Record<string, string> }> = [
         { path: "/v1/catalog" },
+        { path: "/v1%2Fcatalog" },
         { path: "/healthz" },
         { path: "/readyz" },
         { path: "/v1/responses", headers: { Connection: "Upgrade", Upgrade: "websocket" } },

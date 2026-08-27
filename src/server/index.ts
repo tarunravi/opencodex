@@ -811,12 +811,24 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
    * GETs intentionally retain the existing SPA fallback.
    */
   function managementIngressRouteAllowed(url: URL, req: Request): boolean {
-    const path = url.pathname;
-    if (path === "/opencodex-session") return req.method === "GET" || req.method === "POST";
-    if (path.startsWith("/api/")) return true;
+    const rawPath = url.pathname;
+    if (req.headers.get("upgrade")?.toLowerCase() === "websocket") return false;
+    if (rawPath === "/opencodex-session") return req.method === "GET" || req.method === "POST";
+    if (rawPath.startsWith("/api/")) return true;
     if (req.method !== "GET" && req.method !== "HEAD") return false;
-    if (path === "/" || !path.includes(".")) return true;
-    return serveGuiFile(path) !== null;
+    let decodedPath: string;
+    try {
+      decodedPath = decodeURIComponent(rawPath);
+    } catch {
+      return false;
+    }
+    if (
+      decodedPath.startsWith("/v1/")
+      || decodedPath === "/healthz"
+      || decodedPath === "/readyz"
+    ) return false;
+    if (decodedPath === "/" || !decodedPath.includes(".")) return true;
+    return serveGuiFile(rawPath) !== null;
   }
 
   // Codex treats empty / non-JSON 503 bodies as "Unknown error" (#452). Keep Retry-After and
