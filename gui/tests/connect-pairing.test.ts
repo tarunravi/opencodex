@@ -5,7 +5,7 @@ import { act, createElement } from "react";
 test("App mounts the relay pairing form and installs only the returned shared session", async () => {
   const keys = ["window", "document", "navigator", "sessionStorage", "localStorage", "fetch", "confirm", "alert", "IS_REACT_ACT_ENVIRONMENT", "__APP_VERSION__"] as const;
   const previous = Object.fromEntries(keys.map(key => [key, Reflect.get(globalThis, key)]));
-  const win = new Window({ url: "http://localhost/#dashboard" });
+  const win = new Window({ url: "http://localhost/#usage" });
   Object.defineProperties(globalThis, {
     window: { configurable: true, value: win },
     document: { configurable: true, value: win.document },
@@ -51,6 +51,11 @@ test("App mounts the relay pairing form and installs only the returned shared se
       return new Response(sessionHtml, { headers: { "Content-Type": "text/html" } });
     }
     if (url.pathname === "/healthz") return Response.json({ version: "0.0.0-test" });
+    if (url.pathname.endsWith("/api/usage")) return Response.json({
+      range: "30d", surface: "all", since: null, generatedAt: Date.now(),
+      summary: { requests: 0, attemptCount: 0, measuredRequests: 0, reportedRequests: 0, unreportedRequests: 0, unsupportedRequests: 0, estimatedRequests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0, coverageRatio: 0, estimatedCostUsd: 0, pricedRequests: 0, unpricedRequests: 0, unmeteredRequests: 0 },
+      days: [], models: [], providers: [], accounts: [], historyTruncated: false,
+    });
     return Response.json({});
   }) as typeof fetch;
   Object.defineProperties(globalThis, {
@@ -74,8 +79,7 @@ test("App mounts the relay pairing form and installs only the returned shared se
     }
     const input = container.querySelector("#connect-pairing-code") as HTMLInputElement;
     Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(input, `ocx_pair_${"a".repeat(43)}`);
-    input.dispatchEvent(new win.Event("input", { bubbles: true }));
-    input.dispatchEvent(new win.Event("change", { bubbles: true }));
+    await act(async () => { input.dispatchEvent(new win.Event("input", { bubbles: true })); });
     const form = input.closest("form")!;
     await act(async () => { form.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true })); });
     const successDeadline = Date.now() + 1_000;
@@ -91,7 +95,7 @@ test("App mounts the relay pairing form and installs only the returned shared se
     await act(async () => { root.unmount(); });
     container.remove();
     win.close();
-    for (const key of keys) Object.defineProperty(globalThis, key, { configurable: true, value: previous[key] });
+    for (const key of keys) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: previous[key] });
   }
 });
 
@@ -137,6 +141,6 @@ test("a refused pairing renders an accessible error without clearing the pasted 
     await act(async () => { root.unmount(); });
     container.remove();
     win.close();
-    for (const key of keys) Object.defineProperty(globalThis, key, { configurable: true, value: previous[key] });
+    for (const key of keys) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: previous[key] });
   }
 });

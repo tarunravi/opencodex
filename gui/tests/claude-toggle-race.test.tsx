@@ -88,6 +88,7 @@ beforeEach(() => {
     const url = String(input instanceof Request ? input.url : input);
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
 
+    if (url.includes("/api/machine/status")) return jsonResponse({}, 404);
     if (url.includes("/api/claude-code") && method === "PUT") {
       const body = JSON.parse(String(init?.body ?? "{}")) as { enabled?: boolean };
       putBodies.push(body);

@@ -29,7 +29,9 @@ beforeEach(() => {
     Object.defineProperty(testWindow, "prompt", { configurable: true, writable: true, value: () => null });
   }
   resetApiAuthFetchForTests(async () => {
-    return window.prompt("OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)")?.trim() || null;
+    return typeof window.prompt === "function"
+      ? window.prompt("OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)")?.trim() || null
+      : null;
   });
   sessionStorage.clear();
 });

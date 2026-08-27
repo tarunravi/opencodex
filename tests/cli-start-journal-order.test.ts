@@ -192,8 +192,15 @@ describe("start and ensure journal ownership (#1230)", () => {
       });
       children.push(child);
       const runtimePath = join(fx.ocxHome, "runtime-port.json");
-      const runtime = await waitFor(() => {
-        if (!existsSync(runtimePath)) return null;
+      const runtime = await waitFor(async () => {
+        if (!existsSync(runtimePath)) {
+          if (child.exitCode === null) return null;
+          const [stdout, stderr] = await Promise.all([
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ]);
+          throw new Error(`connected client exited ${child.exitCode}: ${stderr || stdout}`);
+        }
         try {
           const value = JSON.parse(readFileSync(runtimePath, "utf8")) as { pid?: number; port?: number; hostname?: string };
           return value.pid === child.pid && typeof value.port === "number" && value.port > 0 ? value : null;
