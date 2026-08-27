@@ -72,7 +72,8 @@ consumption of that credential is the only pairing exchange.
 - Automatic loopback and trusted-Tailscale issuance; pairing grant creation and exchange.
 - Separate loopback/remote TTLs and sliding renewal for remote sessions.
 - Exact management CORS header widening for GUI-origin and CSRF headers.
-- CLI `ocx gui pair` grant creation through the existing runtime-attestation pattern; no
+- CLI `ocx gui pair --origin <browser-origin>` grant creation through the existing
+  runtime-attestation pattern; no
   grant or reusable admin credential in argv, config, disk, logs, or shell history.
 - Backend and GUI regressions for every positive and negative issuance path.
 
@@ -241,10 +242,11 @@ memory-only and are never written to web storage.
   - HTTPS issues `pairing`; non-loopback HTTP issues `insecure-http-pairing` only when the
     config opt-in is true. The grant is consumed before minting; all replays fail.
   - Phase 4's fixed-target relay path allowlist admits this exact POST exchange in addition
-    to GET bootstrap; no other non-`/api/*` method/path is widened.
+    to GET bootstrap and forwards the browser's `Origin` header verbatim; no other
+    non-`/api/*` method/path is widened.
 
-`ocx gui pair [--origin <origin>] [--json]` defaults `--origin` to
-`hub.managementPublicOrigin`; it fails if neither exists. It resolves the identity-checked
+`ocx gui pair --origin <browser-origin> [--json]` requires an explicit `--origin`; there is
+no config-derived or localhost default. It resolves the identity-checked
 runtime, verifies the `/healthz` challenge proof, rechecks PID/port, derives the one-operation
 capability from the protected runtime attestation secret, and POSTs once. It prints the grant
 exactly once to stdout and never accepts a grant/token argument. JSON output is intended for
@@ -283,10 +285,10 @@ All paths below exist in the current tree except files marked **NEW**.
 | MODIFY | `src/server/index.ts` | Pass `(config, req)` to the `/readyz` protocol metadata builder so `hub.managementPublicOrigin` reaches the response; advertise GUI-pair capability v1 in `/healthz`; mount exact pairing-grant creation after capability admission, mount GET/POST bootstrap before GUI fallback, pass `trustedTailscaleIngress: false` on the public/ordinary loopback listeners, and preserve the line-1604 unknown-`/v1` guard. Do not make `startServer` async or add an await in its synchronous activation window. |
 | MODIFY | `src/server/proxy-liveness.ts` | Add optional `guiPairCapability` to the existing health identity projection so the local client can fail closed against an old/foreign listener without changing required liveness identity fields. |
 | MODIFY | `src/server/gui-static.ts` | Serialize escaped browser/server origin meta tags; keep `opencodex-session-origin` as browser-origin compatibility metadata. |
-| NEW | `src/cli/gui.ts` | Own `runGuiCommand(args, deps)`: existing no-subcommand open behavior plus `pair`; strict `--origin`/`--json` parsing and one-time grant output. |
+| NEW | `src/cli/gui.ts` | Own `runGuiCommand(args, deps)`: existing no-subcommand open behavior plus `pair`; require exactly one explicit `--origin`, parse `--json` strictly, and emit the one-time grant. |
 | NEW | `src/cli/gui-pair-client.ts` | Mirror the existing bound restart/provider-reload client pattern: read runtime identity, challenge `/healthz`, verify proof/capability version, recheck the target, derive the browser-origin-bound capability, POST once, and return a redacted typed result. |
 | MODIFY | `src/cli/dispatch.ts` | Delegate the current inline `gui` runner to `runGuiCommand`, passing existing open/start dependencies; do not duplicate live-proxy discovery. |
-| MODIFY | `src/cli/registry.ts` | Change usage to `ocx gui [pair [--origin <origin>] [--json]]` and document that pairing output is secret and single-use. |
+| MODIFY | `src/cli/registry.ts` | Change usage to `ocx gui [pair --origin <browser-origin> [--json]]` and document that pairing output is secret and single-use. |
 | MODIFY | `src/cli/help.ts` | Update the curated GUI command line so registry/help parity remains green. |
 | MODIFY | `gui/src/api.ts` | Split memory browser/server origins, validate both meta sources, scope token attachment to the server origin, keep browser origin in the GUI header, and clear all four session values atomically. No web-storage persistence. |
 | MODIFY | `tests/config.test.ts` | Extend sibling config tests for valid HTTPS, explicit HTTP opt-in, invalid origin components, duplicate/empty/oversize Tailscale users, malformed persisted block preservation, and non-hub inertness. |
@@ -444,7 +446,7 @@ sessions renew at most once per request.
 | P2-A15 | GUI loads valid two-origin meta, then calls the bound server and an evil third origin. | Session headers attach only to bound server; evil origin receives no token/CSRF and triggers no admin prompt. |
 | P2-A16 | GUI receives mismatched browser origin, mismatched response/server origin, missing meta, or a failed renewal. | All in-memory session fields clear atomically; no web-storage write and no stale header reuse. |
 | P2-A17 | Allowed management OPTIONS requests GUI-origin + CSRF headers; repeat from rejected origin and request an unrelated custom header. | Allowed response lists the two exact additions and exact ACAO; rejected origin is 403; unrelated header is not dynamically echoed by management CORS. |
-| P2-A18 | Run `ocx gui pair` with configured public origin, explicit allowed origin, missing origin, `--json`, extra args, stale target, failed attestation, and capability/API failure. | Valid cases create one grant and print once; invalid cases fail without falling back to admin auth or echoing secrets; no grant appears in argv/config/disk/log fixtures. |
+| P2-A18 | Run `ocx gui pair --origin <browser-origin>` with an explicit allowed origin, then missing `--origin`, malformed/disallowed origin, `--json`, extra args, stale target, failed attestation, and capability/API failure. | Valid cases create one grant and print once; every absent/invalid origin fails with no default and without falling back to admin auth or echoing secrets; no grant appears in argv/config/disk/log fixtures. |
 | P2-A19 | Run native-profile mutation suite with admin, malformed remote session, and valid remote session. | Existing consent boundary remains: only the valid session + correct origin + CSRF dispatches the mutation. |
 | P2-A20 | Run import-graph and synchronous-window guard. | No protected core import reaches GUI-session code; `startServer` remains synchronous and activation ordering is unchanged. |
 

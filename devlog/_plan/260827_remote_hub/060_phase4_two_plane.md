@@ -103,6 +103,7 @@ parent exists. No generated `gui/dist` file is edited.
 | NEW | `tests/client-machine-listener.test.ts` | Listener bind/allowlist/auth/API/startup/offline matrix. |
 | NEW | `tests/client-hub-relay.test.ts` | Fixed target, header separation, body caps, redirects, errors, and SSRF negatives. |
 | NEW | `gui/src/api-targets.ts` | Canonical `ApiTargets`, machine-status discovery, per-plane call-base selection, relay URL construction, and disconnected fallback. |
+| NEW | `gui/src/connect-pairing.ts` | Own the visible pairing-code form and activation flow: paste a one-time code, POST the exact `/opencodex-session` exchange through the selected direct/relay shared target, and install the returned session only in the shared target's in-memory auth slot. |
 | MODIFY | `gui/src/api.ts` | Replace `needsApiAuth`'s one same-origin slot with exact target classification and per-target in-memory session/CSRF state; attach both auth domains only on relay. |
 | MODIFY | `gui/src/App.tsx` | Discover targets before page fetches; supply both call bases instead of one page base; machine health remains live when hub is down; connected stop becomes disconnect/recycle. |
 | MODIFY | `gui/src/stop-proxy.ts` | Add mode-aware machine disconnect request while preserving existing standalone `/api/stop` behavior. |
@@ -114,15 +115,15 @@ parent exists. No generated `gui/dist` file is edited.
 | MODIFY | `gui/src/pages/Storage.tsx` | Pass its selected shared `apiBase` through to `StorageWorkspace`. |
 | MODIFY | `gui/src/components/storage-workspace/StorageWorkspace.tsx` | Remove module-global `VITE_API_BASE`; use the supplied shared-plane base for Codex-log storage calls. |
 | MODIFY | `gui/src/styles-usage-workspace.css` | Style compact usage-source/scope controls and connected/offline qualification without changing layout direction. |
-| MODIFY | `gui/src/i18n/en.ts` | Source-of-truth copy keys for connected source, this machine, hub-wide, hub offline, disconnect, and relay warnings. |
-| MODIFY | `gui/src/i18n/de.ts` | Add the same keys. |
-| MODIFY | `gui/src/i18n/fr.ts` | Add the same keys. |
-| MODIFY | `gui/src/i18n/ja.ts` | Add the same keys. |
-| MODIFY | `gui/src/i18n/ko.ts` | Add the same keys. |
-| MODIFY | `gui/src/i18n/ru.ts` | Add the same keys. |
-| MODIFY | `gui/src/i18n/tr.ts` | Add the same keys. |
-| MODIFY | `gui/src/i18n/zh.ts` | Add the same keys. |
-| MODIFY | `gui/src/i18n/zh-TW.ts` | Add the same keys. |
+| MODIFY | `gui/src/i18n/en.ts` | Source-of-truth copy keys for pairing code/submit/error, connected source, this machine, hub-wide, hub offline, disconnect, and relay warnings. |
+| MODIFY | `gui/src/i18n/de.ts` | Add the same pairing and connection keys. |
+| MODIFY | `gui/src/i18n/fr.ts` | Add the same pairing and connection keys. |
+| MODIFY | `gui/src/i18n/ja.ts` | Add the same pairing and connection keys. |
+| MODIFY | `gui/src/i18n/ko.ts` | Add the same pairing and connection keys. |
+| MODIFY | `gui/src/i18n/ru.ts` | Add the same pairing and connection keys. |
+| MODIFY | `gui/src/i18n/tr.ts` | Add the same pairing and connection keys. |
+| MODIFY | `gui/src/i18n/zh.ts` | Add the same pairing and connection keys. |
+| MODIFY | `gui/src/i18n/zh-TW.ts` | Add the same pairing and connection keys. |
 | NEW | `gui/tests/api-targets.test.ts` | Target discovery, per-plane call-base selection, relay construction, and hub-down fallback. |
 | MODIFY | `gui/tests/api-auth-memory.test.ts` | Independent machine/shared sessions; direct/relay header matrix; no cross-target leakage; bootstrap validation. |
 | MODIFY | `gui/tests/api-auth-deadline.test.ts` | Per-target shared resolution/watchdog behavior. |
@@ -299,7 +300,9 @@ slashes/backslashes, authority syntax, userinfo, query-host tricks, and path tra
 The caller supplies no host/scheme/port. `redirect: "manual"`; every 3xx is an error.
 Strip `Host`, connection/hop-by-hop headers, machine auth headers, proxy credentials,
 cookies, and forwarding headers. Forward only the bounded management header allowlist,
-including hub session, GUI-origin, CSRF, content type, and conditional cache headers.
+including hub session, GUI-origin, CSRF, content type, and conditional cache headers. For
+the exact `POST /opencodex-session` exchange, forward the browser's `Origin` value verbatim;
+do not synthesize it from the hub URL, localhost bind, or GUI-origin header.
 Response headers are similarly allowlisted; `Set-Cookie` and hop-by-hop headers are
 never returned. Request and response bodies have named constants and abort on overflow.
 No URL query, auth header, body, or response body is logged.
@@ -448,13 +451,13 @@ appearing after disconnect.
 | Test file | Required cases |
 |---|---|
 | `tests/client-machine-listener.test.ts` (NEW) | IPv4 loopback bind; GUI/bootstrap; exact allowlist; every `/v1/*` 404; unknown/wrong-method 404; safe GET auth; mutation Origin/CSRF; status redaction; sync success/failure; shim actions; disconnect offline; recycle to standalone; invalid state refuses startup; no provider/timer fake invoked. |
-| `tests/client-hub-relay.test.ts` (NEW) | Relay disabled 404; direct mode 404; fixed host/path; direct/encoded traversal and authority injection rejected; redirects rejected; request/response caps; hop-by-hop/cookie/forwarded/machine headers stripped; hub auth retained; timeout/abort; no body/header log. |
+| `tests/client-hub-relay.test.ts` (NEW) | Relay disabled 404; direct mode 404; fixed host/path; exact `POST /api/machine/hub-relay/opencodex-session` reaches only hub `POST /opencodex-session` and forwards browser `Origin` verbatim; direct/encoded traversal and authority injection rejected; redirects rejected; request/response caps; hop-by-hop/cookie/forwarded/machine headers stripped; hub auth retained; timeout/abort; no body/header log. |
 | `tests/cli-start-journal-order.test.ts` | Matching durable client journal survives start; missing/mismatched client owner restores; connected branch never starts full server; disconnected branch remains current. |
 | `tests/api-usage.test.ts` | Exact `apiKeyId` response/echo; old and other-key rows excluded; no match; combined filters; filtered request cannot poison cache; unfiltered next request remains whole hub. |
 | `tests/usage-summary.test.ts` | Pure projection totals/days/models/providers/accounts consistency; exact-case id; combo attempts; absent id; provider/model/key cross-product. |
 | `tests/core-lab-boundary.test.ts` | Protected roots import no client subsystem; `startServer` remains non-async and no new top-level-window await. |
 | `gui/tests/api-targets.test.ts` (NEW) | Standalone 404 fallback; valid direct/relay status; per-plane call bases; machine-status network failure not standalone; encoded relay paths. |
-| `gui/tests/api-auth-memory.test.ts` | Two simultaneous sessions; direct headers; relay dual headers; machine custom stripping contract; cross-target 401 races; server/browser-origin mismatch; unknown target receives nothing; no web storage. |
+| `gui/tests/api-auth-memory.test.ts` | Two simultaneous sessions; direct headers; relay dual headers; pasted pairing code exchanges through the selected shared target and stores only the returned shared session in memory; machine custom stripping contract; cross-target 401 races; server/browser-origin mismatch; unknown target receives nothing; no web storage. |
 | `gui/tests/api-auth-deadline.test.ts` | One target watchdog does not block/clear the other; direct and relay bootstrap timeout states. |
 | `gui/tests/usage-layout.test.ts` | Connected default key query; hub-wide omission; disconnected local query; source-qualified cache keys; hub-down no local fetch; scope labels/a11y. |
 | `gui/tests/app-stop.test.ts` | Standalone `/api/stop`; connected `/api/machine/disconnect`; refusal re-enables action; accepted recycle tolerates connection drop. |
@@ -477,6 +480,7 @@ appearing after disconnect.
 | P4-A11 | Standalone full server opens the same GUI. | `/api/machine/status` 404 selects same-origin targets; all current pages, auth, stop, usage, and injector output remain unchanged. |
 | P4-A12 | Shared direct session 401s while machine session is renewed (and inverse). | Each target resolves/clears only its own in-memory state; no token crosses target and no prompt fan-out occurs. |
 | P4-A13 | GUI PR is prepared for review. | PR description uses the repository template and includes screenshots of connected this-machine Usage plus hub-offline machine shell (or a maintainer-approved `gui-screenshot-waived` exception). |
+| P4-A14 | Relay-connected GUI has no hub session; user pastes a fresh Phase-2 pairing code and submits the pairing form. | `gui/src/connect-pairing.ts` sends the exact POST exchange through `/api/machine/hub-relay/opencodex-session`, the relay forwards browser `Origin` verbatim, and the returned session/CSRF/origins are stored only in the shared target's in-memory slot. |
 
 ## 9. Verification — remote only on `lidge-ai`
 

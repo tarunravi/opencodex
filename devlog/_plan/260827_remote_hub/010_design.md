@@ -176,7 +176,7 @@ opt-in with ownership records.
 Explicit allowlist, default-404 (same failure mode as loopbackRouteAllowed):
 /healthz · /readyz · GET /api/machine/status · GET /api/machine/clients ·
 POST /api/machine/sync · GET/POST /api/machine/shim · POST /api/machine/disconnect ·
-POST /api/machine/hub-relay (opt-in only).
+POST /api/machine/hub-relay/* (opt-in only).
 Mutations need local gui-session + CSRF (auto-minted on loopback, today's flow).
 
 Relay constraints (it is NOT a proxy): fixed destination = client.managementUrl;

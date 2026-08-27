@@ -356,8 +356,8 @@ evidence; the sketch above is setup, not exact-head proof.
 
 ### 8.2 MacBook connect and remote session
 
-1. On the hub, run `ocx gui pair` and copy the single-use, short-TTL code through the
-   interactive channel. Do not record it.
+1. On the hub, run `ocx gui pair --origin http://localhost:10100` and copy the single-use,
+   short-TTL code through the interactive channel. Do not record it.
 2. On the MacBook, run the Phase-3 connect command with exactly one transient
    `--pairing-code-stdin` or `--admin-token-stdin`; it must not accept a literal secret flag.
 3. Assert `ocx connect status --json` reports protocol v1, hub URL, management URL,
