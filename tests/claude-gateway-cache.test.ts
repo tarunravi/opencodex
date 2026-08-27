@@ -87,6 +87,29 @@ describe("Claude Code gateway-model cache pre-write (devlog 260712 030)", () => 
     }
   });
 
+  test("connected refresh targets the hub models endpoint with only the client token", async () => {
+    const dir = tempDir();
+    let requestedUrl = "";
+    let admission = "";
+    const path = await refreshGatewayModelCacheFromProxy({
+      baseUrl: "https://hub.example.test",
+      admissionToken: "ocx_data_connected",
+    }, {
+      configDir: dir,
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        admission = new Headers(init?.headers).get("x-opencodex-api-key") ?? "";
+        return new Response(JSON.stringify({ data: [{ id: "claude-ocx-hub-model" }] }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    expect(requestedUrl).toBe("https://hub.example.test/v1/models?limit=1000&ids=cli");
+    expect(admission).toBe("ocx_data_connected");
+    const body = JSON.parse(readFileSync(path!, "utf8"));
+    expect(body.baseUrl).toBe("https://hub.example.test");
+  });
+
   test("proxy refresh falls back to a configured admission key", async () => {
     const dir = tempDir();
     const originalFetch = globalThis.fetch;

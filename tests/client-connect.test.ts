@@ -1,0 +1,264 @@
+import { describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  downloadClientCatalog,
+  exchangeConnectPairingGrant,
+  fetchHubReady,
+  issueClientKey,
+  normalizeHubOrigin,
+} from "../src/client/hub-client";
+import { handleConnectCommand } from "../src/cli/connect";
+
+const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+
+function readyBody(protocol = 1, minimumClientProtocol = 1) {
+  return {
+    service: "opencodex",
+    version: "0.0.0",
+    uptime: 1,
+    pid: 1,
+    port: 443,
+    status: "ready",
+    protocol,
+    minimumClientProtocol,
+    managementUrl: "https://manage.example.test",
+  };
+}
+
+describe("remote hub client boundary", () => {
+  test("canonicalizes origin and terminal /v1 only", () => {
+    expect(normalizeHubOrigin("https://hub.example.test/v1")).toBe("https://hub.example.test");
+    expect(normalizeHubOrigin("https://hub.example.test/v1/")).toBe("https://hub.example.test");
+    for (const value of [
+      "ftp://hub.example.test",
+      "https://user@hub.example.test",
+      "https://hub.example.test/private",
+      "https://hub.example.test/?secret=1",
+      "https://hub.example.test/#secret",
+    ]) expect(() => normalizeHubOrigin(value)).toThrow();
+  });
+
+  test("uses Phase-1 readiness compatibility including p2/min1 and rejects p2/min2", async () => {
+    const accepted = await fetchHubReady("https://hub.example.test", {
+      fetchImpl: async () => Response.json(readyBody(2, 1)),
+    });
+    expect(accepted.metadata.protocol).toBe(2);
+
+    await expect(fetchHubReady("https://hub.example.test", {
+      fetchImpl: async () => Response.json(readyBody(2, 2)),
+    })).rejects.toThrow("requires remote protocol 2");
+    for (const status of ["pending", "failed"] as const) {
+      const result = await fetchHubReady("https://hub.example.test", {
+        fetchImpl: async () => Response.json({ ...readyBody(), status }, { status: 503 }),
+      });
+      expect(result.status).toBe(status);
+    }
+  });
+
+  test("admin key issuance is HTTPS-only and pairing exchanges into a full GUI session", async () => {
+    let calls = 0;
+    await expect(issueClientKey("http://hub.example.test", {
+      kind: "admin",
+      value: new TextEncoder().encode("ocx_admin_secret"),
+    }, "client", {
+      fetchImpl: async () => { calls += 1; return new Response(); },
+    })).rejects.toThrow("only over HTTPS");
+    expect(calls).toBe(0);
+
+    const browserOrigin = "http://localhost:10100";
+    const sessionHtml = [
+      '<meta name="opencodex-session-token" content="ocx_session_test">',
+      '<meta name="opencodex-session-csrf" content="csrf-test">',
+      `<meta name="opencodex-session-origin" content="${browserOrigin}">`,
+      '<meta name="opencodex-session-server-origin" content="https://hub.example.test">',
+    ].join("");
+    const seen: Array<{ url: string; headers: Headers; body: string }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      seen.push({ url: String(input), headers: new Headers(init?.headers), body: String(init?.body ?? "") });
+      if (String(input).endsWith("/opencodex-session")) return new Response(sessionHtml);
+      return Response.json({
+        id: "issued-id",
+        name: "client",
+        key: `ocx_data_${"a".repeat(40)}`,
+        createdAt: "2026-08-28T00:00:00.000Z",
+      }, { status: 201 });
+    };
+    const grant = new TextEncoder().encode(`ocx_pair_${"b".repeat(43)}`);
+    const session = await exchangeConnectPairingGrant(
+      "https://hub.example.test",
+      browserOrigin,
+      grant,
+      { fetchImpl },
+    );
+    const issued = await issueClientKey("https://hub.example.test", { kind: "gui-session", value: session }, "client", { fetchImpl });
+    expect(issued.id).toBe("issued-id");
+    expect(seen[0]?.headers.get("origin")).toBe(browserOrigin);
+    expect(seen[1]?.headers.get("x-opencodex-gui-origin")).toBe(browserOrigin);
+    expect(seen[1]?.headers.get("x-opencodex-csrf-token")).toBe("csrf-test");
+    expect(seen[1]?.body).toBe(JSON.stringify({ name: "client" }));
+  });
+
+  test("pairing HTTP requires explicit client opt-in and catalog is bounded/conditional", async () => {
+    let calls = 0;
+    await expect(exchangeConnectPairingGrant(
+      "http://hub.example.test",
+      "http://localhost:10100",
+      new TextEncoder().encode(`ocx_pair_${"c".repeat(43)}`),
+      { fetchImpl: async () => { calls += 1; return new Response(); } },
+    )).rejects.toThrow("--allow-insecure-http");
+    expect(calls).toBe(0);
+
+    const notModified = await downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
+      etag: '"etag"',
+      fetchImpl: async (_input, init) => {
+        expect(new Headers(init?.headers).get("if-none-match")).toBe('"etag"');
+        return new Response(null, { status: 304 });
+      },
+    });
+    expect(notModified).toEqual({ kind: "not-modified" });
+    await expect(downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
+      maxBytes: 4,
+      fetchImpl: async () => new Response('{"models":[]}'),
+    })).rejects.toThrow("allowed size");
+  });
+
+  test("CLI rejects literal/env credential forms without rendering their values", async () => {
+    const errors: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation(value => { errors.push(String(value)); });
+    try {
+      expect(await handleConnectCommand([
+        "https://hub.example.test",
+        "--admin-token-stdin",
+        "--admin-token=super-secret-value",
+      ])).toBe(2);
+      expect(errors.join(" ")).not.toContain("super-secret-value");
+      expect(errors.join(" ")).toContain("<redacted>");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+function runTransactionScenario(stage: "success" | "catalog" | "preflight" | "commit") {
+  const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-client-connect-home-"));
+  const codexHome = mkdtempSync(join(tmpdir(), "ocx-client-connect-codex-"));
+  const configPath = join(opencodexHome, "config.json");
+  const originalConfig = {
+    port: 10100,
+    providers: { openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" } },
+    defaultProvider: "openai",
+  };
+  writeFileSync(configPath, `${JSON.stringify(originalConfig, null, 2)}\n`, "utf8");
+  if (stage !== "preflight") writeFileSync(join(codexHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+  if (stage === "commit") {
+    const { mkdirSync } = require("node:fs") as typeof import("node:fs");
+    mkdirSync(join(opencodexHome, "config-mutation.sqlite"));
+  }
+  const script = `
+    const { existsSync, readFileSync } = require("node:fs");
+    const { createHash } = require("node:crypto");
+    const { connectClient, disconnectClient } = require("./src/client/connect");
+    const { readClientConnectionState } = require("./src/client/state");
+    const { serviceApiTokenFilePath } = require("./src/lib/service-secrets");
+    const { DEFAULT_CATALOG_PATH } = require("./src/codex/paths");
+    const stage = ${JSON.stringify(stage)};
+    const catalog = '{"models":[]}';
+    const etag = '"sha256-' + createHash("sha256").update(catalog).digest("base64url") + '"';
+    const calls = [];
+    const credential = new TextEncoder().encode("ocx_admin_test-authority");
+    const fetchImpl = async (input, init = {}) => {
+      const url = String(input);
+      calls.push({ url, method: init.method || "GET" });
+      if (url.endsWith("/readyz")) return Response.json(${JSON.stringify(readyBody())});
+      if (url.endsWith("/api/keys") && init.method === "POST") return Response.json({
+        id: "issued-id",
+        name: "client",
+        key: "ocx_data_${"d".repeat(40)}",
+        createdAt: "2026-08-28T00:00:00.000Z",
+      }, { status: 201 });
+      if (url.endsWith("/api/keys") && init.method === "DELETE") return Response.json({ success: true });
+      if (url.endsWith("/v1/catalog")) {
+        if (stage === "catalog") return Response.json({ error: "down" }, { status: 503 });
+        return new Response(catalog, { headers: { ETag: etag, "Content-Type": "application/json" } });
+      }
+      throw new Error("unexpected request " + url);
+    };
+    (async () => {
+      let connected = null;
+      let error = null;
+      try {
+        connected = await connectClient({
+          serverUrl: "https://hub.example.test",
+          credential: { kind: "admin", value: credential },
+          selectedClients: ["claude"],
+          managementTransport: "direct",
+          noSync: true,
+        }, { fetchImpl, now: () => new Date("2026-08-28T00:00:00.000Z") });
+      } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+      const beforeDisconnect = readClientConnectionState();
+      const artifacts = {
+        token: existsSync(serviceApiTokenFilePath()),
+        catalog: existsSync(DEFAULT_CATALOG_PATH),
+        credentialZeroed: credential.every(value => value === 0),
+      };
+      let disconnected = null;
+      if (stage === "success" && connected) disconnected = await disconnectClient();
+      console.log(JSON.stringify({ connected, error, beforeDisconnect, artifacts, disconnected, after: readClientConnectionState(), calls }));
+    })();
+  `;
+  const result = spawnSync(process.execPath, ["--eval", script], {
+    cwd: repoRoot,
+    env: { ...process.env, OPENCODEX_HOME: opencodexHome, CODEX_HOME: codexHome },
+    encoding: "utf8",
+  });
+  const output = result.stdout.trim().split("\n").at(-1) ?? "{}";
+  const parsed = JSON.parse(output) as Record<string, any>;
+  return {
+    status: result.status,
+    stderr: result.stderr,
+    parsed,
+    configBytes: readFileSync(configPath, "utf8"),
+    cleanup: () => {
+      rmSync(opencodexHome, { recursive: true, force: true });
+      rmSync(codexHome, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("connect transaction and offline disconnect", () => {
+  test("commits key id/state last, zeroes authority, and disconnects with the hub offline", () => {
+    const run = runTransactionScenario("success");
+    try {
+      expect(run.status).toBe(0);
+      expect(run.parsed.error).toBeNull();
+      expect(run.parsed.connected.apiKeyId).toBe("issued-id");
+      expect(run.parsed.beforeDisconnect).toMatchObject({ kind: "connected", value: { apiKeyId: "issued-id" } });
+      expect(run.parsed.artifacts).toEqual({ token: true, catalog: true, credentialZeroed: true });
+      expect(run.parsed.disconnected).toMatchObject({ apiKeyId: "issued-id", tokenRemoved: true, catalogRemoved: true });
+      expect(run.parsed.after).toEqual({ kind: "disconnected" });
+      expect(run.parsed.calls.filter((call: any) => call.method === "DELETE")).toEqual([]);
+    } finally { run.cleanup(); }
+  });
+
+  for (const stage of ["catalog", "preflight", "commit"] as const) {
+    test(`rolls back local artifacts when ${stage} fails before final commit`, () => {
+      const run = runTransactionScenario(stage);
+      try {
+        expect(run.status).toBe(0);
+        expect(run.parsed.connected).toBeNull();
+        expect(run.parsed.beforeDisconnect).toEqual({ kind: "disconnected" });
+        expect(run.parsed.artifacts.token).toBe(false);
+        expect(run.parsed.artifacts.catalog).toBe(false);
+        expect(run.parsed.artifacts.credentialZeroed).toBe(true);
+        expect(run.parsed.calls.some((call: any) => call.method === "DELETE")).toBe(true);
+        expect(run.configBytes).not.toContain("issued-id");
+        expect(`${run.parsed.error} ${run.stderr}`).not.toContain(`ocx_data_${"d".repeat(40)}`);
+      } finally { run.cleanup(); }
+    });
+  }
+});
