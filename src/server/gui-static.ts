@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { browserSecurityHeaders } from "./auth-cors";
-import type { GuiSessionBootstrap } from "./management-auth";
+import type { GuiSessionBootstrap } from "./gui-session";
 
 /** opencodex version, read from the packaged package.json (same source as the server bootstrap). */
 const VERSION = (() => {
@@ -70,7 +70,8 @@ function sessionBootstrapMeta(session: GuiSessionBootstrap): string {
   return [
     `<meta name="opencodex-session-token" content="${escapeHtmlAttribute(session.token)}">`,
     `<meta name="opencodex-session-csrf" content="${escapeHtmlAttribute(session.csrfToken)}">`,
-    `<meta name="opencodex-session-origin" content="${escapeHtmlAttribute(session.origin)}">`,
+    `<meta name="opencodex-session-origin" content="${escapeHtmlAttribute(session.browserOrigin)}">`,
+    `<meta name="opencodex-session-server-origin" content="${escapeHtmlAttribute(session.serverOrigin)}">`,
   ].join("");
 }
 

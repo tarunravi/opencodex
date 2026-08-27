@@ -1,0 +1,318 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import type { OcxConfig } from "../types";
+import { canonicalGuiBrowserOrigin } from "../lib/gui-pair-capability";
+import {
+  isAllowedManagementOrigin,
+  isApiAuthRequired,
+  isLoopbackHostname,
+  managementRequestOrigin,
+  parseHttpHost,
+} from "./auth-cors";
+
+export type GuiSessionIssuance =
+  | "loopback"
+  | "tailscale-identity"
+  | "pairing"
+  | "insecure-http-pairing";
+
+export interface GuiSessionRecord {
+  serverOrigin: string;
+  browserOrigin: string;
+  csrfToken: string;
+  expiresAt: number;
+  issuance: GuiSessionIssuance;
+}
+
+export interface GuiSessionBootstrap extends GuiSessionRecord {
+  token: string;
+}
+
+export interface GuiPairingGrantRecord {
+  serverOrigin: string;
+  browserOrigin: string;
+  expiresAt: number;
+}
+
+export interface GuiSessionState {
+  sessions: Map<string, GuiSessionRecord>;
+  pairingGrants: Map<string, GuiPairingGrantRecord>;
+}
+
+export interface GuiSessionRequestContext {
+  trustedTailscaleIngress: boolean;
+  now?: number;
+}
+
+export type GuiSessionAdmission =
+  | { ok: true; principal: "gui-session"; session: GuiSessionRecord }
+  | { ok: false; reason: "missing" | "expired" | "server-origin" | "browser-origin" | "csrf" };
+
+export const LOOPBACK_GUI_SESSION_TTL_MS = 5 * 60_000;
+export const REMOTE_GUI_SESSION_TTL_MS = 12 * 60 * 60_000;
+export const GUI_PAIRING_GRANT_TTL_MS = 5 * 60_000;
+export const GUI_SESSION_LIMIT = 128;
+export const GUI_PAIRING_GRANT_LIMIT = 64;
+export const GUI_PAIRING_GRANT_RATE_LIMIT = 8;
+export const GUI_PAIRING_GRANT_RATE_WINDOW_MS = 60_000;
+
+const pairingGrantCreations = new WeakMap<GuiSessionState, number[]>();
+
+export class GuiPairingGrantRateLimitError extends Error {
+  constructor() {
+    super("GUI pairing grant rate limit exceeded");
+    this.name = "GuiPairingGrantRateLimitError";
+  }
+}
+
+function equalSecret(actual: string, expected: string): boolean {
+  const encoder = new TextEncoder();
+  const left = encoder.encode(actual);
+  const right = encoder.encode(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function canonicalHttpOrigin(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+export function isRemoteGuiBrowserOriginAllowed(browserOrigin: string, config: OcxConfig): boolean {
+  const canonical = canonicalGuiBrowserOrigin(browserOrigin);
+  if (!canonical || canonical !== browserOrigin) return false;
+  const publicOrigin = canonicalHttpOrigin(config.hub?.managementPublicOrigin);
+  if (publicOrigin === canonical) return true;
+  return (config.corsAllowOrigins ?? []).some(value => canonicalGuiBrowserOrigin(value) === canonical);
+}
+
+function pruneExpired(state: GuiSessionState, now: number): void {
+  for (const [token, session] of state.sessions) {
+    if (session.expiresAt <= now) state.sessions.delete(token);
+  }
+  for (const [digest, grant] of state.pairingGrants) {
+    if (grant.expiresAt <= now) state.pairingGrants.delete(digest);
+  }
+}
+
+function evictOldestSession(state: GuiSessionState): void {
+  while (state.sessions.size >= GUI_SESSION_LIMIT) {
+    const oldest = state.sessions.keys().next().value as string | undefined;
+    if (!oldest) return;
+    state.sessions.delete(oldest);
+  }
+}
+
+function mintSession(
+  serverOrigin: string,
+  browserOrigin: string,
+  issuance: GuiSessionIssuance,
+  state: GuiSessionState,
+  now: number,
+): GuiSessionBootstrap {
+  pruneExpired(state, now);
+  evictOldestSession(state);
+  let token: string;
+  do {
+    token = `ocx_session_${randomBytes(32).toString("base64url")}`;
+  } while (state.sessions.has(token));
+  const session: GuiSessionRecord = {
+    serverOrigin,
+    browserOrigin,
+    csrfToken: randomBytes(32).toString("base64url"),
+    expiresAt: now + (issuance === "loopback" ? LOOPBACK_GUI_SESSION_TTL_MS : REMOTE_GUI_SESSION_TTL_MS),
+    issuance,
+  };
+  state.sessions.set(token, session);
+  return { token, ...session };
+}
+
+function tailscaleLoginAllowed(req: Request, config: OcxConfig): boolean {
+  const login = req.headers.get("Tailscale-User-Login")?.trim();
+  if (!login) return false;
+  return (config.remoteGui?.allowedTailscaleUsers ?? []).some(user => user === login);
+}
+
+export function issueGuiSession(
+  req: Request,
+  config: OcxConfig,
+  state: GuiSessionState,
+  context: GuiSessionRequestContext = { trustedTailscaleIngress: false },
+): GuiSessionBootstrap | null {
+  if (req.method !== "GET") return null;
+  const host = parseHttpHost(req.headers.get("Host"));
+  if (!host) return null;
+  const now = context.now ?? Date.now();
+
+  if (!isApiAuthRequired(config)) {
+    if (!isLoopbackHostname(host.hostname) || !isAllowedManagementOrigin(req, config)) return null;
+    const origin = managementRequestOrigin(req, config);
+    return origin ? mintSession(origin, origin, "loopback", state, now) : null;
+  }
+
+  if (
+    config.runtimeRole !== "hub"
+    || !context.trustedTailscaleIngress
+    || !tailscaleLoginAllowed(req, config)
+    || !isAllowedManagementOrigin(req, config)
+  ) return null;
+  const serverOrigin = managementRequestOrigin(req, config);
+  if (!serverOrigin || new URL(serverOrigin).protocol !== "https:") return null;
+  const browserOrigin = canonicalGuiBrowserOrigin(req.headers.get("Origin") ?? serverOrigin);
+  if (!browserOrigin || !isRemoteGuiBrowserOriginAllowed(browserOrigin, config)) return null;
+  return mintSession(serverOrigin, browserOrigin, "tailscale-identity", state, now);
+}
+
+function pairingGrantDigest(grant: string): string {
+  return createHash("sha256").update(grant).digest("base64url");
+}
+
+function findPairingGrant(
+  grant: string,
+  state: GuiSessionState,
+): [string, GuiPairingGrantRecord] | null {
+  const digest = pairingGrantDigest(grant);
+  for (const [candidate, record] of state.pairingGrants) {
+    if (equalSecret(candidate, digest)) return [candidate, record];
+  }
+  return null;
+}
+
+function consumeGrantRateSlot(state: GuiSessionState, now: number): void {
+  const recent = (pairingGrantCreations.get(state) ?? [])
+    .filter(createdAt => createdAt > now - GUI_PAIRING_GRANT_RATE_WINDOW_MS);
+  if (recent.length >= GUI_PAIRING_GRANT_RATE_LIMIT) throw new GuiPairingGrantRateLimitError();
+  recent.push(now);
+  pairingGrantCreations.set(state, recent);
+}
+
+export function createGuiPairingGrant(
+  browserOrigin: string,
+  config: OcxConfig,
+  state: GuiSessionState,
+  now = Date.now(),
+): { grant: string; browserOrigin: string; serverOrigin: string; expiresAt: number } {
+  const canonicalBrowserOrigin = canonicalGuiBrowserOrigin(browserOrigin);
+  const serverOrigin = canonicalHttpOrigin(config.hub?.managementPublicOrigin);
+  if (
+    config.runtimeRole !== "hub"
+    || !canonicalBrowserOrigin
+    || canonicalBrowserOrigin !== browserOrigin
+    || !serverOrigin
+    || !isRemoteGuiBrowserOriginAllowed(canonicalBrowserOrigin, config)
+  ) throw new TypeError("remote GUI origin is not allowed");
+  pruneExpired(state, now);
+  consumeGrantRateSlot(state, now);
+  if (state.pairingGrants.size >= GUI_PAIRING_GRANT_LIMIT) throw new GuiPairingGrantRateLimitError();
+  let grant: string;
+  let digest: string;
+  do {
+    grant = `ocx_pair_${randomBytes(32).toString("base64url")}`;
+    digest = pairingGrantDigest(grant);
+  } while (state.pairingGrants.has(digest));
+  const expiresAt = now + GUI_PAIRING_GRANT_TTL_MS;
+  state.pairingGrants.set(digest, { browserOrigin: canonicalBrowserOrigin, serverOrigin, expiresAt });
+  return { grant, browserOrigin: canonicalBrowserOrigin, serverOrigin, expiresAt };
+}
+
+function strictPairingGrantBody(body: unknown): string | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  if (Object.keys(record).length !== 1 || typeof record.grant !== "string") return null;
+  return /^ocx_pair_[A-Za-z0-9_-]{43}$/.test(record.grant) ? record.grant : null;
+}
+
+function hasAlternateCredential(req: Request): boolean {
+  return req.headers.has("authorization")
+    || req.headers.has("x-opencodex-api-key")
+    || req.headers.has("x-api-key");
+}
+
+export function consumeGuiPairingGrant(
+  req: Request,
+  body: unknown,
+  config: OcxConfig,
+  state: GuiSessionState,
+  now = Date.now(),
+): GuiSessionBootstrap | null {
+  if (req.method !== "POST" || hasAlternateCredential(req) || config.runtimeRole !== "hub") return null;
+  const grant = strictPairingGrantBody(body);
+  const browserOrigin = canonicalGuiBrowserOrigin(req.headers.get("Origin"));
+  if (!grant || !browserOrigin) return null;
+  const found = findPairingGrant(grant, state);
+  if (!found) return null;
+  const [digest, record] = found;
+  if (record.expiresAt <= now) {
+    state.pairingGrants.delete(digest);
+    return null;
+  }
+  if (browserOrigin !== record.browserOrigin) return null;
+  const serverOrigin = managementRequestOrigin(req, config);
+  if (serverOrigin !== record.serverOrigin) return null;
+  const serverUrl = new URL(serverOrigin);
+  let issuance: GuiSessionIssuance;
+  if (serverUrl.protocol === "https:") issuance = "pairing";
+  else if (
+    serverUrl.protocol === "http:"
+    && !isLoopbackHostname(serverUrl.hostname)
+    && config.remoteGui?.allowInsecureHttp === true
+  ) issuance = "insecure-http-pairing";
+  else return null;
+  state.pairingGrants.delete(digest);
+  return mintSession(record.serverOrigin, record.browserOrigin, issuance, state, now);
+}
+
+function requestCredential(req: Request): string | null {
+  return req.headers.get("x-opencodex-api-key")?.trim()
+    || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim()
+    || null;
+}
+
+function findSession(
+  credential: string,
+  state: GuiSessionState,
+): [string, GuiSessionRecord] | null {
+  for (const [token, session] of state.sessions) {
+    if (equalSecret(credential, token)) return [token, session];
+  }
+  return null;
+}
+
+export function authorizeGuiSessionRequest(
+  req: Request,
+  config: OcxConfig,
+  state: GuiSessionState,
+  now = Date.now(),
+): GuiSessionAdmission {
+  const credential = requestCredential(req);
+  if (!credential) return { ok: false, reason: "missing" };
+  const found = findSession(credential, state);
+  if (!found) return { ok: false, reason: "missing" };
+  const [token, session] = found;
+  if (session.expiresAt <= now) {
+    state.sessions.delete(token);
+    return { ok: false, reason: "expired" };
+  }
+  if (managementRequestOrigin(req, config) !== session.serverOrigin) {
+    return { ok: false, reason: "server-origin" };
+  }
+  const claimedBrowserOrigin = req.headers.get("x-opencodex-gui-origin");
+  const browserOrigin = req.headers.get("Origin");
+  const safeMethod = req.method === "GET" || req.method === "HEAD";
+  if (
+    claimedBrowserOrigin !== session.browserOrigin
+    || (browserOrigin !== null && browserOrigin !== session.browserOrigin)
+    || (!safeMethod && browserOrigin !== session.browserOrigin)
+  ) return { ok: false, reason: "browser-origin" };
+  if (!safeMethod) {
+    const csrf = req.headers.get("x-opencodex-csrf-token")?.trim();
+    if (!csrf || !equalSecret(csrf, session.csrfToken)) return { ok: false, reason: "csrf" };
+  }
+  if (session.issuance !== "loopback") session.expiresAt = now + REMOTE_GUI_SESSION_TTL_MS;
+  return { ok: true, principal: "gui-session", session };
+}

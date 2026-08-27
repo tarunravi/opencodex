@@ -53,8 +53,12 @@ function needsApiAuth(input: RequestInfo | URL): boolean {
   try {
     const raw = input instanceof Request ? input.url : String(input);
     const url = new URL(raw, window.location.href);
-    // Absolute cross-origin URLs must never get the local API token or 401 prompt.
-    if (url.origin !== window.location.origin) return false;
+    const admittedOrigin = memoryToken?.startsWith("ocx_session_")
+      ? memorySessionServerOrigin
+      : window.location.origin;
+    // A session is destination-bound. Third-party origins get neither credentials
+    // nor the local admin-token prompt.
+    if (!admittedOrigin || url.origin !== admittedOrigin) return false;
     return url.pathname.startsWith("/api/");
   } catch {
     return false;
@@ -67,7 +71,8 @@ const LEGACY_TOKEN_KEY = "opencodex-api-token";
 /** In-memory only — never write tokens to web storage (XSS can read sessionStorage/localStorage). */
 let memoryToken: string | null = null;
 let memoryCsrfToken: string | null = null;
-let memorySessionOrigin: string | null = null;
+let memorySessionBrowserOrigin: string | null = null;
+let memorySessionServerOrigin: string | null = null;
 
 function readToken(): string | null {
   return memoryToken;
@@ -80,7 +85,8 @@ function storeToken(token: string): void {
 function clearToken(): void {
   memoryToken = null;
   memoryCsrfToken = null;
-  memorySessionOrigin = null;
+  memorySessionBrowserOrigin = null;
+  memorySessionServerOrigin = null;
 }
 
 function takeMetaContent(name: string): string | null {
@@ -93,8 +99,9 @@ function takeMetaContent(name: string): string | null {
 function loadInjectedSession(): void {
   const token = takeMetaContent("opencodex-session-token");
   const csrfToken = takeMetaContent("opencodex-session-csrf");
-  const origin = takeMetaContent("opencodex-session-origin");
-  storeSession(token, csrfToken, origin);
+  const browserOrigin = takeMetaContent("opencodex-session-origin");
+  const serverOrigin = takeMetaContent("opencodex-session-server-origin");
+  storeSession(token, csrfToken, browserOrigin, serverOrigin, window.location.origin);
 }
 
 /** Clear memory only when it still holds `expected` (avoid wiping a newer concurrent store). */
@@ -103,11 +110,26 @@ function clearTokenIfCurrent(expected: string | null): void {
 }
 
 /** Validate and store a server-minted GUI session; rejects anything bound to another origin. */
-function storeSession(token: string | null, csrfToken: string | null, origin: string | null): boolean {
-  if (!token?.startsWith("ocx_session_") || !csrfToken || origin !== window.location.origin) return false;
+function storeSession(
+  token: string | null,
+  csrfToken: string | null,
+  browserOrigin: string | null,
+  serverOrigin: string | null,
+  expectedServerOrigin: string,
+): boolean {
+  if (
+    !token?.startsWith("ocx_session_")
+    || !csrfToken
+    || browserOrigin !== window.location.origin
+    || serverOrigin !== expectedServerOrigin
+  ) {
+    clearToken();
+    return false;
+  }
   memoryToken = token;
   memoryCsrfToken = csrfToken;
-  memorySessionOrigin = origin;
+  memorySessionBrowserOrigin = browserOrigin;
+  memorySessionServerOrigin = serverOrigin;
   return true;
 }
 
@@ -150,10 +172,19 @@ async function reBootstrapSessionToken(): Promise<RebootstrapResult> {
       return response.status >= 400 && response.status < 500 ? { kind: "unavailable" } : { kind: "failed" };
     }
     const html = await response.text();
+    let responseOrigin: string;
+    try {
+      responseOrigin = new URL(response.url || SESSION_REBOOTSTRAP_PATH, window.location.href).origin;
+    } catch {
+      clearToken();
+      return { kind: "unavailable" };
+    }
     const stored = storeSession(
       metaContentFromHtml(html, "opencodex-session-token"),
       metaContentFromHtml(html, "opencodex-session-csrf"),
       metaContentFromHtml(html, "opencodex-session-origin"),
+      metaContentFromHtml(html, "opencodex-session-server-origin"),
+      responseOrigin,
     );
     const token = readToken();
     if (stored && token) return { kind: "minted", token };
@@ -188,8 +219,12 @@ function clearLegacySessionToken(): void {
 function withToken(input: RequestInfo | URL, init: RequestInit | undefined, token: string): [RequestInfo | URL, RequestInit | undefined] {
   const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
   headers.set("X-OpenCodex-API-Key", token);
-  if (memorySessionOrigin && memoryCsrfToken && token.startsWith("ocx_session_")) {
-    headers.set("X-OpenCodex-GUI-Origin", memorySessionOrigin);
+  if (memorySessionBrowserOrigin && memorySessionServerOrigin && memoryCsrfToken && token.startsWith("ocx_session_")) {
+    const raw = input instanceof Request ? input.url : String(input);
+    let destinationOrigin: string | null = null;
+    try { destinationOrigin = new URL(raw, window.location.href).origin; } catch { /* leave null */ }
+    if (destinationOrigin !== memorySessionServerOrigin) return [input, init];
+    headers.set("X-OpenCodex-GUI-Origin", memorySessionBrowserOrigin);
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     if (method !== "GET" && method !== "HEAD") {
       headers.set("X-OpenCodex-CSRF-Token", memoryCsrfToken);
@@ -305,7 +340,8 @@ export function resetApiAuthFetchForTests(adminTokenPrompt: AdminTokenPrompt = p
   installed = false;
   memoryToken = null;
   memoryCsrfToken = null;
-  memorySessionOrigin = null;
+  memorySessionBrowserOrigin = null;
+  memorySessionServerOrigin = null;
   resolutionInFlight = null;
   rawFetch = null;
   promptCancelled = false;

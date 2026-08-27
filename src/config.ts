@@ -864,11 +864,60 @@ const agentTaskRecoverySchema = z.object({
 
 const runtimeRoleSchema = z.enum(["standalone", "hub", "client"]);
 
+function canonicalHttpOrigin(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+const hubConfigSchema = z.object({
+  managementPublicOrigin: z.string().transform((value, ctx) => {
+    const origin = canonicalHttpOrigin(value);
+    if (!origin) {
+      ctx.addIssue({ code: "custom", message: "must be a canonical http(s) origin without credentials, path, query, or fragment" });
+      return z.NEVER;
+    }
+    return origin;
+  }).optional(),
+}).strict();
+
+const tailscaleUserSchema = z.string().trim().min(1).superRefine((value, ctx) => {
+  if (new TextEncoder().encode(value).byteLength > 320) {
+    ctx.addIssue({ code: "custom", message: "must be at most 320 UTF-8 bytes" });
+  }
+  if (/[\x00-\x1f\x7f]/.test(value)) {
+    ctx.addIssue({ code: "custom", message: "must not contain ASCII control characters" });
+  }
+});
+
+const remoteGuiConfigSchema = z.object({
+  allowedTailscaleUsers: z.array(tailscaleUserSchema).max(64).superRefine((users, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < users.length; index++) {
+      const user = users[index]!;
+      if (seen.has(user)) {
+        ctx.addIssue({ code: "custom", path: [index], message: "must contain unique users after trimming" });
+      }
+      seen.add(user);
+    }
+  }).optional(),
+  allowInsecureHttp: z.boolean().optional(),
+}).strict();
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   // A malformed hand edit must disable only remote-role behavior, not discard
   // providers or data-plane keys. Live writes are rejected explicitly below.
   runtimeRole: runtimeRoleSchema.optional().catch(undefined),
+  // Malformed optional remote blocks disable only remote GUI behavior. Live
+  // candidates are rejected explicitly by remoteGuiConfigError below.
+  hub: hubConfigSchema.optional().catch(undefined),
+  remoteGui: remoteGuiConfigSchema.optional().catch(undefined),
   managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
   // Invalid hand edits disable only this opt-in circuit. Live writes remain strict.
   upstreamHostCircuitThreshold: z.number().int()
@@ -1724,6 +1773,26 @@ function warnDegradedRuntimeRole(rawParsed: unknown): void {
   if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
 }
 
+function malformedOptionalRemoteBlockWarning(
+  rawParsed: unknown,
+  key: "hub" | "remoteGui",
+): string | null {
+  const raw = rawConfigRecord(rawParsed);
+  if (!raw || !Object.hasOwn(raw, key) || raw[key] === undefined) return null;
+  const schema = key === "hub" ? hubConfigSchema : remoteGuiConfigSchema;
+  const result = schema.safeParse(raw[key]);
+  if (result.success) return null;
+  const field = result.error.issues[0]?.path.join(".");
+  return `${key}${field ? `.${field}` : ""} ignored: invalid remote GUI configuration`;
+}
+
+function warnDegradedOptionalRemoteBlocks(rawParsed: unknown): void {
+  for (const key of ["hub", "remoteGui"] as const) {
+    const warning = malformedOptionalRemoteBlockWarning(rawParsed, key);
+    if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
+  }
+}
+
 type NativeSubagentPersistedField = "injectionModel" | "injectionEffort" | "syncCodexSubagentDefaults";
 
 function rawConfigRecord(rawParsed: unknown): Record<string, unknown> | null {
@@ -1878,6 +1947,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedUpstreamHostCircuitThreshold(parsed);
       warnDegradedAgentTaskRecovery(parsed);
       warnDegradedRuntimeRole(parsed);
+      warnDegradedOptionalRemoteBlocks(parsed);
       return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
     }
     // Schema validation failed — merge defaults into the raw object instead of
@@ -1903,6 +1973,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedUpstreamHostCircuitThreshold(parsed);
       warnDegradedAgentTaskRecovery(parsed);
       warnDegradedRuntimeRole(parsed);
+      warnDegradedOptionalRemoteBlocks(parsed);
       return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
     }
     // Still failing, but if every complaint is about one or more named entries
@@ -1924,6 +1995,7 @@ export function loadConfig(): OcxConfig {
         warnDegradedUpstreamHostCircuitThreshold(parsed);
         warnDegradedAgentTaskRecovery(parsed);
         warnDegradedRuntimeRole(parsed);
+        warnDegradedOptionalRemoteBlocks(parsed);
         return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
       }
     }
@@ -2026,6 +2098,10 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   if (recoveryWarning) warnings.push(recoveryWarning);
   const runtimeRoleWarning = malformedRuntimeRoleWarning(rawParsed);
   if (runtimeRoleWarning) warnings.push(runtimeRoleWarning);
+  const hubWarning = malformedOptionalRemoteBlockWarning(rawParsed, "hub");
+  if (hubWarning) warnings.push(hubWarning);
+  const remoteGuiWarning = malformedOptionalRemoteBlockWarning(rawParsed, "remoteGui");
+  if (remoteGuiWarning) warnings.push(remoteGuiWarning);
   if (syncDisabledReason) {
     warnings.push(`syncCodexSubagentDefaults ignored: ${syncDisabledReason}`);
   }
@@ -2122,6 +2198,23 @@ function runtimeRoleError(value: unknown): string | null {
   if (!raw || !Object.hasOwn(raw, "runtimeRole") || raw.runtimeRole === undefined) return null;
   if (runtimeRoleSchema.safeParse(raw.runtimeRole).success) return null;
   return 'schema_invalid: runtimeRole: must be one of "standalone", "hub", or "client"';
+}
+
+function remoteGuiConfigError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw) return null;
+  for (const [key, schema] of [
+    ["hub", hubConfigSchema],
+    ["remoteGui", remoteGuiConfigSchema],
+  ] as const) {
+    if (!Object.hasOwn(raw, key) || raw[key] === undefined) continue;
+    const result = schema.safeParse(raw[key]);
+    if (result.success) continue;
+    const issue = result.error.issues[0];
+    const field = issue?.path.join(".");
+    return `schema_invalid: ${key}${field ? `.${field}` : ""}: ${issue?.message ?? "invalid configuration"}`;
+  }
+  return null;
 }
 
 /**
@@ -2242,6 +2335,7 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
     ?? emptyCompletionRetryError(value)
     ?? oauthOpenBrowserError(value)
     ?? runtimeRoleError(value)
+    ?? remoteGuiConfigError(value)
     ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);

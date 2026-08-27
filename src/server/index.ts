@@ -205,6 +205,16 @@ import {
 } from "../lib/local-management-attestation";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../lib/system-restart-contract";
 import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../lib/local-provider-reload-contract";
+import {
+  GUI_PAIR_BROWSER_ORIGIN_HEADER,
+  GUI_PAIR_CAPABILITY_VERSION,
+  GUI_PAIR_PATH,
+} from "../lib/gui-pair-capability";
+import {
+  GuiPairingGrantRateLimitError,
+  consumeGuiPairingGrant,
+  createGuiPairingGrant,
+} from "./gui-session";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
 import {
   createRuntimePackageTreeIntegrityGuard,
@@ -219,6 +229,7 @@ const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 // Header-safe by construction: a key id reaches a response header, so anything outside this
 // class could inject a header break or a control character into a response we control.
 const REMOTE_CATALOG_KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+const GUI_PAIRING_EXCHANGE_BODY_LIMIT = 4 * 1024;
 
 /**
  * Name WHICH configured credential was admitted, so a multi-key operator can attribute a
@@ -1037,6 +1048,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           port: healthPort,
           restartCapability: SYSTEM_RESTART_CAPABILITY_VERSION,
           providerReloadCapability: LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION,
+          guiPairCapability: GUI_PAIR_CAPABILITY_VERSION,
         }, 200, req, policy);
         const challenge = req.headers.get(LOCAL_ATTESTATION_CHALLENGE_HEADER);
         if (challenge) {
@@ -1095,6 +1107,25 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         // gate used. Consent-bearing routes need this: request headers are forgeable
         // by anything holding the admin token, the credential is not.
         const principal = managementPrincipal(req, managementAuth, config, localManagementAuth) ?? undefined;
+        if (url.pathname === GUI_PAIR_PATH) {
+          if (req.method !== "POST" || principal !== "gui-pair-capability" || !managementAuth.available) {
+            return withManagementCors(Response.json({ error: "GUI pairing capability required" }, { status: 403 }), req, config);
+          }
+          try {
+            const grant = createGuiPairingGrant(
+              req.headers.get(GUI_PAIR_BROWSER_ORIGIN_HEADER) ?? "",
+              config,
+              managementAuth,
+            );
+            return withManagementCors(Response.json(grant, {
+              status: 201,
+              headers: { "Cache-Control": "no-store" },
+            }), req, config);
+          } catch (error) {
+            const status = error instanceof GuiPairingGrantRateLimitError ? 429 : 403;
+            return withManagementCors(Response.json({ error: "GUI pairing grant refused" }, { status }), req, config);
+          }
+        }
         const mgmtResponse = await handleManagementAPI(req, url, config, deps.managementApi, principal);
         if (mgmtResponse) return withManagementCors(mgmtResponse, req, config);
         return withManagementCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
@@ -1770,14 +1801,45 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, policy);
       }
 
-      const guiSessionCandidate = req.method === "GET" && (url.pathname === "/" || !url.pathname.includes("."))
-        ? issueGuiSession(req, config, managementAuth)
-        : null;
-      // Dedicated bootstrap path: answer without requiring a packaged GUI build, so the
-      // Vite dev server can mint an origin-bound loopback session on a fresh checkout.
-      if (url.pathname === "/opencodex-session" && guiSessionCandidate) {
-        return serveSessionBootstrap(guiSessionCandidate);
+      if (url.pathname === "/opencodex-session") {
+        if (req.method === "GET") {
+          const session = issueGuiSession(req, config, managementAuth, { trustedTailscaleIngress: false });
+          return session
+            ? withManagementCors(serveSessionBootstrap(session), req, config)
+            : new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } });
+        }
+        if (req.method === "POST") {
+          const declaredLength = Number(req.headers.get("content-length") ?? "0");
+          if (!Number.isFinite(declaredLength) || declaredLength > GUI_PAIRING_EXCHANGE_BODY_LIMIT) {
+            return Response.json({ error: "pairing exchange body too large" }, { status: 413, headers: { "Cache-Control": "no-store" } });
+          }
+          const text = await req.text();
+          if (Buffer.byteLength(text) > GUI_PAIRING_EXCHANGE_BODY_LIMIT) {
+            return Response.json({ error: "pairing exchange body too large" }, { status: 413, headers: { "Cache-Control": "no-store" } });
+          }
+          let body: unknown;
+          try {
+            body = JSON.parse(text);
+          } catch {
+            return Response.json({ error: "invalid pairing exchange body" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+          }
+          if (!body || typeof body !== "object" || Array.isArray(body)
+            || Object.keys(body as Record<string, unknown>).length !== 1
+            || typeof (body as Record<string, unknown>).grant !== "string") {
+            return Response.json({ error: "invalid pairing exchange body" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+          }
+          const session = managementAuth.available
+            ? consumeGuiPairingGrant(req, body, config, managementAuth)
+            : null;
+          return session
+            ? withManagementCors(serveSessionBootstrap(session), req, config)
+            : new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } });
+        }
+        return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, policy);
       }
+      const guiSessionCandidate = req.method === "GET" && (url.pathname === "/" || !url.pathname.includes("."))
+        ? issueGuiSession(req, config, managementAuth, { trustedTailscaleIngress: false })
+        : null;
       const guiFile = serveGuiFile(url.pathname, undefined, guiSessionCandidate ?? undefined);
       if (guiFile) return guiFile;
       if (url.pathname === "/" && req.method === "GET") {

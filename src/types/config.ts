@@ -246,10 +246,26 @@ export interface OcxConfigRebaseProvenance {
 
 export type OcxRuntimeRole = "standalone" | "hub" | "client";
 
+export interface OcxHubConfig {
+  /** Canonical browser-reachable management origin advertised by a hub. */
+  managementPublicOrigin?: string;
+}
+
+export interface OcxRemoteGuiConfig {
+  /** Exact Tailscale login identities permitted to receive an automatic remote GUI session. */
+  allowedTailscaleUsers?: string[];
+  /** Explicitly permit one-time pairing exchange over non-loopback HTTP. */
+  allowInsecureHttp?: boolean;
+}
+
 export interface OcxConfig {
   port: number;
   /** Runtime topology role. Absence preserves the historical standalone behavior. */
   runtimeRole?: OcxRuntimeRole;
+  /** Hub-only public management metadata. Presence is inert outside the hub role. */
+  hub?: OcxHubConfig;
+  /** Opt-in remote dashboard issuance policy. Presence is inert outside the hub role. */
+  remoteGui?: OcxRemoteGuiConfig;
   /** Opt in to one identical-turn retry when a Responses completion has no text or tool call. */
   emptyCompletionRetry?: boolean;
   /**
