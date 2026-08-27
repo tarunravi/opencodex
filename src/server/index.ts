@@ -1123,7 +1123,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             }), req, config);
           } catch (error) {
             const status = error instanceof GuiPairingGrantRateLimitError ? 429 : 403;
-            return withManagementCors(Response.json({ error: "GUI pairing grant refused" }, { status }), req, config);
+            return withManagementCors(Response.json({ error: "GUI pairing grant refused" }, {
+              status,
+              ...(status === 429 ? { headers: { "Retry-After": "60" } } : {}),
+            }), req, config);
           }
         }
         const mgmtResponse = await handleManagementAPI(req, url, config, deps.managementApi, principal);
@@ -1806,34 +1809,34 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           const session = issueGuiSession(req, config, managementAuth, { trustedTailscaleIngress: false });
           return session
             ? withManagementCors(serveSessionBootstrap(session), req, config)
-            : new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } });
+            : withManagementCors(new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } }), req, config);
         }
         if (req.method === "POST") {
           const declaredLength = Number(req.headers.get("content-length") ?? "0");
           if (!Number.isFinite(declaredLength) || declaredLength > GUI_PAIRING_EXCHANGE_BODY_LIMIT) {
-            return Response.json({ error: "pairing exchange body too large" }, { status: 413, headers: { "Cache-Control": "no-store" } });
+            return withManagementCors(Response.json({ error: "pairing exchange body too large" }, { status: 413, headers: { "Cache-Control": "no-store" } }), req, config);
           }
           const text = await req.text();
           if (Buffer.byteLength(text) > GUI_PAIRING_EXCHANGE_BODY_LIMIT) {
-            return Response.json({ error: "pairing exchange body too large" }, { status: 413, headers: { "Cache-Control": "no-store" } });
+            return withManagementCors(Response.json({ error: "pairing exchange body too large" }, { status: 413, headers: { "Cache-Control": "no-store" } }), req, config);
           }
           let body: unknown;
           try {
             body = JSON.parse(text);
           } catch {
-            return Response.json({ error: "invalid pairing exchange body" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+            return withManagementCors(Response.json({ error: "invalid pairing exchange body" }, { status: 400, headers: { "Cache-Control": "no-store" } }), req, config);
           }
           if (!body || typeof body !== "object" || Array.isArray(body)
             || Object.keys(body as Record<string, unknown>).length !== 1
             || typeof (body as Record<string, unknown>).grant !== "string") {
-            return Response.json({ error: "invalid pairing exchange body" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+            return withManagementCors(Response.json({ error: "invalid pairing exchange body" }, { status: 400, headers: { "Cache-Control": "no-store" } }), req, config);
           }
           const session = managementAuth.available
             ? consumeGuiPairingGrant(req, body, config, managementAuth)
             : null;
           return session
             ? withManagementCors(serveSessionBootstrap(session), req, config)
-            : new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } });
+            : withManagementCors(new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } }), req, config);
         }
         return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, policy);
       }

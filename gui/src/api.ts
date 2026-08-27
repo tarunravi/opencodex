@@ -174,7 +174,8 @@ async function reBootstrapSessionToken(): Promise<RebootstrapResult> {
     const html = await response.text();
     let responseOrigin: string;
     try {
-      responseOrigin = new URL(response.url || SESSION_REBOOTSTRAP_PATH, window.location.href).origin;
+      if (!response.url) throw new TypeError("bootstrap response URL is missing");
+      responseOrigin = new URL(response.url).origin;
     } catch {
       clearToken();
       return { kind: "unavailable" };

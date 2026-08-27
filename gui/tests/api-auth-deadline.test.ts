@@ -68,10 +68,14 @@ function hangUntilAborted(signal?: AbortSignal | null): Promise<Response> {
   });
 }
 
-const MINTED = () => new Response(sessionDocumentHtml("ocx_session_fresh", "fresh-csrf", "http://localhost"), {
-  status: 200,
-  headers: { "Content-Type": "text/html" },
-});
+const MINTED = () => {
+  const response = new Response(sessionDocumentHtml("ocx_session_fresh", "fresh-csrf", "http://localhost"), {
+    status: 200,
+    headers: { "Content-Type": "text/html" },
+  });
+  Object.defineProperty(response, "url", { configurable: true, value: "http://localhost/opencodex-session" });
+  return response;
+};
 test("hung bootstrap fails the wave within the deadline and a later wave re-bootstraps to success", async () => {
   setRebootstrapTimeoutForTests(50);
   let bootstrapCalls = 0;

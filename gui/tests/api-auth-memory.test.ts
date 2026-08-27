@@ -400,10 +400,10 @@ test("expired session silently re-bootstraps from the served document without pr
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     if (url.pathname === "/opencodex-session") {
       bootstrapFetches += 1;
-      return new Response(sessionDocumentHtml("ocx_session_fresh", "fresh-csrf", "http://localhost"), {
-        status: 200,
-        headers: { "Content-Type": "text/html" },
-      });
+      return htmlResponseAt(
+        sessionDocumentHtml("ocx_session_fresh", "fresh-csrf", "http://localhost"),
+        "http://localhost/opencodex-session",
+      );
     }
     seenApiKeys.push(headers.get("X-OpenCodex-API-Key"));
     seenGuiOrigins.push(headers.get("X-OpenCodex-GUI-Origin"));
@@ -436,10 +436,10 @@ test("a session minted for another origin is rejected and the prompt fallback st
     const url = new URL(raw, "http://localhost/");
     const headers = new Headers(init?.headers);
     if (url.pathname === "/opencodex-session") {
-      return new Response(sessionDocumentHtml("ocx_session_foreign", "foreign-csrf", "http://192.0.2.10:10100"), {
-        status: 200,
-        headers: { "Content-Type": "text/html" },
-      });
+      return htmlResponseAt(
+        sessionDocumentHtml("ocx_session_foreign", "foreign-csrf", "http://192.0.2.10:10100"),
+        "http://localhost/opencodex-session",
+      );
     }
     if (headers.get("X-OpenCodex-API-Key") === "manual-admin-token") return new Response("{}", { status: 200 });
     return new Response("unauthorized", { status: 401 });
