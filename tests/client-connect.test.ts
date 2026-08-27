@@ -262,3 +262,120 @@ describe("connect transaction and offline disconnect", () => {
     });
   }
 });
+
+function runConnectedStateScenario(mode: "sync-401" | "sync-503" | "disconnect-conflict") {
+  const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-client-state-home-"));
+  const codexHome = mkdtempSync(join(tmpdir(), "ocx-client-state-codex-"));
+  const token = `ocx_data_${"e".repeat(40)}`;
+  const fingerprint = createHash("sha256").update(token).digest("hex");
+  const catalog = '{"models":[]}';
+  const etag = `"sha256-${createHash("sha256").update(catalog).digest("base64url")}"`;
+  const selectedClients = mode === "disconnect-conflict" ? ["codex"] : ["claude"];
+  writeFileSync(join(opencodexHome, "config.json"), JSON.stringify({
+    port: 10100,
+    providers: {},
+    defaultProvider: "openai",
+    runtimeRole: "client",
+    client: {
+      serverUrl: "https://hub.example.test",
+      managementUrl: "https://hub.example.test",
+      managementTransport: "direct",
+      selectedClients,
+      tokenEnv: "OPENCODEX_API_AUTH_TOKEN",
+      apiKeyId: "client-key-1",
+      tokenFingerprint: fingerprint,
+      protocolVersion: 1,
+      connectedAt: "2026-08-28T00:00:00.000Z",
+      catalogEtag: etag,
+      catalogSyncedAt: "2026-08-28T00:00:00.000Z",
+    },
+  }), "utf8");
+  writeFileSync(join(opencodexHome, "service-api-token"), `${token}\n`, { mode: 0o600 });
+  writeFileSync(join(codexHome, "opencodex-catalog.json"), catalog, "utf8");
+  writeFileSync(join(codexHome, "config.toml"), mode === "disconnect-conflict"
+    ? 'model_provider = "opencodex"\n'
+    : 'model_provider = "openai"\n', "utf8");
+  if (mode === "disconnect-conflict") {
+    writeFileSync(join(codexHome, "opencodex-journal.json"), JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from('model_provider = "openai"\n').toString("base64"),
+      originalProfile: null,
+      owner: { kind: "client", apiKeyId: "different-key" },
+      pid: 999_999,
+      timestamp: "2026-08-28T00:00:00.000Z",
+    }));
+  }
+  const script = `
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const { disconnectClient, syncConnectedClient } = require("./src/client/connect");
+    const { readClientConnectionState } = require("./src/client/state");
+    const mode = ${JSON.stringify(mode)};
+    (async () => {
+      let result = null;
+      let error = null;
+      try {
+        if (mode === "disconnect-conflict") result = await disconnectClient();
+        else result = await syncConnectedClient({}, {
+          fetchImpl: async () => Response.json({ error: "fixture" }, { status: mode === "sync-401" ? 401 : 503 }),
+        });
+      } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+      console.log(JSON.stringify({
+        result,
+        error,
+        state: readClientConnectionState(),
+        tokenExists: fs.existsSync(path.join(process.env.OPENCODEX_HOME, "service-api-token")),
+        journalExists: fs.existsSync(path.join(process.env.CODEX_HOME, "opencodex-journal.json")),
+      }));
+    })();
+  `;
+  const child = spawnSync(process.execPath, ["--eval", script], {
+    cwd: repoRoot,
+    env: { ...process.env, OPENCODEX_HOME: opencodexHome, CODEX_HOME: codexHome },
+    encoding: "utf8",
+  });
+  const parsed = JSON.parse(child.stdout.trim().split("\n").at(-1) ?? "{}") as Record<string, any>;
+  return {
+    status: child.status,
+    parsed,
+    cleanup: () => {
+      rmSync(opencodexHome, { recursive: true, force: true });
+      rmSync(codexHome, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("connected sync and disconnect conflicts", () => {
+  test("401 is a hard failure and never falls back to local providers", () => {
+    const run = runConnectedStateScenario("sync-401");
+    try {
+      expect(run.status).toBe(0);
+      expect(run.parsed.result).toBeNull();
+      expect(run.parsed.error).toContain("401");
+      expect(run.parsed.state.kind).toBe("connected");
+      expect(run.parsed.tokenExists).toBe(true);
+    } finally { run.cleanup(); }
+  });
+
+  test("hub 503 keeps and applies the last-known-good catalog as stale", () => {
+    const run = runConnectedStateScenario("sync-503");
+    try {
+      expect(run.status).toBe(0);
+      expect(run.parsed.error).toBeNull();
+      expect(run.parsed.result).toMatchObject({ stale: true, catalogWritten: false, injected: false });
+      expect(run.parsed.state.kind).toBe("connected");
+    } finally { run.cleanup(); }
+  });
+
+  test("journal ownership conflict preserves every artifact and connected state", () => {
+    const run = runConnectedStateScenario("disconnect-conflict");
+    try {
+      expect(run.status).toBe(0);
+      expect(run.parsed.result).toBeNull();
+      expect(run.parsed.error).toContain("journal ownership conflicts");
+      expect(run.parsed.state.kind).toBe("connected");
+      expect(run.parsed.tokenExists).toBe(true);
+      expect(run.parsed.journalExists).toBe(true);
+    } finally { run.cleanup(); }
+  });
+});
