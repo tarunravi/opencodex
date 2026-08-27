@@ -1166,23 +1166,43 @@ export function projectUsageSummary<T extends UsageSummary>(
   const apiKeyId = normalizeExactFilterValue(filter.apiKeyId);
   if (provider === null && model === null && apiKeyId === null) return summary;
 
+  // Re-summarise from the entries the summary was built from, rather than
+  // projecting over its rows.
+  //
+  // Projecting rows looked cheaper and was wrong in three ways that only show
+  // up together: breakdown rows past MAX_USAGE_MODEL_BREAKDOWN_ROWS are
+  // collapsed into a synthetic "other" row, so a provider living only in that
+  // tail is unfindable and reports matched:false despite real usage; a
+  // provider row is a whole-provider aggregate, so a model filter kept the
+  // provider's OTHER models in providers[] while models[] and the totals
+  // excluded them, contradicting itself inside one response; and a model row
+  // carries a single optional cost, so priced/unpriced/unmetered counts could
+  // only be guessed per model rather than counted per request.
+  //
+  // Key ownership is the outer slice: no provider/model attribution or bucket
+  // construction may observe rows belonging to another client key.
+  const keyFilteredEntries = apiKeyId === null
+    ? entries ?? []
+    : (entries ?? []).filter(entry => entry.apiKeyId === apiKeyId);
+
+  // The entries are already in hand on every path that filters, so the honest
+  // computation is also the simple one.
   const matches = (rowProvider: string, rowModel: string): boolean => {
     if (provider !== null && baseProviderLabel(rowProvider).toLowerCase() !== provider) return false;
     if (model !== null && rowModel.toLowerCase() !== model) return false;
     return true;
   };
 
-  // The apiKeyId filter drops whole ENTRIES, because a key owns the entry rather than any
-  // individual attempt within it. Provider and model filters below narrow to matching
-  // ATTRIBUTIONS instead: keeping a whole combo entry because one attempt matched drags the
-  // other attempts' tokens and cost into the filtered totals, so a two-attempt combo
-  // filtered to its cheap model would report the expensive model's spend too.
-  const source = apiKeyId === null
-    ? entries ?? []
-    : (entries ?? []).filter(entry => entry.apiKeyId === apiKeyId);
+  // Narrow to matching ATTRIBUTIONS, not matching entries.
+  //
+  // Keeping a whole combo entry because one of its attempts matched drags the
+  // other attempts' tokens and cost into the filtered totals: a two-attempt
+  // combo filtered to its cheap model reported the expensive model's spend
+  // too. Rewriting the entry down to its matching attempts is what makes the
+  // filtered numbers mean what the flag says.
   let comboOverlap = false;
   const filtered: PersistedUsageEntry[] = [];
-  for (const entry of source) {
+  for (const entry of keyFilteredEntries) {
     if (!entry.attempts?.length) {
       const identity = usageModelIdentity(entry.provider, entry.model, entry.resolvedModel);
       if (matches(entry.provider, identity.model)) filtered.push(entry);

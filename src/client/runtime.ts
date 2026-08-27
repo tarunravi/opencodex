@@ -45,19 +45,18 @@ export async function startClientRuntime(
   if (state.kind !== "connected") throw new Error(`client runtime refused: client state is ${state.kind}`);
   const config = loadConfig();
   const preferred = options.port ?? config.port ?? 10100;
-  const port = preferred === 0
-    ? 0
-    : await findAvailablePort(preferred, "127.0.0.1", {
-      preferRetryMs: options.port === undefined ? 750 : 5_000,
-      preferRetryIntervalMs: 50,
-      allowEphemeralFallback: options.port === undefined,
-    });
+  const port = await findAvailablePort(preferred, "127.0.0.1", {
+    preferRetryMs: options.port === undefined ? 750 : 5_000,
+    preferRetryIntervalMs: 50,
+    allowEphemeralFallback: options.port === undefined,
+  });
   const server = startMachineListener(port, { state: state.value });
+  const boundPort = server.port ?? port;
   activeServer = server;
-  activePort = server.port;
+  activePort = boundPort;
   installCrashGuards();
   writePid(process.pid);
-  writeRuntimePort({ pid: process.pid, port: server.port, hostname: "127.0.0.1" });
+  writeRuntimePort({ pid: process.pid, port: boundPort, hostname: "127.0.0.1" });
 
   let shuttingDown = false;
   const shutdown = () => {

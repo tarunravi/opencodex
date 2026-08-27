@@ -76,14 +76,18 @@ function relayDestination(suffix: string, target: HubRelayTarget, method: string
   return destination;
 }
 
-async function boundedBody(stream: ReadableStream<Uint8Array> | null, declared: string | null, limit: number): Promise<Uint8Array | null> {
+async function boundedBody(
+  stream: ReadableStream<Uint8Array> | null,
+  declared: string | null,
+  limit: number,
+): Promise<Uint8Array<ArrayBuffer> | null> {
   if (!stream) return null;
   const contentLength = declared === null ? null : Number(declared);
   if (contentLength !== null && (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > limit)) {
     throw new RangeError("body_too_large");
   }
   const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
+  const chunks: Uint8Array<ArrayBufferLike>[] = [];
   let length = 0;
   try {
     while (true) {
@@ -96,7 +100,8 @@ async function boundedBody(stream: ReadableStream<Uint8Array> | null, declared: 
   } finally {
     reader.releaseLock();
   }
-  const body = new Uint8Array(length);
+  // BodyInit requires an ArrayBuffer-backed view, not a SharedArrayBuffer-capable view.
+  const body: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(length));
   let offset = 0;
   for (const chunk of chunks) {
     body.set(chunk, offset);
@@ -132,7 +137,7 @@ export async function relayHubManagementRequest(
   const destination = relayDestination(suffix, target, method);
   if (!destination) return relayError(404, "hub relay path refused");
 
-  let body: Uint8Array | null;
+  let body: Uint8Array<ArrayBuffer> | null;
   try {
     body = method === "GET" || method === "HEAD"
       ? null
@@ -175,7 +180,7 @@ export async function relayHubManagementRequest(
     return relayError(502, "hub relay redirect refused");
   }
 
-  let responseBody: Uint8Array | null;
+  let responseBody: Uint8Array<ArrayBuffer> | null;
   const responseHeaders = filteredHeaders(upstream.headers, RESPONSE_HEADERS);
   if (!headersWithinLimit(responseHeaders)) {
     try { await upstream.body?.cancel(); } catch { /* best effort */ }

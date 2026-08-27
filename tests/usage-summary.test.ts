@@ -402,9 +402,9 @@ describe("projectUsageSummary", () => {
 
   test("filters by exact api key id before provider and model attribution", () => {
     const entries = [
-      entry({ ts: at, requestId: "key-a-openai", apiKeyId: "Key-A", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced, accountLogLabel: "account-a" }),
-      entry({ ts: at + 1, requestId: "key-a-anthropic", apiKeyId: "Key-A", provider: "anthropic", model: "claude-opus", usageStatus: "reported", usage: priced, accountLogLabel: "account-b" }),
-      entry({ ts: at + 2, requestId: "key-b", apiKeyId: "key-a", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced, accountLogLabel: "account-c" }),
+      entry({ ts: at, requestId: "key-a-openai", apiKeyId: "Key-A", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced, accountLogLabel: "main" }),
+      entry({ ts: at + 1, requestId: "key-a-anthropic", apiKeyId: "Key-A", provider: "anthropic", model: "claude-opus", usageStatus: "reported", usage: priced, accountLogLabel: "pabc123" }),
+      entry({ ts: at + 2, requestId: "key-b", apiKeyId: "key-a", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced, accountLogLabel: "pffffff" }),
       entry({ ts: at + 3, requestId: "legacy", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced }),
     ];
     const summary = summarizeUsage(entries, "30d", at + 4);
@@ -414,7 +414,7 @@ describe("projectUsageSummary", () => {
     expect(byKey.summary.requests).toBe(2);
     expect(byKey.models).toHaveLength(2);
     expect(byKey.providers).toHaveLength(2);
-    expect(byKey.accounts.map(row => row.accountLogLabel).sort()).toEqual(["account-a", "account-b"]);
+    expect(byKey.accounts.map(row => row.accountLogLabel).sort()).toEqual(["main", "pabc123"]);
 
     const combined = projectUsageSummary(summary, {
       apiKeyId: "Key-A",
