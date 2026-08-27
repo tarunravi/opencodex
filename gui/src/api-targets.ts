@@ -92,6 +92,18 @@ export function targetsFromMachineStatus(initialBase: string, status: MachineSta
   if (!machineOrigin || machineOrigin !== initial.machine.serverOrigin || !sharedOrigin) {
     throw new TypeError("machine status target origins are invalid");
   }
+  let advertisedShared: URL;
+  try { advertisedShared = new URL(status.sharedBase); } catch { throw new TypeError("machine status shared target is invalid"); }
+  if (advertisedShared.username || advertisedShared.password || advertisedShared.search || advertisedShared.hash) {
+    throw new TypeError("machine status shared target is invalid");
+  }
+  if (status.managementTransport === "direct") {
+    if (advertisedShared.origin !== sharedOrigin || advertisedShared.pathname !== "/") {
+      throw new TypeError("machine status direct target is inconsistent");
+    }
+  } else if (advertisedShared.origin !== machineOrigin || advertisedShared.pathname !== "/api/machine/hub-relay") {
+    throw new TypeError("machine status relay target is inconsistent");
+  }
   const machine = target("machine", trimBase(initialBase), machineOrigin, "same-origin");
   const shared = status.managementTransport === "relay"
     ? target("shared", `${trimBase(initialBase)}/api/machine/hub-relay`, sharedOrigin, "relay")

@@ -145,7 +145,9 @@ export async function relayHubManagementRequest(
   const headers = filteredHeaders(stripped, REQUEST_HEADERS);
   if (!headersWithinLimit(headers)) return relayError(431, "hub relay request headers too large");
   const browserOrigin = canonicalOrigin(target.browserOrigin);
-  if (!browserOrigin || headers.get("origin") !== browserOrigin) {
+  const mutation = method !== "GET" && method !== "HEAD";
+  const suppliedOrigin = headers.get("origin");
+  if (!browserOrigin || (mutation ? suppliedOrigin !== browserOrigin : suppliedOrigin !== null && suppliedOrigin !== browserOrigin)) {
     return relayError(403, "hub relay browser origin refused");
   }
 

@@ -2311,6 +2311,7 @@ export const fr: Record<TKey, string> = {
   "connection.discovering": "Discovering local and shared targets…",
   "connection.machineUnavailable": "The local machine plane is unavailable. Shared requests were not redirected locally.",
   "connection.disconnect": "Disconnect from hub",
+  "connection.disconnectConfirm": "Disconnect this machine from the hub and restart it in standalone mode?",
   "connection.pairing.title": "Connect this dashboard to the hub",
   "connection.pairing.body": "Paste the one-time pairing code created on the hub.",
   "connection.pairing.relayWarning": "This code is exchanged through the fixed hub relay. The relay cannot be redirected to another host.",

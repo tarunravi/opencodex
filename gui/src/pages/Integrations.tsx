@@ -56,7 +56,7 @@ export default function Integrations({ apiBase, machineApiBase = apiBase, connec
   if (tabRefs.current === null) tabRefs.current = new Map();
 
   useEffect(() => {
-    if (!connected) { setMachineClients([]); return; }
+    if (!connected) return;
     const controller = new AbortController();
     void fetch(`${machineApiBase}/api/machine/clients`, { signal: controller.signal })
       .then(response => response.ok ? response.json() : null)

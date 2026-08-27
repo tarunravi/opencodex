@@ -2361,6 +2361,7 @@ export const ko: Record<TKey, string> = {
   "connection.discovering": "로컬 및 공유 대상을 확인하는 중…",
   "connection.machineUnavailable": "로컬 머신 연결을 사용할 수 없습니다. 공유 요청을 로컬로 우회하지 않았습니다.",
   "connection.disconnect": "허브 연결 해제",
+  "connection.disconnectConfirm": "이 머신의 허브 연결을 해제하고 독립 실행 모드로 다시 시작할까요?",
   "connection.pairing.title": "이 대시보드를 허브에 연결",
   "connection.pairing.body": "허브에서 만든 일회용 페어링 코드를 붙여 넣으세요.",
   "connection.pairing.relayWarning": "이 코드는 고정 허브 릴레이로 교환됩니다. 릴레이 목적지는 다른 호스트로 바꿀 수 없습니다.",

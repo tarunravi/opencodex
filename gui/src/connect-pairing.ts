@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- pairing transport and its form share one session-install boundary */
 import { createElement, useState, type ChangeEvent, type FormEvent } from "react";
 import { installApiSessionFromHtml } from "./api";
 import type { ApiTarget } from "./api-targets";

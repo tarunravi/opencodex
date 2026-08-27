@@ -15,7 +15,7 @@ import { SidebarGithubRow } from "./components/sidebar-github-row";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconX, IconRefresh} from "./icons";
 import { useI18n, useT, LOCALES, localeDisplayName, type Locale, type TKey } from "./i18n/shared";
 import { Select } from "./ui";
-import { configureApiTargets, hasApiSession, installApiAuthFetch } from "./api";
+import { configureApiTargets, hasApiSession, installApiAuthFetch, installApiSessionFromHtml } from "./api";
 import { apiBaseForPlane, discoverApiTargets, standaloneApiTargets, type ApiTargets } from "./api-targets";
 import { ConnectPairingForm } from "./connect-pairing";
 import { type Page } from "./app-routing";
@@ -111,9 +111,19 @@ export default function App() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void discoverApiTargets(API_BASE, controller.signal).then(next => {
+    void discoverApiTargets(API_BASE, controller.signal).then(async next => {
       configureApiTargets(next);
       setTargets(next);
+      if (next.connected && !hasApiSession("shared")) {
+        try {
+          const response = await fetch(next.shared.bootstrapPath, {
+            cache: "no-store",
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]),
+          });
+          if (response.ok) installApiSessionFromHtml("shared", await response.text());
+        } catch { /* pairing form remains available */ }
+      }
+      if (controller.signal.aborted) return;
       setSharedSessionReady(hasApiSession("shared"));
       setTargetError(false);
       setTargetsSettled(true);
@@ -205,7 +215,7 @@ export default function App() {
   });
 
   const handleStop = async () => {
-    if (!confirm(t("dash.stopConfirm"))) return;
+    if (!confirm(t(targets.connected ? "connection.disconnectConfirm" : "dash.stopConfirm"))) return;
     setStopping(true);
     const outcome = await requestProxyStop(machineBase, {
       formatFailure: status => t("dash.stopFailed", { status: String(status) }),

@@ -93,7 +93,7 @@ export default function Startup({ apiBase, machineApiBase = apiBase, connected =
   const [machineBusy, setMachineBusy] = useState(false);
 
   useEffect(() => {
-    if (!connected) { setMachineShim(null); return; }
+    if (!connected) return;
     const controller = new AbortController();
     void fetch(`${machineApiBase}/api/machine/shim`, { signal: controller.signal })
       .then(response => response.ok ? response.json() : null)

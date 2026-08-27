@@ -146,6 +146,12 @@ function targetMatchesUrl(target: ApiTarget, url: URL): boolean {
   return prefix === "" || url.pathname === prefix || url.pathname.startsWith(`${prefix}/`);
 }
 
+function relativeTargetPath(target: ApiTarget, url: URL): string | null {
+  if (!targetMatchesUrl(target, url)) return null;
+  const base = targetAbsoluteBase(target).pathname.replace(/\/$/, "");
+  return url.pathname.slice(base.length) || "/";
+}
+
 function classify(input: RequestInfo | URL): { plane: ApiPlane; bootstrap: boolean } | null {
   let url: URL;
   try {
@@ -154,12 +160,10 @@ function classify(input: RequestInfo | URL): { plane: ApiPlane; bootstrap: boole
   const targets = ensureTargets();
   if (url.href === new URL(targets.shared.bootstrapPath, window.location.href).href) return { plane: "shared", bootstrap: true };
   if (targets.shared.transport === "relay" && targetMatchesUrl(targets.shared, url)) return { plane: "shared", bootstrap: false };
-  if (url.pathname.startsWith("/api/machine/") && targetMatchesUrl(targets.machine, url)) return { plane: "machine", bootstrap: false };
-  if (targetMatchesUrl(targets.shared, url)) {
-    const base = targetAbsoluteBase(targets.shared).pathname.replace(/\/$/, "");
-    const relative = url.pathname.slice(base.length) || "/";
-    if (relative.startsWith("/api/")) return { plane: "shared", bootstrap: false };
-  }
+  const machinePath = relativeTargetPath(targets.machine, url);
+  if (machinePath?.startsWith("/api/machine/")) return { plane: "machine", bootstrap: false };
+  const sharedPath = relativeTargetPath(targets.shared, url);
+  if (sharedPath?.startsWith("/api/")) return { plane: "shared", bootstrap: false };
   if (url.href === new URL(targets.machine.bootstrapPath, window.location.href).href) return { plane: "machine", bootstrap: true };
   return null;
 }

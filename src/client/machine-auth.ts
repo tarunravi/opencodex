@@ -31,7 +31,7 @@ function machinePrincipalRequest(req: Request): Request {
     headers.set("Origin", browserOrigin);
   }
   if (csrf) headers.set("x-opencodex-csrf-token", csrf);
-  return new Request(req, { headers });
+  return new Request(req.url, { method: req.method, headers, signal: req.signal });
 }
 
 export function requireMachineAuth(

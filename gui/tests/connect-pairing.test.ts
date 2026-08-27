@@ -62,6 +62,7 @@ test("App mounts the relay pairing form and installs only the returned shared se
   document.body.append(container);
   const { LanguageProvider } = await import("../src/i18n/provider");
   const { default: App } = await import("../src/App");
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: win.fetch });
   const { createRoot } = await import("react-dom/client");
   const root = createRoot(container);
   try {

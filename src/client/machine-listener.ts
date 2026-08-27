@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import type { Server } from "bun";
 import { loadConfig } from "../config";
 import { browserSecurityHeaders } from "../server/auth-cors";
-import { serveGuiFile, serveSessionBootstrap, rootFallbackPayload } from "../server/gui-static";
+import { serveGuiFile, serveSessionBootstrap } from "../server/gui-static";
 import {
   initializeManagementAuthState,
   issueGuiSession,
@@ -14,7 +14,7 @@ import type { OcxClientConnectionConfig, OcxConfig } from "../types";
 import { disconnectClient, syncConnectedClient } from "./connect";
 import { readClientConnectionState } from "./state";
 import { handleMachineApi, type HubReachability, type MachineApiDeps } from "./machine-api";
-import { requireMachineAuth } from "./machine-auth";
+import { MACHINE_GUI_ORIGIN_HEADER, requireMachineAuth } from "./machine-auth";
 import { relayHubManagementRequest } from "./hub-relay";
 
 const VERSION = (() => {
@@ -52,8 +52,7 @@ export function machineRouteAllowed(url: URL, req: Request, relayEnabled: boolea
   if (req.method !== "GET" || path.startsWith("/api/") || path.startsWith("/v1/")) return false;
   return GUI_SPA_PATHS.has(path)
     || path.startsWith("/integrations/")
-    || path.startsWith("/assets/")
-    && /\.(?:css|gif|ico|jpe?g|js|json|map|png|svg|webp|woff2?)$/i.test(path);
+    || /\.(?:css|gif|ico|jpe?g|js|json|map|png|svg|webp|woff2?)$/i.test(path);
 }
 
 export function startMachineListener(
@@ -86,10 +85,10 @@ export function startMachineListener(
       const url = new URL(req.url);
       if (!machineRouteAllowed(url, req, relayEnabled)) return json404(req);
       if (url.pathname === "/healthz" && req.method === "GET") {
-        return Response.json({ service: "opencodex", version: VERSION, role: "client", pid: process.pid, port: server.port });
+        return Response.json({ service: "opencodex", version: VERSION, role: "client", uptime: process.uptime(), pid: process.pid, port: server.port });
       }
       if (url.pathname === "/readyz" && req.method === "GET") {
-        return Response.json({ service: "opencodex", version: VERSION, role: "client", status: "ready", pid: process.pid, port: server.port, protocolVersion: 1 });
+        return Response.json({ service: "opencodex", version: VERSION, role: "client", status: "ready", uptime: process.uptime(), pid: process.pid, port: server.port, protocolVersion: 1 });
       }
       if (url.pathname.startsWith("/api/machine/hub-relay/")) {
         if (!relayEnabled) return json404(req);
@@ -99,7 +98,7 @@ export function startMachineListener(
         const suffix = `${url.pathname.slice(prefix.length)}${url.search}`;
         const response = await relayHubManagementRequest(req, suffix, {
           managementUrl: connection.managementUrl,
-          browserOrigin: req.headers.get("Origin") ?? "",
+          browserOrigin: req.headers.get(MACHINE_GUI_ORIGIN_HEADER) ?? req.headers.get("Origin") ?? "",
         }, { fetchImpl: deps.fetchImpl });
         if (response.status === 401) hubReachability = "unauthorized";
         else if (response.status >= 500) hubReachability = "offline";
@@ -122,7 +121,14 @@ export function startMachineListener(
       const gui = serveGuiFile(url.pathname, undefined, session ?? undefined);
       if (gui) return gui;
       if (url.pathname === "/") {
-        return Response.json(rootFallbackPayload(), { headers: browserSecurityHeaders() });
+        return Response.json({
+          status: "ok",
+          service: "opencodex",
+          version: VERSION,
+          role: "client",
+          dashboard: { available: false, reason: "GUI build not found" },
+          endpoints: { health: "/healthz", ready: "/readyz", machine: "/api/machine/*" },
+        }, { headers: browserSecurityHeaders() });
       }
       return json404(req);
     },
