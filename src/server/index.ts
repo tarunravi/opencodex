@@ -1943,7 +1943,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
               browserOrigin: req.headers.get("Origin") ?? "",
             })
             : null;
-          if (pairing && "allowed" in pairing && pairing.allowed === false) {
+          if (pairing && "allowed" in pairing) {
             return withManagementCors(Response.json({ error: "pairing exchange refused" }, {
               status: 429,
               headers: { "Cache-Control": "no-store", "Retry-After": String(pairing.retryAfterSeconds) },

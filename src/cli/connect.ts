@@ -6,8 +6,8 @@ import {
   rotateConnectedClientKey,
   connectClient,
 } from "../client/connect";
-import { readClientConnectionState } from "../client/state";
-import { readServiceApiTokenState, readTokenBackupState, removeOrphanTokenBackup } from "../lib/service-secrets";
+import { inspectClientRotationRecoveryGate, readClientConnectionState } from "../client/state";
+import { readServiceApiTokenState } from "../lib/service-secrets";
 import type { OcxConnectedClientId } from "../types";
 import {
   CliUsageError,
@@ -54,20 +54,7 @@ export type ClientConnectionStatus = {
 export function collectClientConnectionStatus(now = Date.now()): ClientConnectionStatus {
   const state = readClientConnectionState();
   const tokenState = readServiceApiTokenState();
-  const backup = readTokenBackupState();
-  let rotation: ClientConnectionStatus["rotation"] = state.kind === "connected" && state.value.pendingOperation
-    ? "recovery-required"
-    : backup.kind === "unsafe"
-      ? "unsafe"
-      : "clean";
-  if (rotation === "clean" && backup.kind === "present" && tokenState.kind === "present") {
-    try {
-      removeOrphanTokenBackup();
-      rotation = "orphan-cleaned";
-    } catch {
-      rotation = "unsafe";
-    }
-  }
+  const rotation = inspectClientRotationRecoveryGate(state).kind;
   let catalog: ClientConnectionStatus["catalog"] = "missing";
   if (existsSync(DEFAULT_CATALOG_PATH)) {
     try {

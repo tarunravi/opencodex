@@ -8,12 +8,23 @@ import {
   saveConfig,
 } from "../config";
 import type { OcxClientConnectionConfig } from "../types";
+import {
+  readServiceApiTokenState,
+  readTokenBackupState,
+  removeOrphanTokenBackup,
+} from "../lib/service-secrets";
 
 export type ClientConnectionState =
   | { kind: "disconnected" }
   | { kind: "connected"; value: OcxClientConnectionConfig }
   | { kind: "invalid"; reason: string }
   | { kind: "mismatched"; reason: string };
+
+export type ClientRotationRecoveryGate =
+  | { kind: "clean" }
+  | { kind: "orphan-cleaned" }
+  | { kind: "recovery-required"; reason: string }
+  | { kind: "unsafe"; reason: string };
 
 function rawTopLevelConfig(): Record<string, unknown> | null {
   try {
@@ -58,6 +69,35 @@ export function readClientConnectionState(): ClientConnectionState {
     return { kind: "invalid", reason: warning ?? "config.json.client is malformed" };
   }
   return { kind: "connected", value: client };
+}
+
+export function inspectClientRotationRecoveryGate(
+  state: ClientConnectionState = readClientConnectionState(),
+): ClientRotationRecoveryGate {
+  const current = readServiceApiTokenState();
+  const backup = readTokenBackupState();
+  if (state.kind === "connected" && state.value.pendingOperation) {
+    if (current.kind !== "present" || backup.kind !== "present") {
+      return {
+        kind: "unsafe",
+        reason: "pending key rotation requires owner-only service-api-token and service-api-token.prev files",
+      };
+    }
+    return {
+      kind: "recovery-required",
+      reason: "rerun ocx connect rotate with --pairing-code-stdin or --admin-token-stdin",
+    };
+  }
+  if (backup.kind === "unsafe") return { kind: "unsafe", reason: backup.reason };
+  if (backup.kind === "present" && current.kind === "present") {
+    try {
+      removeOrphanTokenBackup();
+      return { kind: "orphan-cleaned" };
+    } catch (error) {
+      return { kind: "unsafe", reason: error instanceof Error ? error.message : "token backup cleanup failed" };
+    }
+  }
+  return { kind: "clean" };
 }
 
 export function commitClientConnection(

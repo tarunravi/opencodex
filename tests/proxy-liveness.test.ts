@@ -760,6 +760,7 @@ describe("remote readiness protocol metadata", () => {
     expect(checkRemoteProtocolCompatibility({ ...metadata, protocol: 2 })).toEqual({
       ok: true,
       metadata: { ...metadata, protocol: 2 },
+      features: new Set(),
     });
   });
 });

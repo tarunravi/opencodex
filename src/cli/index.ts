@@ -9,7 +9,7 @@ import {
   runCodexHistoryJob,
 } from "../codex/history-job";
 import { reconcileJournal } from "../codex/journal";
-import { readClientConnectionState } from "../client/state";
+import { inspectClientRotationRecoveryGate, readClientConnectionState } from "../client/state";
 import {
   codexAutoStartEnabled,
   getConfigDir,
@@ -273,7 +273,11 @@ async function handleStart(options: { block?: boolean } = {}) {
   if (clientState.kind === "invalid" || clientState.kind === "mismatched") {
     throw new Error(`client startup refused: ${clientState.reason}`);
   }
+  const rotationGate = inspectClientRotationRecoveryGate(clientState);
   if (clientState.kind === "connected") {
+    if (rotationGate.kind === "recovery-required" || rotationGate.kind === "unsafe") {
+      throw new Error(`client startup refused: ${rotationGate.reason}`);
+    }
     const { startClientRuntime } = await import("../client/runtime");
     await startClientRuntime({ port: requestedPort, block: options.block });
     return;

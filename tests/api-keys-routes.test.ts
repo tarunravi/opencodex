@@ -74,6 +74,24 @@ async function managementRequest(
   return { status: res.status, json };
 }
 
+beforeEach(() => {
+  testHome = mkdtempSync(join(tmpdir(), "ocx-api-keys-routes-"));
+  process.env.OPENCODEX_HOME = testHome;
+  delete process.env.OPENCODEX_API_AUTH_TOKEN;
+  process.env.OPENCODEX_ADMIN_AUTH_TOKEN = ADMIN_TOKEN;
+});
+
+afterEach(() => {
+  if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousHome;
+  if (previousDataToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
+  else process.env.OPENCODEX_API_AUTH_TOKEN = previousDataToken;
+  if (previousAdminToken === undefined) delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+  else process.env.OPENCODEX_ADMIN_AUTH_TOKEN = previousAdminToken;
+  if (testHome) rmSync(testHome, { recursive: true, force: true });
+  testHome = "";
+});
+
 describe("API key rotation", () => {
   test("overlaps under one id, masks the pending secret, and commits atomically", async () => {
     saveConfig(baseConfig());
@@ -125,24 +143,6 @@ describe("API key rotation", () => {
       await server.stop(true);
     }
   });
-});
-
-beforeEach(() => {
-  testHome = mkdtempSync(join(tmpdir(), "ocx-api-keys-routes-"));
-  process.env.OPENCODEX_HOME = testHome;
-  delete process.env.OPENCODEX_API_AUTH_TOKEN;
-  process.env.OPENCODEX_ADMIN_AUTH_TOKEN = ADMIN_TOKEN;
-});
-
-afterEach(() => {
-  if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
-  else process.env.OPENCODEX_HOME = previousHome;
-  if (previousDataToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
-  else process.env.OPENCODEX_API_AUTH_TOKEN = previousDataToken;
-  if (previousAdminToken === undefined) delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
-  else process.env.OPENCODEX_ADMIN_AUTH_TOKEN = previousAdminToken;
-  if (testHome) rmSync(testHome, { recursive: true, force: true });
-  testHome = "";
 });
 
 describe("POST /api/keys", () => {
@@ -362,6 +362,23 @@ describe("DELETE /api/keys", () => {
 });
 
 describe("apiKeys config compatibility", () => {
+  test("a malformed pending rotation degrades independently and keeps the current key", () => {
+    saveConfig(baseConfig());
+    const raw = readRawConfig();
+    raw.apiKeys = [{
+      id: "stable-id",
+      name: "client",
+      key: "ocx_data_current",
+      createdAt: "2026-08-28T00:00:00.000Z",
+      pendingRotation: { id: 7, key: "leaked-junk", expiresAt: "never" },
+    }];
+    writeRawConfig(raw);
+    const loaded = loadConfig();
+    expect(loaded.apiKeys?.[0]).toMatchObject({ id: "stable-id", key: "ocx_data_current" });
+    expect(loaded.apiKeys?.[0]?.pendingRotation).toBeUndefined();
+    expect(isDataPlaneAdmissionSecret("ocx_data_current", loaded)).toBe(true);
+  });
+
   test("a non-array apiKeys value does not reset the config", () => {
     saveConfig(baseConfig());
     const raw = readRawConfig();
