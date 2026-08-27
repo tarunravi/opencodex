@@ -1,4 +1,5 @@
 import { readRuntimePort, type RuntimePortState } from "../config/process-state";
+import { timingSafeEqual } from "node:crypto";
 import {
   LOCAL_ATTESTATION_CHALLENGE_HEADER,
   LOCAL_ATTESTATION_PROOF_HEADER,
@@ -41,11 +42,14 @@ export interface GuiPairClientDeps {
 const GUI_PAIR_REQUEST_TIMEOUT_MS = 10_000;
 
 function sameRuntime(left: RuntimePortState, right: RuntimePortState | null): boolean {
+  const leftSecret = Buffer.from(left.attestationSecret ?? "");
+  const rightSecret = Buffer.from(right?.attestationSecret ?? "");
   return !!right?.attestationSecret
     && right.pid === left.pid
     && right.port === left.port
     && right.hostname === left.hostname
-    && right.attestationSecret === left.attestationSecret;
+    && leftSecret.length === rightSecret.length
+    && timingSafeEqual(leftSecret, rightSecret);
 }
 
 function canonicalHttpOrigin(value: unknown): string | null {

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -435,9 +435,11 @@ function hasGuiPairCapability(
   for (const [consumed, retainedUntil] of consumedGuiPairCapabilities) {
     if (retainedUntil <= now) consumedGuiPairCapabilities.delete(consumed);
   }
-  if (!capability || consumedGuiPairCapabilities.has(capability)) return false;
+  if (!capability) return false;
+  const capabilityDigest = createHash("sha256").update(capability).digest("base64url");
+  if (consumedGuiPairCapabilities.has(capabilityDigest)) return false;
   if (consumedGuiPairCapabilities.size >= GUI_PAIR_REPLAY_LIMIT) return false;
-  consumedGuiPairCapabilities.set(capability, expiresAt);
+  consumedGuiPairCapabilities.set(capabilityDigest, expiresAt);
   admittedGuiPairRequests.add(req);
   return true;
 }

@@ -133,7 +133,7 @@ function mintSession(
 }
 
 function tailscaleLoginAllowed(req: Request, config: OcxConfig): boolean {
-  const login = req.headers.get("Tailscale-User-Login")?.trim();
+  const login = req.headers.get("Tailscale-User-Login");
   if (!login) return false;
   return (config.remoteGui?.allowedTailscaleUsers ?? []).some(user => user === login);
 }
