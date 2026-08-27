@@ -38,9 +38,10 @@ export function readClientConnectionState(): ClientConnectionState {
     return { kind: "invalid", reason: "config.json.runtimeRole is invalid" };
   }
   if (!hasClient && (role === undefined || role === "standalone")) return { kind: "disconnected" };
-  if (!hasClient && role === "hub") {
-    return { kind: "mismatched", reason: "runtimeRole=hub cannot be used as a connected client" };
-  }
+  // A hub is a server role, not a broken client: without client state it simply is not
+  // connected, and refusing here blocked `ocx start` on every hub (found on the first
+  // clisu-oracle dogfood boot). Hub role WITH client state remains mismatched below.
+  if (!hasClient && role === "hub") return { kind: "disconnected" };
   if (!hasClient || role !== "client") {
     return {
       kind: "mismatched",
