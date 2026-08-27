@@ -126,13 +126,17 @@ describe("opencodex config defaults", () => {
     expect(readFileSync(getConfigPath(), "utf8")).toBe(before);
   });
 
-  test("runtime role accepts the three explicit contract values", () => {
-    for (const role of ["standalone", "hub", "client"] as const) {
+  test("runtime role accepts standalone/hub alone while client requires atomic state", () => {
+    for (const role of ["standalone", "hub"] as const) {
       expect(validateConfigCandidate({ ...getDefaultConfig(), runtimeRole: role })).toMatchObject({
         ok: true,
         config: { runtimeRole: role },
       });
     }
+    expect(validateConfigCandidate({ ...getDefaultConfig(), runtimeRole: "client" })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("requires a complete client connection"),
+    });
   });
 
   test("runtime role rejects malformed live candidates", () => {
@@ -260,7 +264,7 @@ describe("opencodex config defaults", () => {
   });
 
   test("remote GUI config round-trips but remains inert outside the hub role", () => {
-    for (const runtimeRole of [undefined, "standalone", "client"] as const) {
+    for (const runtimeRole of [undefined, "standalone"] as const) {
       const result = validateConfigCandidate({
         ...getDefaultConfig(),
         ...(runtimeRole ? { runtimeRole } : {}),

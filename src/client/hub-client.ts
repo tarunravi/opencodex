@@ -65,7 +65,7 @@ async function fetchBounded(
       redirect: "manual",
       signal: AbortSignal.timeout(safeTimeout(timeoutMs)),
     });
-    if (response.status >= 300 && response.status < 400) {
+    if (response.status >= 300 && response.status < 400 && response.status !== 304) {
       throw new HubClientError("redirect_refused", "Hub request redirect was refused", response.status);
     }
     return response;
