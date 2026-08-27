@@ -20,7 +20,7 @@ function cleanup(): void {
 export function scheduleStandaloneRecycle(): void {
   if (recycleScheduled) return;
   recycleScheduled = true;
-  setTimeout(() => {
+  const timer = setTimeout(() => {
     const port = activePort;
     try { activeServer?.stop(true); } catch { /* best effort */ }
     cleanup();
@@ -34,7 +34,8 @@ export function scheduleStandaloneRecycle(): void {
       child.unref();
     }
     process.exit(0);
-  }, 50).unref();
+  }, 50);
+  if (typeof timer === "object" && "unref" in timer) timer.unref();
 }
 
 export async function startClientRuntime(

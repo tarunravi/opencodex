@@ -50,11 +50,11 @@ export function ConnectPairingForm({
     }
   };
 
-  return createElement("section", { className: "connect-pairing", "aria-labelledby": "connect-pairing-title" },
+  return createElement("section", { className: "card connect-pairing", "aria-labelledby": "connect-pairing-title" },
     createElement("h2", { id: "connect-pairing-title" }, t("connection.pairing.title")),
     createElement("p", null, t(target.transport === "relay" ? "connection.pairing.relayWarning" : "connection.pairing.body")),
-    createElement("form", { onSubmit: submit },
-      createElement("label", { htmlFor: "connect-pairing-code" }, t("connection.pairing.code")),
+    createElement("form", { onSubmit: submit, className: "api-form-row" },
+      createElement("label", { htmlFor: "connect-pairing-code", className: "field-label" }, t("connection.pairing.code")),
       createElement("input", {
         id: "connect-pairing-code",
         name: "pairingCode",
@@ -63,6 +63,7 @@ export function ConnectPairingForm({
         autoComplete: "off",
         spellCheck: false,
         disabled: busy,
+        className: "input mono",
         "aria-invalid": error || undefined,
         "aria-describedby": error ? "connect-pairing-error" : undefined,
       }),

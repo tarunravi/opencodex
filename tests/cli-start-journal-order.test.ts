@@ -184,10 +184,33 @@ describe("start and ensure journal ownership (#1230)", () => {
         timestamp: new Date().toISOString(),
       }));
 
-      const result = await runCli(fx, ["start"]);
-      expect(result.exitCode).toBe(1);
-      expect(readFileSync(fx.configPath, "utf8")).toBe(matches ? injected : original);
-      expect(existsSync(fx.journalPath)).toBe(matches);
+      const child = Bun.spawn([process.execPath, cliPath, "start"], {
+        cwd: fx.root,
+        env: fx.env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      children.push(child);
+      const runtimePath = join(fx.ocxHome, "runtime-port.json");
+      const runtime = await waitFor(() => {
+        if (!existsSync(runtimePath)) return null;
+        try {
+          const value = JSON.parse(readFileSync(runtimePath, "utf8")) as { pid?: number; port?: number; hostname?: string };
+          return value.pid === child.pid && typeof value.port === "number" && value.port > 0 ? value : null;
+        } catch { return null; }
+      }, "connected client runtime record");
+      try {
+        const health = await fetch(`http://127.0.0.1:${runtime.port}/healthz`).then(response => response.json()) as { role?: string };
+        expect(health.role).toBe("client");
+        expect(runtime.hostname).toBe("127.0.0.1");
+        expect((await fetch(`http://127.0.0.1:${runtime.port}/v1/models`)).status).toBe(404);
+        expect((await fetch(`http://127.0.0.1:${runtime.port}/api/config`)).status).toBe(404);
+        expect(readFileSync(fx.configPath, "utf8")).toBe(matches ? injected : original);
+        expect(existsSync(fx.journalPath)).toBe(matches);
+      } finally {
+        child.kill("SIGTERM");
+        await child.exited;
+      }
     }
   }, 30_000);
 
