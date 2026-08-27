@@ -7,10 +7,11 @@ export interface RemoteReadyMetadata {
   protocol: number;
   minimumClientProtocol: number;
   managementUrl: string;
+  features?: string[];
 }
 
 export type RemoteProtocolCompatibility =
-  | { ok: true; metadata: RemoteReadyMetadata }
+  | { ok: true; metadata: RemoteReadyMetadata; features: Set<string> }
   | { ok: false; reason: "invalid" | "hub-too-new" | "hub-too-old"; message: string };
 
 const INVALID_REMOTE_PROTOCOL_MESSAGE =
@@ -62,16 +63,24 @@ export function parseRemoteReadyMetadata(value: unknown): RemoteReadyMetadata | 
   if (raw.minimumClientProtocol > raw.protocol) return null;
   const parsedManagementOrigin = managementOrigin(raw.managementUrl);
   if (!parsedManagementOrigin) return null;
+  const features = raw.features;
+  if (features !== undefined && (
+    !Array.isArray(features)
+    || features.length > 64
+    || features.some(feature => typeof feature !== "string" || !feature || feature.length > 80 || /[\x00-\x1f\x7f]/.test(feature))
+    || new Set(features).size !== features.length
+  )) return null;
   return {
     protocol: raw.protocol,
     minimumClientProtocol: raw.minimumClientProtocol,
     managementUrl: parsedManagementOrigin,
+    ...(Array.isArray(features) ? { features: [...features] as string[] } : {}),
   };
 }
 
 export function checkRemoteProtocolCompatibility(
   value: unknown,
-  client: { protocol: number; minimumHubProtocol: number } = {
+  client: { protocol: number; minimumHubProtocol: number; features?: readonly string[] } = {
     protocol: REMOTE_HUB_PROTOCOL,
     minimumHubProtocol: MINIMUM_REMOTE_CLIENT_PROTOCOL,
   },
@@ -94,5 +103,7 @@ export function checkRemoteProtocolCompatibility(
       message: `OpenCodex hub provides remote protocol ${metadata.protocol}; this client requires at least ${client.minimumHubProtocol}. Upgrade ocx on the hub.`,
     };
   }
-  return { ok: true, metadata };
+  const supported = new Set(client.features ?? []);
+  const features = new Set((metadata.features ?? []).filter(feature => supported.has(feature)));
+  return { ok: true, metadata, features };
 }

@@ -36,6 +36,38 @@ const RESPONSE_HEADERS = new Set([
   "retry-after",
   "vary",
 ]);
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+  "te", "trailer", "transfer-encoding", "upgrade",
+]);
+
+export type HubRelayRawHeaderValidation =
+  | { ok: true; connectionNamed: Set<string> }
+  | { ok: false; reason: "smuggling" | "invalid" };
+
+export function validateHubRelayRequestHeaders(raw: readonly (readonly [string, string])[]): HubRelayRawHeaderValidation {
+  let contentLengths = 0;
+  let transferEncoding = false;
+  const connectionNamed = new Set<string>();
+  for (const [rawName, value] of raw) {
+    const name = rawName.trim().toLowerCase();
+    if (!name || /[\r\n]/.test(rawName) || /[\r\n]/.test(value)) return { ok: false, reason: "invalid" };
+    if (name === "content-length") {
+      contentLengths += 1;
+      if (!/^\d+$/.test(value.trim())) return { ok: false, reason: "smuggling" };
+    }
+    if (name === "transfer-encoding") transferEncoding = true;
+    if (name === "upgrade") return { ok: false, reason: "smuggling" };
+    if (name === "connection") {
+      for (const token of value.split(",")) {
+        const normalized = token.trim().toLowerCase();
+        if (normalized) connectionNamed.add(normalized);
+      }
+    }
+  }
+  if (transferEncoding || contentLengths > 1) return { ok: false, reason: "smuggling" };
+  return { ok: true, connectionNamed };
+}
 
 function relayError(status: number, error: string): Response {
   return Response.json({ error }, { status });
@@ -110,10 +142,11 @@ async function boundedBody(
   return body;
 }
 
-function filteredHeaders(source: Headers, allowlist: Set<string>): Headers {
+function filteredHeaders(source: Headers, allowlist: Set<string>, omitted: ReadonlySet<string> = new Set()): Headers {
   const headers = new Headers();
   for (const [name, value] of source) {
-    if (allowlist.has(name.toLowerCase())) headers.append(name, value);
+    const normalized = name.toLowerCase();
+    if (allowlist.has(normalized) && !HOP_BY_HOP_HEADERS.has(normalized) && !omitted.has(normalized)) headers.append(name, value);
   }
   return headers;
 }
@@ -136,6 +169,8 @@ export async function relayHubManagementRequest(
   const method = req.method.toUpperCase();
   const destination = relayDestination(suffix, target, method);
   if (!destination) return relayError(404, "hub relay path refused");
+  const requestHeaderValidation = validateHubRelayRequestHeaders([...req.headers]);
+  if (!requestHeaderValidation.ok) return relayError(400, "hub relay request headers refused");
 
   let body: Uint8Array<ArrayBuffer> | null;
   try {
@@ -147,7 +182,7 @@ export async function relayHubManagementRequest(
   }
 
   const stripped = stripMachineAuthHeaders(req.headers);
-  const headers = filteredHeaders(stripped, REQUEST_HEADERS);
+  const headers = filteredHeaders(stripped, REQUEST_HEADERS, requestHeaderValidation.connectionNamed);
   if (!headersWithinLimit(headers)) return relayError(431, "hub relay request headers too large");
   const browserOrigin = canonicalOrigin(target.browserOrigin);
   const mutation = method !== "GET" && method !== "HEAD";
@@ -180,20 +215,28 @@ export async function relayHubManagementRequest(
     return relayError(502, "hub relay redirect refused");
   }
 
-  let responseBody: Uint8Array<ArrayBuffer> | null;
-  const responseHeaders = filteredHeaders(upstream.headers, RESPONSE_HEADERS);
+  const responseConnectionNamed = new Set((upstream.headers.get("connection") ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean));
+  const responseHeaders = filteredHeaders(upstream.headers, RESPONSE_HEADERS, responseConnectionNamed);
   if (!headersWithinLimit(responseHeaders)) {
     try { await upstream.body?.cancel(); } catch { /* best effort */ }
     return relayError(502, "hub relay response headers too large");
   }
-  try {
-    responseBody = method === "HEAD"
-      ? null
-      : await boundedBody(upstream.body, upstream.headers.get("content-length"), HUB_RELAY_RESPONSE_BODY_MAX_BYTES);
-  } catch {
+  const declaredResponseLength = upstream.headers.get("content-length");
+  if (declaredResponseLength !== null && (!/^\d+$/.test(declaredResponseLength)
+    || Number(declaredResponseLength) > HUB_RELAY_RESPONSE_BODY_MAX_BYTES)) {
     try { await upstream.body?.cancel(); } catch { /* best effort */ }
     return relayError(502, "hub relay response body too large");
   }
+  let streamed = 0;
+  const responseBody = method === "HEAD" || !upstream.body ? null : upstream.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      streamed += chunk.byteLength;
+      if (streamed > HUB_RELAY_RESPONSE_BODY_MAX_BYTES) {
+        throw new RangeError("hub relay response body too large");
+      }
+      controller.enqueue(chunk);
+    },
+  }));
   return new Response(responseBody, {
     status: upstream.status,
     statusText: upstream.statusText,
