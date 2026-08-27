@@ -74,6 +74,7 @@ import {
   type FastWire,
   type ProviderCostOverlay,
 } from "./types";
+import type { OcxRuntimeRole } from "./types/config";
 import { OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
 import { modelAutoCompactTokenLimitsConfigError } from "./providers/auto-compact-budget";
 import { fastWireDeclarationError, hasFastWireCapabilityConflict } from "./providers/fastwire";
@@ -861,8 +862,13 @@ const agentTaskRecoverySchema = z.object({
   cacheEntries: z.number().int().min(1).max(512).optional(),
 }).strict();
 
+const runtimeRoleSchema = z.enum(["standalone", "hub", "client"]);
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
+  // A malformed hand edit must disable only remote-role behavior, not discard
+  // providers or data-plane keys. Live writes are rejected explicitly below.
+  runtimeRole: runtimeRoleSchema.optional().catch(undefined),
   managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
   // Invalid hand edits disable only this opt-in circuit. Live writes remain strict.
   upstreamHostCircuitThreshold: z.number().int()
@@ -1706,6 +1712,18 @@ function warnDegradedAgentTaskRecovery(rawParsed: unknown): void {
   if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
 }
 
+function malformedRuntimeRoleWarning(rawParsed: unknown): string | null {
+  const raw = rawConfigRecord(rawParsed);
+  if (!raw || !Object.hasOwn(raw, "runtimeRole") || raw.runtimeRole === undefined) return null;
+  if (runtimeRoleSchema.safeParse(raw.runtimeRole).success) return null;
+  return 'runtimeRole ignored: expected "standalone", "hub", or "client"; falling back to "standalone"';
+}
+
+function warnDegradedRuntimeRole(rawParsed: unknown): void {
+  const warning = malformedRuntimeRoleWarning(rawParsed);
+  if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
+}
+
 type NativeSubagentPersistedField = "injectionModel" | "injectionEffort" | "syncCodexSubagentDefaults";
 
 function rawConfigRecord(rawParsed: unknown): Record<string, unknown> | null {
@@ -1859,6 +1877,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedCodexAccountPicker(parsed);
       warnDegradedUpstreamHostCircuitThreshold(parsed);
       warnDegradedAgentTaskRecovery(parsed);
+      warnDegradedRuntimeRole(parsed);
       return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
     }
     // Schema validation failed — merge defaults into the raw object instead of
@@ -1883,6 +1902,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedCodexAccountPicker(parsed);
       warnDegradedUpstreamHostCircuitThreshold(parsed);
       warnDegradedAgentTaskRecovery(parsed);
+      warnDegradedRuntimeRole(parsed);
       return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
     }
     // Still failing, but if every complaint is about one or more named entries
@@ -1903,6 +1923,7 @@ export function loadConfig(): OcxConfig {
         warnDegradedCodexAccountPicker(parsed);
         warnDegradedUpstreamHostCircuitThreshold(parsed);
         warnDegradedAgentTaskRecovery(parsed);
+        warnDegradedRuntimeRole(parsed);
         return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
       }
     }
@@ -2003,6 +2024,8 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   if (hostCircuitWarning) warnings.push(hostCircuitWarning);
   const recoveryWarning = malformedAgentTaskRecoveryWarning(rawParsed);
   if (recoveryWarning) warnings.push(recoveryWarning);
+  const runtimeRoleWarning = malformedRuntimeRoleWarning(rawParsed);
+  if (runtimeRoleWarning) warnings.push(runtimeRoleWarning);
   if (syncDisabledReason) {
     warnings.push(`syncCodexSubagentDefaults ignored: ${syncDisabledReason}`);
   }
@@ -2092,6 +2115,13 @@ function agentTaskRecoveryError(value: unknown): string | null {
   const issue = result.error.issues[0];
   const field = issue?.path.join(".");
   return `schema_invalid: agentTaskRecovery${field ? `.${field}` : ""}: ${issue?.message ?? "invalid configuration"}`;
+}
+
+function runtimeRoleError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "runtimeRole") || raw.runtimeRole === undefined) return null;
+  if (runtimeRoleSchema.safeParse(raw.runtimeRole).success) return null;
+  return 'schema_invalid: runtimeRole: must be one of "standalone", "hub", or "client"';
 }
 
 /**
@@ -2211,6 +2241,7 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
     ?? codexAccountPickerEnabledError(value)
     ?? emptyCompletionRetryError(value)
     ?? oauthOpenBrowserError(value)
+    ?? runtimeRoleError(value)
     ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
@@ -3121,6 +3152,10 @@ export function multiAgentGuidanceEnabled(
   config: Pick<OcxConfig, "multiAgentGuidanceEnabled">,
 ): boolean {
   return config.multiAgentGuidanceEnabled !== false;
+}
+
+export function runtimeRole(config: Pick<OcxConfig, "runtimeRole">): OcxRuntimeRole {
+  return config.runtimeRole ?? "standalone";
 }
 
 export function getDefaultConfig(): OcxConfig {

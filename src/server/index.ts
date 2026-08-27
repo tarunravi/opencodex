@@ -210,6 +210,7 @@ import {
   type PackageTreeIntegrityGuard,
 } from "../lib/package-tree-integrity";
 import { detectInstall } from "../update/index";
+import { readyProtocolMetadata } from "../remote/protocol";
 
 export const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -1041,6 +1042,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           pid: process.pid,
           port: boundPort ?? listenPort,
           status,
+          ...readyProtocolMetadata(config, req),
         };
         if (status === "ready") {
           return jsonResponse(body, 200, req, policy);
