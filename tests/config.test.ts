@@ -178,6 +178,100 @@ describe("opencodex config defaults", () => {
     }
   });
 
+  test("hub and remote GUI config normalize valid origins and exact Tailscale users", () => {
+    expect(validateConfigCandidate({
+      ...getDefaultConfig(),
+      runtimeRole: "hub",
+      hub: { managementPublicOrigin: "https://hub.example.test:443" },
+      remoteGui: {
+        allowedTailscaleUsers: [" alice@example.test ", "bob@example.test"],
+        allowInsecureHttp: false,
+      },
+    })).toMatchObject({
+      ok: true,
+      config: {
+        hub: { managementPublicOrigin: "https://hub.example.test" },
+        remoteGui: { allowedTailscaleUsers: ["alice@example.test", "bob@example.test"] },
+      },
+    });
+    expect(validateConfigCandidate({
+      ...getDefaultConfig(),
+      runtimeRole: "hub",
+      hub: { managementPublicOrigin: "http://hub.example.test" },
+      remoteGui: { allowInsecureHttp: true },
+    }).ok).toBe(true);
+  });
+
+  test("remote GUI live candidates reject unsafe origins and malformed identity allowlists", () => {
+    for (const managementPublicOrigin of [
+      "ftp://hub.example.test",
+      "https://user@hub.example.test",
+      "https://hub.example.test/path",
+      "https://hub.example.test/?query=1",
+      "https://hub.example.test/#fragment",
+    ]) {
+      const result = validateConfigCandidate({
+        ...getDefaultConfig(),
+        hub: { managementPublicOrigin },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("hub.managementPublicOrigin");
+    }
+    for (const allowedTailscaleUsers of [
+      [""],
+      ["alice@example.test", " alice@example.test "],
+      ["alice\n@example.test"],
+      ["x".repeat(321)],
+      Array.from({ length: 65 }, (_, index) => `user-${index}@example.test`),
+    ]) {
+      const result = validateConfigCandidate({
+        ...getDefaultConfig(),
+        remoteGui: { allowedTailscaleUsers },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("remoteGui.allowedTailscaleUsers");
+    }
+  });
+
+  test("a malformed persisted remote GUI block is disabled without discarding providers or API keys", () => {
+    const malformedValue = "https://hub.example.test/private-secret-path";
+    writeConfig({
+      port: 12345,
+      runtimeRole: "hub",
+      hub: { managementPublicOrigin: malformedValue },
+      remoteGui: { allowedTailscaleUsers: ["alice@example.test"] },
+      defaultProvider: "custom",
+      providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "upstream-secret" } },
+      apiKeys: [{ id: "key-1", name: "default", key: "ocx_persisted", createdAt: "2026-08-28T00:00:00.000Z" }],
+    });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const loaded = loadConfig();
+      expect(loaded.hub).toBeUndefined();
+      expect(loaded.remoteGui).toEqual({ allowedTailscaleUsers: ["alice@example.test"] });
+      expect(loaded.providers.custom?.apiKey).toBe("upstream-secret");
+      expect(loaded.apiKeys?.[0]?.key).toBe("ocx_persisted");
+      expect(readConfigDiagnostics().warnings?.join(" ")).toContain("hub.managementPublicOrigin");
+      expect(warnSpy.mock.calls.flat().join(" ")).not.toContain(malformedValue);
+      expect(backupNames()).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("remote GUI config round-trips but remains inert outside the hub role", () => {
+    for (const runtimeRole of [undefined, "standalone", "client"] as const) {
+      const result = validateConfigCandidate({
+        ...getDefaultConfig(),
+        ...(runtimeRole ? { runtimeRole } : {}),
+        hub: { managementPublicOrigin: "https://hub.example.test" },
+        remoteGui: { allowedTailscaleUsers: ["alice@example.test"], allowInsecureHttp: true },
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.config.runtimeRole).toBe(runtimeRole);
+    }
+  });
+
   test("malformed classifier config is normalized at load, even with subagentEffort absent (#1697)", () => {
     // normalizePersistedClaudeCode used to be reached only through a subagentEffort short-circuit,
     // so a config whose ONLY defect was elsewhere in claudeCode was never normalized. These

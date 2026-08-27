@@ -52,6 +52,7 @@ function sessionDocumentHtml(token: string, csrf: string, origin: string): strin
     `<meta name="opencodex-session-token" content="${token}">`,
     `<meta name="opencodex-session-csrf" content="${csrf}">`,
     `<meta name="opencodex-session-origin" content="${origin}">`,
+    `<meta name="opencodex-session-server-origin" content="${origin}">`,
     "</head><body></body></html>",
   ].join("");
 }

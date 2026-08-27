@@ -62,6 +62,25 @@ import {
   createLocalProviderReloadCapability,
   verifyLocalProviderReloadCapability,
 } from "../src/lib/local-provider-reload-contract";
+import {
+  GUI_PAIR_BROWSER_ORIGIN_HEADER,
+  GUI_PAIR_CAPABILITY_HEADER,
+  GUI_PAIR_CAPABILITY_TTL_MS,
+  GUI_PAIR_EXPECTED_PID_HEADER,
+  GUI_PAIR_EXPIRES_AT_HEADER,
+  GUI_PAIR_METHOD,
+  GUI_PAIR_NONCE_HEADER,
+  GUI_PAIR_PATH,
+  createGuiPairCapability,
+} from "../src/lib/gui-pair-capability";
+import {
+  GUI_PAIRING_GRANT_TTL_MS,
+  LOOPBACK_GUI_SESSION_TTL_MS,
+  REMOTE_GUI_SESSION_TTL_MS,
+  authorizeGuiSessionRequest,
+  consumeGuiPairingGrant,
+  createGuiPairingGrant,
+} from "../src/server/gui-session";
 import { setSystemRestartIoForTests } from "../src/server/management/system-restart";
 
 const previousHome = process.env.OPENCODEX_HOME;
@@ -82,6 +101,16 @@ function remoteConfig(): OcxConfig {
         models: ["gpt-test"],
       },
     },
+  };
+}
+
+function hubConfig(publicOrigin = "https://hub.example.test"): OcxConfig {
+  return {
+    ...remoteConfig(),
+    runtimeRole: "hub",
+    hub: { managementPublicOrigin: publicOrigin },
+    remoteGui: { allowedTailscaleUsers: ["alice@example.test"] },
+    corsAllowOrigins: ["https://dashboard.example.test"],
   };
 }
 
@@ -794,8 +823,15 @@ describe("management and data-plane credential separation", () => {
     const pageRequest = new Request("http://localhost:10100/", {
       headers: { Host: "localhost:10100" },
     });
-    const session = issueGuiSession(pageRequest, config, state);
+    const now = 1_800_000_000_000;
+    const session = issueGuiSession(pageRequest, config, state, { trustedTailscaleIngress: false, now });
     expect(session).not.toBeNull();
+    expect(session).toMatchObject({
+      serverOrigin: "http://localhost:10100",
+      browserOrigin: "http://localhost:10100",
+      issuance: "loopback",
+      expiresAt: now + LOOPBACK_GUI_SESSION_TTL_MS,
+    });
 
     const guiDist = join(testHome, "gui");
     const { mkdirSync, writeFileSync } = await import("node:fs");
@@ -812,7 +848,8 @@ describe("management and data-plane credential separation", () => {
     // source checkout (no packaged build) can still mint an origin-bound session.
     const bootstrapPage = serveSessionBootstrap(session!);
     const bootstrapHtml = await bootstrapPage.text();
-    expect(bootstrapHtml).toContain(`name="opencodex-session-origin" content="${session?.origin}"`);
+    expect(bootstrapHtml).toContain(`name="opencodex-session-origin" content="${session?.browserOrigin}"`);
+    expect(bootstrapHtml).toContain(`name="opencodex-session-server-origin" content="${session?.serverOrigin}"`);
     expect(bootstrapHtml).toContain(`name="opencodex-session-token" content="${session?.token}"`);
 
     const sameOriginRead = new Request("http://localhost:10100/api/config", {
@@ -883,6 +920,227 @@ describe("management and data-plane credential separation", () => {
       expect(html).toContain('name="opencodex-session-token"');
       expect(html).toContain('name="opencodex-session-csrf"');
       expect(html).toContain('name="opencodex-session-origin"');
+      expect(html).toContain('name="opencodex-session-server-origin"');
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("session bootstrap escapes both browser and server origin attributes", async () => {
+    const response = serveSessionBootstrap({
+      token: "ocx_session_safe",
+      csrfToken: "csrf-safe",
+      browserOrigin: 'https://browser.example.test/\"><script>alert(1)</script>',
+      serverOrigin: 'https://hub.example.test/\"><img src=x onerror=alert(1)>',
+      expiresAt: Date.now() + 1_000,
+      issuance: "pairing",
+    });
+    const html = await response.text();
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).not.toContain("<img src=x");
+    expect(html).toContain("&quot;&gt;&lt;script&gt;");
+    expect(html).toContain("&quot;&gt;&lt;img src=x onerror=alert(1)&gt;");
+  });
+
+  test("remote identity issuance requires trusted ingress, hub role, HTTPS, and an exact allowlisted login", () => {
+    const config = hubConfig();
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const now = 1_800_000_000_000;
+    const request = new Request("https://hub.example.test/", {
+      headers: {
+        Host: "hub.example.test",
+        Origin: "https://dashboard.example.test",
+        "Tailscale-User-Login": "alice@example.test",
+      },
+    });
+    expect(issueGuiSession(request, config, state, { trustedTailscaleIngress: false, now })).toBeNull();
+    expect(issueGuiSession(request, config, state, { trustedTailscaleIngress: true, now })).toMatchObject({
+      serverOrigin: "https://hub.example.test",
+      browserOrigin: "https://dashboard.example.test",
+      issuance: "tailscale-identity",
+      expiresAt: now + REMOTE_GUI_SESSION_TTL_MS,
+    });
+    expect(issueGuiSession(new Request(request, {
+      headers: { ...Object.fromEntries(request.headers), "Tailscale-User-Login": "mallory@example.test" },
+    }), config, state, { trustedTailscaleIngress: true, now })).toBeNull();
+    expect(issueGuiSession(new Request(request, {
+      headers: { ...Object.fromEntries(request.headers), "Tailscale-User-Login": " alice@example.test " },
+    }), config, state, { trustedTailscaleIngress: true, now })).toBeNull();
+    expect(issueGuiSession(request, { ...config, runtimeRole: "client" }, state, { trustedTailscaleIngress: true, now })).toBeNull();
+    expect(issueGuiSession(request, { ...config, remoteGui: { allowedTailscaleUsers: [] } }, state, { trustedTailscaleIngress: true, now })).toBeNull();
+    const httpConfig = hubConfig("http://hub.example.test");
+    expect(issueGuiSession(new Request("http://hub.example.test/", {
+      headers: { Host: "hub.example.test", "Tailscale-User-Login": "alice@example.test" },
+    }), httpConfig, state, { trustedTailscaleIngress: true, now })).toBeNull();
+  });
+
+  test("pairing grants are digest-only, origin-bound, single-use, and never accept alternate credentials", () => {
+    const config = hubConfig();
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const now = 1_800_000_000_000;
+    const created = createGuiPairingGrant("https://dashboard.example.test", config, state, now);
+    expect(created.expiresAt).toBe(now + GUI_PAIRING_GRANT_TTL_MS);
+    expect(state.sessions.size).toBe(0);
+    expect(state.pairingGrants.size).toBe(1);
+    expect([...state.pairingGrants.keys()].join(" ")).not.toContain(created.grant);
+
+    const exchange = (origin: string, host = "hub.example.test", headers: HeadersInit = {}) => new Request(
+      "https://hub.example.test/opencodex-session",
+      { method: "POST", headers: { Host: host, Origin: origin, ...headers } },
+    );
+    expect(consumeGuiPairingGrant(
+      exchange("https://evil.example.test"), { grant: created.grant }, config, state, now + 1,
+    )).toBeNull();
+    expect(consumeGuiPairingGrant(
+      exchange("https://dashboard.example.test", "localhost:10100"), { grant: created.grant }, config, state, now + 1,
+    )).toBeNull();
+    expect(consumeGuiPairingGrant(
+      exchange("https://dashboard.example.test", "hub.example.test", { "x-opencodex-api-key": "admin-secret" }),
+      { grant: created.grant }, config, state, now + 1,
+    )).toBeNull();
+    const session = consumeGuiPairingGrant(
+      exchange("https://dashboard.example.test"), { grant: created.grant }, config, state, now + 1,
+    );
+    expect(session).toMatchObject({
+      serverOrigin: "https://hub.example.test",
+      browserOrigin: "https://dashboard.example.test",
+      issuance: "pairing",
+      expiresAt: now + 1 + REMOTE_GUI_SESSION_TTL_MS,
+    });
+    expect(state.pairingGrants.size).toBe(0);
+    expect(consumeGuiPairingGrant(
+      exchange("https://dashboard.example.test"), { grant: created.grant }, config, state, now + 2,
+    )).toBeNull();
+
+    const expired = createGuiPairingGrant("https://dashboard.example.test", config, state, now + 10);
+    expect(consumeGuiPairingGrant(
+      exchange("https://dashboard.example.test"), { grant: expired.grant }, config, state, expired.expiresAt,
+    )).toBeNull();
+  });
+
+  test("insecure HTTP pairing is explicit and a refused exchange can be retried after opt-in", () => {
+    const config = hubConfig("http://hub.example.test");
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const now = 1_800_000_000_000;
+    const created = createGuiPairingGrant("https://dashboard.example.test", config, state, now);
+    const request = new Request("http://hub.example.test/opencodex-session", {
+      method: "POST",
+      headers: { Host: "hub.example.test", Origin: "https://dashboard.example.test" },
+    });
+    expect(consumeGuiPairingGrant(request, { grant: created.grant }, config, state, now + 1)).toBeNull();
+    expect(state.pairingGrants.size).toBe(1);
+    config.remoteGui = { ...config.remoteGui, allowInsecureHttp: true };
+    expect(consumeGuiPairingGrant(request, { grant: created.grant }, config, state, now + 2)).toMatchObject({
+      issuance: "insecure-http-pairing",
+    });
+    expect(state.pairingGrants.size).toBe(0);
+  });
+
+  test("pairing grant creation is bounded by a per-state rate limit", () => {
+    const config = hubConfig();
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const now = 1_800_000_000_000;
+    for (let index = 0; index < 8; index++) {
+      createGuiPairingGrant("https://dashboard.example.test", config, state, now + index);
+    }
+    expect(() => createGuiPairingGrant("https://dashboard.example.test", config, state, now + 9)).toThrow("rate limit");
+    expect(state.sessions.size).toBe(0);
+  });
+
+  test("remote session admission shares the full predicate and renews only after success", () => {
+    const config = hubConfig();
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const issuedAt = 1_800_000_000_000;
+    const created = createGuiPairingGrant("https://dashboard.example.test", config, state, issuedAt);
+    const session = consumeGuiPairingGrant(new Request("https://hub.example.test/opencodex-session", {
+      method: "POST",
+      headers: { Host: "hub.example.test", Origin: "https://dashboard.example.test" },
+    }), { grant: created.grant }, config, state, issuedAt + 1)!;
+    const before = session.expiresAt;
+    const request = (overrides: Record<string, string> = {}, method = "GET", host = "hub.example.test") => new Request(
+      `https://${host}/api/config`,
+      {
+        method,
+        headers: {
+          Host: host,
+          Origin: "https://dashboard.example.test",
+          "x-opencodex-api-key": session.token,
+          "x-opencodex-gui-origin": "https://dashboard.example.test",
+          ...(method === "GET" ? {} : { "x-opencodex-csrf-token": session.csrfToken }),
+          ...overrides,
+        },
+      },
+    );
+    expect(authorizeGuiSessionRequest(request({ "x-opencodex-gui-origin": "https://evil.example.test" }), config, state, issuedAt + 2)).toMatchObject({ ok: false, reason: "browser-origin" });
+    expect(session.expiresAt).toBe(before);
+    expect(authorizeGuiSessionRequest(request({}, "POST", "localhost:10100"), config, state, issuedAt + 3)).toMatchObject({ ok: false, reason: "server-origin" });
+    expect(session.expiresAt).toBe(before);
+    expect(authorizeGuiSessionRequest(request({ "x-opencodex-csrf-token": "wrong" }, "POST"), config, state, issuedAt + 4)).toMatchObject({ ok: false, reason: "csrf" });
+    expect(session.expiresAt).toBe(before);
+    expect(authorizeGuiSessionRequest(request({}, "POST"), config, state, issuedAt + 5)).toMatchObject({ ok: true, principal: "gui-session" });
+    expect(session.expiresAt).toBe(issuedAt + 5 + REMOTE_GUI_SESSION_TTL_MS);
+  });
+
+  test("the live pairing route refuses admin authority and exchanges only a capability-created grant", async () => {
+    const config = hubConfig();
+    saveConfig(config);
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const secret = "G".repeat(43);
+    const server = startServer(0, { managementAuthState: state, localAttestationSecret: secret });
+    try {
+      const adminAttempt = await fetch(new URL(GUI_PAIR_PATH, server.url), {
+        method: "POST",
+        headers: { "content-length": "0", "x-opencodex-api-key": "admin-secret" },
+      });
+      expect(adminAttempt.status).toBe(403);
+      expect(state.pairingGrants.size).toBe(0);
+
+      const nonce = "H".repeat(43);
+      const expiresAt = Date.now() + GUI_PAIR_CAPABILITY_TTL_MS;
+      const capability = createGuiPairCapability(
+        secret, nonce, GUI_PAIR_METHOD, GUI_PAIR_PATH, "https://dashboard.example.test",
+        process.pid, server.port, expiresAt,
+      )!;
+      const createdResponse = await fetch(new URL(GUI_PAIR_PATH, server.url), {
+        method: "POST",
+        headers: {
+          "content-length": "0",
+          [GUI_PAIR_EXPECTED_PID_HEADER]: String(process.pid),
+          [GUI_PAIR_NONCE_HEADER]: nonce,
+          [GUI_PAIR_EXPIRES_AT_HEADER]: String(expiresAt),
+          [GUI_PAIR_BROWSER_ORIGIN_HEADER]: "https://dashboard.example.test",
+          [GUI_PAIR_CAPABILITY_HEADER]: capability,
+        },
+      });
+      expect(createdResponse.status).toBe(201);
+      expect(createdResponse.headers.get("cache-control")).toBe("no-store");
+      const created = await createdResponse.json() as { grant: string };
+      expect(state.pairingGrants.size).toBe(1);
+
+      const adminExchange = await fetch(new URL("/opencodex-session", server.url), {
+        method: "POST",
+        headers: { Host: "hub.example.test", Origin: "https://dashboard.example.test", "content-type": "application/json" },
+        body: JSON.stringify({ grant: "admin-secret" }),
+      });
+      expect(adminExchange.status).toBe(401);
+
+      const exchanged = await fetch(new URL("/opencodex-session", server.url), {
+        method: "POST",
+        headers: { Host: "hub.example.test", Origin: "https://dashboard.example.test", "content-type": "application/json" },
+        body: JSON.stringify({ grant: created.grant }),
+      });
+      expect(exchanged.status).toBe(200);
+      expect(exchanged.headers.get("cache-control")).toBe("no-store");
+      const html = await exchanged.text();
+      expect(html).toContain('name="opencodex-session-origin" content="https://dashboard.example.test"');
+      expect(html).toContain('name="opencodex-session-server-origin" content="https://hub.example.test"');
+      expect(state.pairingGrants.size).toBe(0);
     } finally {
       await server.stop(true);
     }

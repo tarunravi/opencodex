@@ -46,6 +46,7 @@ import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspect
 import { configuredAdminToken } from "../src/lib/admin-secrets";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../src/lib/system-restart-contract";
 import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../src/lib/local-provider-reload-contract";
+import { GUI_PAIR_CAPABILITY_VERSION } from "../src/lib/gui-pair-capability";
 import { resetCodexModelEntitlementCacheForTests } from "../src/codex/model-entitlements";
 import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
 import { resetDebugSettingsForTests, setDebugSettings } from "../src/lib/debug-settings";
@@ -1071,6 +1072,7 @@ describe("server local API auth", () => {
       expect(health.status).toBe(200);
       const healthBody = await health.json() as Record<string, unknown>;
       expect(Object.keys(healthBody).sort()).toEqual([
+        "guiPairCapability",
         "pid",
         "port",
         "providerReloadCapability",
@@ -1082,6 +1084,7 @@ describe("server local API auth", () => {
       ]);
       expect(healthBody.restartCapability).toBe(SYSTEM_RESTART_CAPABILITY_VERSION);
       expect(healthBody.providerReloadCapability).toBe(LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION);
+      expect(healthBody.guiPairCapability).toBe(GUI_PAIR_CAPABILITY_VERSION);
       expect("rss" in healthBody).toBe(false);
     } finally {
       await server.stop(true);
@@ -1115,6 +1118,10 @@ describe("server local API auth", () => {
       });
       expect(accepted.status).toBe(204);
       expect(accepted.headers.get("access-control-allow-origin")).toBe(loopbackOrigin);
+      const allowedHeaders = accepted.headers.get("access-control-allow-headers") ?? "";
+      expect(allowedHeaders).toContain("X-OpenCodex-GUI-Origin");
+      expect(allowedHeaders).toContain("X-OpenCodex-CSRF-Token");
+      expect(allowedHeaders).not.toContain("X-Unrelated-Custom-Header");
     } finally {
       await server.stop(true);
     }
@@ -1165,6 +1172,30 @@ describe("server local API auth", () => {
       });
       expect(managementPreflight.status).toBe(204);
       expect(managementPreflight.headers.get("access-control-allow-origin")).toBe(extensionOrigin);
+      expect(managementPreflight.headers.get("access-control-allow-headers")).toContain("X-OpenCodex-GUI-Origin");
+      expect(managementPreflight.headers.get("access-control-allow-headers")).toContain("X-OpenCodex-CSRF-Token");
+
+      const managementUnrelated = await fetch(managementUrl, {
+        method: "OPTIONS",
+        headers: {
+          origin: extensionOrigin,
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "X-Unrelated-Custom-Header",
+        },
+      });
+      expect(managementUnrelated.status).toBe(204);
+      expect(managementUnrelated.headers.get("access-control-allow-headers")).not.toContain("X-Unrelated-Custom-Header");
+
+      const dataPlaneDynamic = await fetch(modelsUrl, {
+        method: "OPTIONS",
+        headers: {
+          origin: extensionOrigin,
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "X-Unrelated-Custom-Header",
+        },
+      });
+      expect(dataPlaneDynamic.status).toBe(204);
+      expect(dataPlaneDynamic.headers.get("access-control-allow-headers")).toContain("X-Unrelated-Custom-Header");
 
       const managementRejected = await fetch(managementUrl, {
         method: "OPTIONS",

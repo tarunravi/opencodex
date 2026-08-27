@@ -1292,6 +1292,34 @@ describe("GET /readyz", () => {
     }
   });
 
+  test("hub readiness prefers the configured public management origin over the observed listener", async () => {
+    saveConfig({
+      ...forwardConfig(),
+      runtimeRole: "hub",
+      hub: { managementPublicOrigin: "https://hub.example.test" },
+    });
+    const server = startServer(0);
+    try {
+      const ready = await fetch(new URL("/readyz", server.url), {
+        headers: {
+          Host: "observed.example.test:8443",
+          "X-Forwarded-Host": "attacker.example.test",
+          "X-Forwarded-Proto": "http",
+        },
+      });
+      const body = await ready.json() as Record<string, unknown>;
+      expectReadyProtocolMetadata(body, "https://hub.example.test");
+
+      const health = await fetch(new URL("/healthz", server.url));
+      const healthBody = await health.json() as Record<string, unknown>;
+      expect(healthBody.guiPairCapability).toBe("v1");
+      expect(JSON.stringify(healthBody)).not.toContain("ocx_session_");
+      expect(JSON.stringify(healthBody)).not.toContain("csrf");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("/readyz is 200 with status ready only after gate.markReady()", async () => {
     saveConfig(forwardConfig());
     const gate = createReadinessGate();
