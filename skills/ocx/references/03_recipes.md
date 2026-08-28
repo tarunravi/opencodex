@@ -137,6 +137,10 @@ ocx doctor           # what is structurally wrong (human; `--json` is not implem
 In that order. `ready` false with `doctor` clean usually means it is still starting; `ready` true
 with a transport error on a specific verb means the route is failing, not the proxy.
 
+`doctor` has no `--json` mode. It rejects the flag with exit 2 rather than printing prose to a
+caller that asked for JSON, so parse `ready --json` and `status --json` for machine-readable
+health and treat `doctor` as the human explanation of why they are unhappy.
+
 A credential-conflict reason is the case where retrying is pointless — the install is broken and
 `doctor` explains it.
 
