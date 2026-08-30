@@ -151,22 +151,25 @@
 .dash-sidecar-row-card .dash-delegation-controls {
   flex: 0 0 min(100%, 26rem);
   flex-wrap: nowrap;
-  /* Pack from the band's LEFT edge: that edge is the shared start position. The base
-     `.dash-delegation-controls` rule packs `flex-end`, which would re-introduce the
-     original defect inside the band — a narrower group would float right and start late.
-     `space-between` keeps the trailing switch on the card's right edge, so the row still
-     reads as label-left / control-right. */
-  justify-content: space-between;
-  /* Both control groups reserve the same band AND pack from its top, so the first Select
-     of each card lands on one line. Without the band the web-search group is one 34px
-     select row while the vision group is a 59px column (select row + 12px gap + the
-     "advanced" disclosure); without the top packing the shorter group centres inside that
-     band and its Select still sits 13.5px low.
+  /* Both cards hold the SAME two-row structure: `.dash-sidecar-select-row` for the model
+     pickers, then `.dash-sidecar-trailing-row` for the card's secondary control (the
+     streaming switch on web search, the advanced disclosure on vision). The group is
+     therefore a column in both, which is what puts the two first rows on one line and the
+     two trailing rows on another.
 
-     `align-items`, not `align-content`: the web-search group is a single flex line, and
-     `align-content` has no effect on one line. */
+     The web-search group used to be a single horizontal line with the streaming label
+     beside the select. Inside the 26rem band that label had to wrap: three lines at
+     ko/ja/tr, and it dragged the switch away from the card's right edge. Giving it its own
+     right-aligned row is the same treatment the advanced disclosure already had. */
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  /* Main axis is vertical here, so this packs the two ROWS toward the band's top rather
+     than distributing them down a card that the grid stretched taller. */
+  justify-content: flex-start;
+  /* The band reserves both rows in both cards, so the first select of each lands on one
+     line even when one card's trailing row is shorter than the other's. */
   min-height: 3.6875rem;
-  align-items: flex-start;
 }
 
 /* The model select carries the long value: give it a floor wide enough to read a
@@ -289,24 +292,15 @@
   min-width: min(100%, 14rem);
 }
 
-/* Only the axis and the internal stacking are vision-specific. The band itself is
-   inherited from the shared rule above: overriding `flex` here is what made the two
-   groups different widths, and therefore different start positions. */
+/* Nothing about the control band is vision-specific any more: the column axis, the gap,
+   and the packing all moved to the shared rule once the web-search card adopted the same
+   two-row structure. Only the bounds stay, and they match the shared band. */
 .dash-vision-sidecar-card .dash-delegation-controls {
   min-width: 0;
   max-width: 100%;
-  flex-direction: column;
-  align-items: stretch;
-  flex-wrap: nowrap;
-  gap: 12px;
-  /* The shared rule's `space-between` is a MAIN-axis value, and this group's main axis is
-     vertical. Restate `flex-start` so a card that ever has vertical slack packs its two
-     rows together instead of pushing the advanced disclosure to the card's bottom edge.
-     The horizontal start position is unaffected: that comes from the band's left edge. */
-  justify-content: flex-start;
 }
 
-.dash-vision-select-row {
+.dash-sidecar-select-row {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -316,27 +310,43 @@
   width: 100%;
 }
 
-.dash-vision-select-row .custom-select:first-child {
+.dash-sidecar-select-row .custom-select:first-child {
   flex: 1 1 70%;
   min-width: min(100%, 9rem);
   max-width: 16rem;
 }
 
-.dash-vision-select-row .custom-select:nth-child(2) {
+.dash-sidecar-select-row .custom-select:nth-child(2) {
   flex: 1 1 30%;
   min-width: min(100%, 6rem);
   max-width: 9rem;
 }
 
-.dash-vision-select-row .custom-select .select-trigger {
+.dash-sidecar-select-row .custom-select .select-trigger {
   width: 100%;
   max-width: 100%;
 }
 
-.dash-vision-advanced-row {
+.dash-sidecar-trailing-row {
   display: flex;
   justify-content: flex-end;
   width: 100%;
+}
+
+/* The web-search trailing row carries a label AND a switch, where the vision row carries a
+   single button. Both sit at the row's right edge as one cluster, so the label reads as
+   belonging to the control it labels rather than drifting to the opposite edge. */
+.dash-sidecar-trailing-row {
+  align-items: center;
+  gap: 8px;
+}
+
+/* Let the label take the width it needs at the row's left, but never so much that it
+   pushes the switch off the edge; it wraps instead. `text-align: right` keeps a wrapped
+   second line aligned with the cluster rather than ragged against the switch. */
+.dash-sidecar-toggle-label {
+  min-width: 0;
+  text-align: right;
 }
 
 .dash-vision-advanced-trigger {
@@ -432,7 +442,7 @@
     align-items: stretch;
   }
 
-  .dash-vision-sidecar-card .dash-vision-select-row {
+  .dash-vision-sidecar-card .dash-sidecar-select-row {
     justify-content: flex-start;
   }
 }

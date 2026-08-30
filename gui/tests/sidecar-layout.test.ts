@@ -95,17 +95,23 @@ test("the hint reserves the same LINE COUNT in both cards, not a pixel band", as
 });
 
 test("both control groups reserve the same band and pack from its top", async () => {
-  const css = withoutComments(await Bun.file(cssUrl).text());
+  const css = baseCascade(withoutComments(await Bun.file(cssUrl).text()));
   const controls = allRuleBodies(css, ".dash-sidecar-row-card .dash-delegation-controls");
 
-  // The web-search group is one 34px select row; the vision group is a 59px column
-  // (select row + 12px gap + the "advanced" disclosure). Equal bands are what let the
-  // shared row shell place them identically.
+  // Equal bands are what let the shared row shell place the two groups identically, even
+  // though their trailing rows differ in height (a label + switch against a single button).
   expect(controls).toMatch(/min-height:\s*[\d.]+rem/);
 
-  // `align-items`, not `align-content`: the web-search group is a single flex line and
-  // `align-content` does nothing there — it silently left the Select 13.5px low.
-  expect(controls).toMatch(/align-items:\s*flex-start/);
+  // Both groups are COLUMNS of the same two rows: the select row, then the trailing row.
+  // This replaced a single-line web-search group whose streaming label sat beside the
+  // select and wrapped to three lines inside the band at ko/ja/tr.
+  expect(controls).toMatch(/flex-direction:\s*column/);
+
+  // Main axis is vertical, so packing the rows toward the band's top is `justify-content`.
+  // `align-items: flex-start` would be the CROSS axis here and would shrink both rows to
+  // their content width, un-aligning the trailing row's right edge from the card's.
+  expect(controls).toMatch(/justify-content:\s*flex-start/);
+  expect(controls).toMatch(/align-items:\s*stretch/);
 });
 
 test("both control groups start at the same x: one definite, unshrinkable band", async () => {
@@ -131,10 +137,12 @@ test("both control groups start at the same x: one definite, unshrinkable band",
   expect(controls).not.toMatch(/flex:\s*0\s+[1-9]/);
   expect(controls).not.toMatch(/flex-shrink:\s*[1-9]/);
 
-  // Inside the band, pack from its LEFT edge. The base `.dash-delegation-controls` rule
-  // packs `flex-end`; inheriting that would float the narrower group to the band's right
-  // and start it late, which is the original bug scoped down to the band.
-  expect(controls).toMatch(/justify-content:\s*space-between/);
+  // The rows must span the band, not shrink to their content. `align-items: stretch` is
+  // what makes the select row start at the band's left edge in both cards; the base
+  // `.dash-delegation-controls` rule's `flex-end` would otherwise float a narrower row to
+  // the band's right and start it late, which is the original bug scoped down to the band.
+  expect(controls).toMatch(/align-items:\s*stretch/);
+  expect(controls).not.toMatch(/align-items:\s*flex-end/);
 
   // And the band must be identical in BOTH cards, so the vision card may not override the
   // width. Overriding `flex` here is precisely what made the groups different sizes.
@@ -260,7 +268,7 @@ test("narrow-card rules apply to both cards, never one of them", async () => {
       // A vision-only selector may only carry vision-specific concerns (its select row),
       // never the shared copy/control basis.
       if (selector.includes("dash-vision-sidecar-card")) {
-        expect(selector).toContain("dash-vision-select-row");
+        expect(selector).toContain("dash-sidecar-select-row");
       }
     }
   }
