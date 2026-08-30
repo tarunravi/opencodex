@@ -9,6 +9,7 @@ import type { CatalogModel } from "../../codex/catalog";
 import type { Paths as CodexPromptPaths } from "../../codex/prompt-layers";
 import type { injectGrokConfig } from "../../grok/inject";
 import type { removeDesktop3pStandardPivot, writeDesktop3pConfig } from "../../claude/desktop-3p";
+import type { probeClaudeDesktopPolicy } from "../../claude/desktop-policy";
 import type { RuntimePortState } from "../../config/process-state";
 import type { CatalogDisposition, ConvergeCodex } from "../../codex/convergence-types";
 import type {
@@ -23,6 +24,8 @@ export interface ManagementApiDeps {
   toggleCodexMultiAgentV2?: (enabled: boolean) => void;
   toggleDefaultModeRequestUserInput?: (enabled: boolean) => void;
   createManagementConvergeCodex?: (config: Readonly<OcxConfig>) => ConvergeCodex;
+  /** Test-only destination for best-effort Claude agent-definition sync. */
+  claudeAgentConfigDir?: string;
   /** Startup-health seam keeps route tests from launching platform probes. */
   getCachedStartupHealth?: (config: Pick<OcxConfig, "codexAutoStart">) => Promise<StartupHealth>;
   /**
@@ -48,10 +51,8 @@ export interface ManagementApiDeps {
   /** Desktop mutation seams keep route tests inside temporary config libraries. */
   removeDesktop3pStandardPivot?: typeof removeDesktop3pStandardPivot;
   writeDesktop3pConfig?: typeof writeDesktop3pConfig;
-  /** Cursor MCP seams keep route tests out of the user's real ~/.cursor. */
-  readCursorMcpState?: typeof readCursorMcpState;
-  enableCursorMcp?: typeof enableCursorMcp;
-  disableCursorMcp?: typeof disableCursorMcp;
+  /** Read-only Windows MDM policy seam for status/apply tests. */
+  probeClaudeDesktopPolicy?: typeof probeClaudeDesktopPolicy;
   /**
    * Runtime-state seam: the fence must name the host/port the RUNNING process
    * bound (agent-settings-routes.ts:99-103 pattern), and a test must not depend
