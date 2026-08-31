@@ -3,6 +3,8 @@ import { useDataSurface } from "../../data-surface";
 import { DataSurfaceSkeleton } from "../../components/data-surface";
 import { useT, type TKey } from "../../i18n/shared";
 import { Notice, Switch } from "../../ui";
+import ClientMark from "../../components/ClientMark";
+import { markFor } from "../../components/integration-marks";
 import IntegrationStateBadge from "./IntegrationStateBadge";
 import RestoreDialog from "./RestoreDialog";
 import { RollbackHistory } from "./RollbackHistory";
@@ -143,6 +145,7 @@ export default function FileIntegrationPage({
   return (
     <section className="integration-client-page">
       <div className="integration-client-head">
+        <ClientMark src={markFor(client)} label={t(TAB_LABEL_KEY[client])} size={24} />
         <h3>{t(TAB_LABEL_KEY[client])}</h3>
         <IntegrationStateBadge
           state={status.state}

@@ -4,6 +4,8 @@ import { DataSurfaceSkeleton } from "../../components/data-surface";
 import { navigateHash } from "../../hash-routing";
 import { useT } from "../../i18n/shared";
 import { Notice, Switch } from "../../ui";
+import ClientMark from "../../components/ClientMark";
+import { markFor } from "../../components/integration-marks";
 import IntegrationStateBadge from "./IntegrationStateBadge";
 import ConsequenceDialog, { type ConsequenceCopy } from "./ConsequenceDialog";
 import RestoreDialog from "./RestoreDialog";
@@ -98,6 +100,12 @@ function OverviewCard({
   return (
     <li className="integration-card" data-client={row.id}>
       <div className="integration-card-head">
+        {/*
+          Before the title, not inside it: the title IS the card's one control
+          and its accessible name, so a mark inside the button would be read as
+          part of the client name. The mark is decorative and aria-hidden.
+        */}
+        <ClientMark src={markFor(row.id)} label={t(row.labelKey)} size={20} />
         <h4>
           <button type="button" className="integration-card-link" onClick={onOpen}>
             {t(row.labelKey)}

@@ -1002,7 +1002,7 @@ export const de: Record<TKey, string> = {
   "integrations.tabsLabel": "Integrationsbereiche",
   "integrations.tab.overview": "Übersicht",
   "integrations.tab.keys": "API-Schlüssel",
-  "integrations.tab.codex": "Codex CLI",
+  "integrations.tab.codex": "Codex",
   "integrations.tab.claude": "Claude",
   "integrations.tab.grok": "Grok Build",
   "integrations.tab.opencode": "OpenCode",

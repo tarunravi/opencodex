@@ -1445,7 +1445,7 @@ export const ja: Record<TKey, string> = {
   "integrations.tabsLabel": "連携画面",
   "integrations.tab.overview": "概要",
   "integrations.tab.keys": "API キー",
-  "integrations.tab.codex": "Codex CLI",
+  "integrations.tab.codex": "Codex",
   "integrations.tab.claude": "Claude",
   "integrations.tab.grok": "Grok Build",
   "integrations.tab.opencode": "OpenCode",

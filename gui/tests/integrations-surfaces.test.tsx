@@ -776,3 +776,83 @@ test("every export client has both an Integrations tab and a file-surface entry"
   const orphaned = [...FILE_CLIENTS].filter(id => !clientIds.has(id));
   expect(orphaned).toEqual([]);
 });
+
+/*
+ * The mark has to reach every surface, not just the API tab it started on. Three
+ * of them are checked here; the fourth is client-config-panel.test.tsx.
+ *
+ * These assert on the rendered DOM rather than on the map, because the map being
+ * right and the component never being called is exactly the failure a map-only
+ * test cannot see -- and it is the failure that would ship, since the marks were
+ * correct in data long before any surface drew them.
+ */
+test("a client page header draws its client's mark", async () => {
+  stateResponse = () => json(status({
+    clientId: "dsh",
+    configPath: "/tmp/home/.dsh/settings.yaml",
+  }));
+  await mountClient(true, "dsh");
+
+  const head = container.querySelector(".integration-client-head")!;
+  const mark = head.querySelector<HTMLElement>(".client-mark");
+  expect(mark, "the client page header should carry a mark").not.toBeNull();
+  // dsh is single-ink but its ink is DeepSeek blue, so it renders as an image.
+  expect(mark!.querySelector("img")?.getAttribute("src")).toBe("/provider-icons/deepseek-harness.svg");
+  // Decoration beside a heading that already names the client.
+  expect(mark!.getAttribute("aria-hidden")).toBe("true");
+});
+
+test("every overview card draws a mark, and none of them names itself", async () => {
+  await mountOverview();
+
+  const cards = [...container.querySelectorAll(".integration-card")];
+  expect(cards.length).toBeGreaterThan(4);
+  const bare = cards
+    .filter(card => card.querySelector(".client-mark") === null)
+    .map(card => card.getAttribute("data-client"));
+  expect(bare).toEqual([]);
+
+  // A mark next to a visible label must not join the accessible name, or a
+  // screen reader says the client twice.
+  for (const mark of container.querySelectorAll(".client-mark")) {
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+  }
+  for (const img of container.querySelectorAll(".client-mark img")) {
+    expect(img.getAttribute("alt")).toBe("");
+  }
+
+  // The card head is space-between; the mark must sit with the title rather than
+  // after the badge, so it is the first child.
+  const head = cards[0]!.querySelector(".integration-card-head")!;
+  expect(head.firstElementChild?.classList.contains("client-mark")).toBe(true);
+});
+
+test("the tab strip marks every client tab and leaves the two non-client tabs bare", async () => {
+  const [{ createRoot }, { LanguageProvider }, { default: Integrations }] = await Promise.all([
+    import("react-dom/client"),
+    import("../src/i18n/provider"),
+    import("../src/pages/Integrations"),
+  ]);
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <Integrations apiBase={apiBase} />
+      </LanguageProvider>,
+    );
+  });
+  await act(async () => { await new Promise<void>(resolve => testWindow.setTimeout(resolve, 30)); });
+
+  const tabs = [...container.querySelectorAll<HTMLElement>(".page-tab")];
+  expect(tabs.length).toBeGreaterThan(10);
+  const marked = tabs.filter(tab => tab.querySelector(".client-mark") !== null);
+  // overview and keys carry no client, so they carry no mark.
+  expect(tabs.length - marked.length).toBe(2);
+
+  const codexTab = tabs.find(tab => tab.id === "integrations-tab-codex")!;
+  expect(codexTab.querySelector(".client-mark img")?.getAttribute("src")).toBe("/provider-icons/openai.svg");
+  // The label lost its "CLI": the mark carries that identity now, and the row
+  // covers the app and SDK too.
+  expect(codexTab.textContent).toBe("Codex");
+});
+

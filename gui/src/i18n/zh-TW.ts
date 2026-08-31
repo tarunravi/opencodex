@@ -2050,7 +2050,7 @@ export const zhTW: Record<TKey, string> = {
   "integrations.tabsLabel": "整合表面",
   "integrations.tab.overview": "總覽",
   "integrations.tab.keys": "API 金鑰",
-  "integrations.tab.codex": "Codex CLI",
+  "integrations.tab.codex": "Codex",
   "integrations.tab.claude": "Claude",
   "integrations.tab.grok": "Grok Build",
   "integrations.tab.opencode": "OpenCode",

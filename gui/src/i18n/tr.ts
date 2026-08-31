@@ -1503,7 +1503,7 @@ export const tr: Record<TKey, string> = {
   "integrations.tabsLabel": "Entegrasyon yüzeyleri",
   "integrations.tab.overview": "Genel Bakış",
   "integrations.tab.keys": "API Anahtarları",
-  "integrations.tab.codex": "Codex CLI",
+  "integrations.tab.codex": "Codex",
   "integrations.tab.claude": "Claude",
   "integrations.tab.grok": "Grok Build",
   "integrations.tab.opencode": "OpenCode",

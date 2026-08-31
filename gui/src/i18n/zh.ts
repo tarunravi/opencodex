@@ -1019,7 +1019,7 @@ export const zh: Record<TKey, string> = {
   "integrations.tabsLabel": "集成页面",
   "integrations.tab.overview": "概览",
   "integrations.tab.keys": "API 密钥",
-  "integrations.tab.codex": "Codex CLI",
+  "integrations.tab.codex": "Codex",
   "integrations.tab.claude": "Claude",
   "integrations.tab.grok": "Grok Build",
   "integrations.tab.opencode": "OpenCode",

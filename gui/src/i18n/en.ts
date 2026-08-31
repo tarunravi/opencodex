@@ -1512,7 +1512,7 @@ export const en = {
   "integrations.tabsLabel": "Integration surfaces",
   "integrations.tab.overview": "Overview",
   "integrations.tab.keys": "API Keys",
-  "integrations.tab.codex": "Codex CLI",
+  "integrations.tab.codex": "Codex",
   "integrations.tab.claude": "Claude",
   "integrations.tab.grok": "Grok Build",
   "integrations.tab.opencode": "OpenCode",

@@ -1026,7 +1026,7 @@ export const ko: Record<TKey, string> = {
   "integrations.tabsLabel": "연동 화면",
   "integrations.tab.overview": "개요",
   "integrations.tab.keys": "API 키",
-  "integrations.tab.codex": "Codex CLI",
+  "integrations.tab.codex": "Codex",
   "integrations.tab.claude": "Claude",
   "integrations.tab.grok": "Grok Build",
   "integrations.tab.opencode": "OpenCode",

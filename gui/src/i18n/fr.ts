@@ -1470,7 +1470,7 @@ export const fr: Record<TKey, string> = {
   "integrations.tabsLabel": "Surfaces d’intégration",
   "integrations.tab.overview": "Vue d’ensemble",
   "integrations.tab.keys": "Clés API",
-  "integrations.tab.codex": "Codex CLI",
+  "integrations.tab.codex": "Codex",
   "integrations.tab.claude": "Claude",
   "integrations.tab.grok": "Grok Build",
   "integrations.tab.opencode": "OpenCode",
