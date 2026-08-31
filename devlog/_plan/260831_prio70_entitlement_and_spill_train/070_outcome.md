@@ -107,3 +107,87 @@ genuine stable-fixed-point loop, `B=5000`/`R=4000` with the fallback receiving i
 reserved slice, and the shared ACL deadline reaching both hardeners. The review found
 one high defect: supersession reaches the state tracking but not the writer, so an
 abandoned writer can still publish to the filesystem and orphan a temp. Sent back.
+
+## v2.37.0 released — #3022 verified live
+
+The 5.6 fix is published and proven on the installed runtime, not just in CI.
+
+- npm `@bitkyc08/opencodex@2.37.0` on `latest`; `gitHead` = `54e2274cff231631c0ea2ff12574ff03829d5fe6`
+- tag `v2.37.0` and the GitHub release both point at that same commit
+- `main` = `54e2274cf` (promotion PR #3037), `dev` = `4180067b4` and an ancestor of it
+
+Both required gates passed on the exact release SHA as push events: Cross-platform CI
+and Service lifecycle. `enforce-target` fails on any promotion by construction —
+`ALLOWED_BASES` is `["dev"]` — which is why #3002 (v2.36.0) merged in the same state.
+
+Release-path proof, in order:
+
+1. The published tarball carries both changes:
+   `MEASURED_GATED_CLIENT_VERSION_MINIMUM = "0.144.0"` at `:88` and
+   `const usable = models !== null && models.size > 0` at `:472`.
+2. The global install had to be forced. `bun add -g` reused a cached 2.37.0 from
+   Aug 30 that predated the fix — same version string, old bytes. Worth remembering:
+   a version match is not a content match, and `grep` on the installed file is the
+   check that actually settles it.
+3. The running proxy was serving the primary checkout, which sat 4 commits behind
+   `dev` while reporting `version: 2.37.0`. So `/healthz` agreed with the release
+   and the code did not. Fast-forwarded the checkout and restarted onto the global
+   install (PID 57341, `~/.bun/install/global/.../@bitkyc08/opencodex`).
+4. On that runtime: `ocx models live --provider openai` lists `gpt-5.6-sol`,
+   `-terra` and `-luna` as native/enabled; `/v1/models` returns all three;
+   `/api/models` and `ocx export --client opencode --json` carry them too.
+
+That last point matters beyond #3022: the three surfaces #3023 names were checked on
+a warm roster and all carry the gated rows. #3023 is about what happens once
+`MODEL_ROSTER_TTL_MS` expires, so this is not a NOOP for it — but it does confirm
+the warm path is intact and the wp6 work is scoped to expiry, not to the rows
+themselves.
+
+## wp3 — LANDED (pending merge of PR #3044)
+
+#3011 fixed by carrying Ingwannu's `aec717722` and closing the shutdown boundary it
+opened. His commit is the base of the branch, unmodified and credited.
+
+Five review rounds, each returning FAIL until the last, and every finding was a real
+defect rather than a style note. Worth recording as a sequence, because each fix
+created the next problem:
+
+1. Supersession reached the state tracking but not the writer, so an abandoned writer
+   could still publish to the filesystem and orphan a temp. The first implementation's
+   own test asserted **two** publications as expected behaviour.
+2. Making cleanup failure reject the drain discarded **every other unsnapshotted
+   response** — the rejection preempted `persistNow()` while shutdown still exited 0.
+   My instruction to "reject the drain" was wrong as stated; the correct shape is that
+   cleanup failure is reported but never prevents durable persistence.
+3. Budget exhaustion caused an **infinite synchronous requeue loop**: pruning
+   re-queued the over-cap resident and the drain never terminated. Graceful shutdown
+   would have hung forever.
+4. The regression guarding that loop could **wedge CI** rather than fail, because an
+   in-test timeout cannot interrupt a blocked JS thread. Proven by the red run needing
+   an external `timeout 3s` and exiting 124.
+
+Final state: drain to a stable fixed point before snapshot serialization, budget split
+`B=5000`/`R=4000` with the fallback receiving its reserved slice and passing it down to
+both hardeners, supersession reaching the writer, cleanup attempted for every job
+without short-circuiting persistence, terminalization bounded at 1001 passes with a
+tested `ELOOP` guard, and the hang scenario isolated in a child process with a
+watchdog that SIGKILLs and reports.
+
+**The fail-closed consequence is deliberate and must stay documented.** When the
+fallback budget is exhausted, the payload is destroyed and a `spill-failed` tombstone
+persists. Shutdown exits nonzero, replay returns `previous_response_not_found` with
+internal reason `spill_failed`, and the client resends the full conversation. If the
+1001-pass structural guard ever fires, it fail-closes **all** remaining resident
+continuation state, not only the originally pending spills.
+
+Verified on `ssh lidge` at `f0a831efb` (rebased onto `dev` = `a8c3a9633`, 2.38.0):
+privacy scan passed, typecheck clean, full suite **16524 pass / 0 fail / 16 skip**,
+`EXIT=0`.
+
+The earlier run at `9ef709460` had exactly one failure, `release version line`, which
+reproduced on pristine `origin/dev` and was therefore not ours. `dev` was carrying the
+just-published `2.37.0`. Fixed properly via `scripts/bump-dev-version.ts` and PR #3045
+rather than by editing the version by hand.
+
+Residual risk: a real Windows host is still needed for NTFS unlink semantics and
+`icacls` timeout behaviour while a path is held.
