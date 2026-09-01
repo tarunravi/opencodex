@@ -112,10 +112,18 @@ Issuance ladder (config-selected, strictest first):
    session. On a shared tailnet, an empty allowlist means nobody mints remotely.
 3. pairing — `ocx gui pair` on the hub prints a single-use, short-TTL, origin-bound
    grant that can only mint a session. For generic HTTPS terminators.
-4. insecure-http pairing (documented opt-in: `remoteGui.allowInsecureHttp`) — the SAME
-   single-use pairing grant as rung 3, allowed to travel over a plain-HTTP tailnet
-   origin. This is the "don't over-harden" valve the user asked for: private tailnet,
-   sole operator → run `ocx gui pair` once on the hub, paste the code, GUI works.
+4. ~~insecure-http pairing~~ — REMOVED. An earlier revision let the rung-3 grant travel
+   over a plain-HTTP tailnet origin behind `remoteGui.allowInsecureHttp`, as the
+   "don't over-harden" valve for a private tailnet with a sole operator. A reusable
+   grant on plaintext HTTP is captured verbatim by anything with tailnet reach, and an
+   opt-in flag records a risk the operator cannot actually bound, so the flag was doing
+   no security work. A private tailnet is not a private wire.
+
+   The valve the user asked for is served by rung 3 over `tailscale serve`, which
+   terminates HTTPS for exactly this deployment and needs no plaintext hop. Non-loopback
+   plaintext HTTP now carries no grant, session, admin token, or client key — only an
+   unauthenticated error naming the required scheme.
+
    Audit note (blocker 1, folded): the earlier "trusted-tailnet" variant that minted
    sessions from Host/Origin alone is DROPPED — headers are forgeable by anything with
    TCP reach, so it would have granted consent routes with zero credential, strictly

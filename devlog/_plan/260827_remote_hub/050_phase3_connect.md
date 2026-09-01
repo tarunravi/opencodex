@@ -304,7 +304,7 @@ export function exchangeConnectPairingGrant(
   managementUrl: string,
   browserOrigin: string,
   grant: Uint8Array,
-  options?: { allowInsecureHttp?: boolean; timeoutMs?: number; fetchImpl?: typeof fetch },
+  options?: { timeoutMs?: number; fetchImpl?: typeof fetch },
 ): Promise<ConnectGuiSession>;
 export function issueClientKey(
   managementUrl: string,
@@ -325,12 +325,19 @@ export function downloadClientCatalog(
 through `checkRemoteProtocolCompatibility()`; it does not define a second protocol
 shape, constants, or mismatch strings. Both URLs accept only `http:`/`https:`, reject
 credentials/query/hash and non-root paths
-(a terminal `/v1` input normalizes to the server origin). Admin credentials may be sent
-only over HTTPS. A pairing grant may use HTTP only when the caller explicitly supplied
-`--allow-insecure-http`; the Phase-2 hub independently requires
-`remoteGui.allowInsecureHttp === true`, so both sides must opt in. Redirects are
-rejected. Bodies and timeouts are bounded. Errors carry status and safe code, never
-response/header secrets.
+(a terminal `/v1` input normalizes to the server origin).
+
+No credential travels over non-loopback plaintext HTTP. That covers the admin
+credential, the pairing grant, the resulting session, and the issued client key alike.
+An earlier revision let a grant use HTTP when the caller passed
+`--allow-insecure-http` and the hub set `remoteGui.allowInsecureHttp === true`, on the
+theory that requiring both sides to opt in made it deliberate. Deliberateness is not the
+control that matters: the grant is still readable by anything on the path, and the
+session it mints is reusable. Both the flag and the CLI option are removed, and the
+client refuses before transmission rather than warning after it.
+
+Redirects are rejected. Bodies and timeouts are bounded. Errors carry status and safe
+code, never response/header secrets.
 
 `POST /api/keys` remains the exact key authority. The request body is only a validated,
 bounded `name`; admin uses the ordinary management header. Pairing uses strict
@@ -354,7 +361,6 @@ export interface ConnectOptions {
   selectedClients: OcxConnectedClientId[];
   managementTransport: "direct" | "relay";
   noSync?: boolean;
-  allowInsecureHttp?: boolean;
 }
 
 export interface ClientConnectDeps {
@@ -382,7 +388,7 @@ ocx connect <url> [--management-url <url>]
             [--pairing-code-stdin | --admin-token-stdin]
             [--clients codex,claude]
             [--management-transport direct|relay]
-            [--allow-insecure-http] [--no-sync]
+            [--no-sync]
 ocx connect status [--json]
 ocx disconnect [--keep-catalog] [--json]
 ```
@@ -524,7 +530,7 @@ No test sends live hub traffic or reads the developer's homes.
 |---|---|---|
 | P3-A1 | Disconnected temp home; HTTPS hub ready on protocol 1; admin token arrives through stdin; `/api/keys` and `/v1/catalog` succeed. | One key is issued, token exists only in owner-only service file, catalog and injection commit, and `runtimeRole=client` + `config.client` are written together and last with key id/fingerprint only. |
 | P3-A2 | Same as A1, but a Phase-2 pairing grant bound to the future localhost GUI origin is supplied. | Grant is consumed once at `/opencodex-session`; returned GUI session + CSRF performs exact key POST; raw grant on `/api/keys` and replay fail; no transient credential persists. |
-| P3-A3 | HTTP management URL with pairing grant, client `--allow-insecure-http`, and hub `remoteGui.allowInsecureHttp=true`. | Exchange/key issuance succeeds with explicit warning. Missing either opt-in refuses; admin credential over HTTP refuses before credential transmission. |
+| P3-A3 | Non-loopback HTTP management URL with a pairing grant, including a tree that still carries a legacy `--allow-insecure-http` argument or a persisted `remoteGui.allowInsecureHttp: true`. | Refused before any credential is transmitted, in every combination. The removed CLI option is rejected as unknown rather than silently accepted, and the legacy config key grants nothing. The admin credential over HTTP is likewise refused before transmission. |
 | P3-A4 | `/readyz` returns `{protocol: 2, minimumClientProtocol: 2}` or status pending/failed. | Clear upgrade/not-ready error; zero key POSTs and zero local writes. |
 | P3-A5 | Key POST returns 401/403/409 or malformed/oversized JSON. | No token/catalog/journal/config writes and no secret in diagnostics. |
 | P3-A6 | Token, catalog, injector preflight, inject commit, or final role+state commit is fault-injected in turn. | Prior machine bytes are restored at every point; neither `runtimeRole=client` nor visible `client` remains; remote orphan cleanup status is explicit by safe key id only. |

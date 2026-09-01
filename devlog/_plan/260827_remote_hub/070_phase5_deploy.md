@@ -97,8 +97,9 @@ reused and verified, not copied.
 
 ### 3.1 Config keys
 
-Phase 1 owns `runtimeRole`; Phase 2 owns `hub.managementPublicOrigin`,
-`remoteGui.allowedTailscaleUsers`, and `remoteGui.allowInsecureHttp`. Phase 5 adds only:
+Phase 1 owns `runtimeRole`; Phase 2 owns `hub.managementPublicOrigin` and
+`remoteGui.allowedTailscaleUsers`. (`remoteGui.allowInsecureHttp` was removed from the
+Phase-2 contract; a persisted `true` grants nothing.) Phase 5 adds only:
 
 ```ts
 export interface OcxHubConfig { // existing Phase-2 interface, shown extended
