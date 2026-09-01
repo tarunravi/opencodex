@@ -17,14 +17,25 @@ the design must fix remote GUI operability without collapsing the consent bounda
 - Non-loopback bind forces the data token: `isApiAuthRequired` returns true whenever the
   bind hostname is not loopback (src/server/auth-cors.ts:260-262), and startup refuses a
   public bind without a configured data credential.
-- The reported remote-GUI defect is real and structural: `issueGuiSession` returns null
-  when `isApiAuthRequired(config)` is true AND additionally requires a loopback Host
-  (src/server/management-auth.ts, issueGuiSession). So on a remote bind the principal
-  `gui-session` is unobtainable; consent-bearing routes that require
+- The remote-GUI limitation is a deliberate restriction, not an unreported weakness, and
+  it is already visible in shipped public code: `issueGuiSession` returns null when
+  `isApiAuthRequired(config)` is true and additionally requires a loopback Host
+  (src/server/management-auth.ts, `issueGuiSession`). The published dashboard guide
+  states the same boundary in user terms.
+
+  The consequence is a capability gap rather than an exposure: on a remote bind the
+  principal `gui-session` is unobtainable, so consent-bearing routes requiring
   `ctx.principal === "gui-session"` (src/server/management/sidebar-routes.ts:42,
   src/server/management/codex-prompt-routes.ts:298) answer 403 even to the admin token.
-  That 403 is BY DESIGN for the admin token (AGENTS.md user-consent boundary) — the defect
-  is only that a browser can never mint a session remotely.
+  That 403 is correct and stays correct — the admin token must never be able to spend the
+  user's consent (AGENTS.md user-consent boundary). What is missing is any path for a
+  *browser* to mint a session remotely, which is what this unit designs.
+
+  Stated precisely: the current behavior fails closed. Nothing here describes a way to
+  obtain authority one should not have, so this note is a design rationale rather than
+  pre-disclosure material, and `AGENTS.md`'s scratch-space rule for unfixed defects does
+  not apply to it. Anything in this unit that WOULD describe an unfixed exploitable
+  weakness belongs in scratch space, not in `devlog/`.
 - `managementRequestOrigin` returns null for a non-loopback Host when apiAuth is NOT
   required (src/server/auth-cors.ts:118-129); when apiAuth IS required it derives the
   origin from the request, which a TLS terminator breaks (http observed vs https public).
@@ -92,4 +103,3 @@ Browser platform facts (MDN/WHATWG/IETF, opened 2026-08-27):
 4. localhost:10100 client GUI + direct-to-hub shared plane is cross-origin; the hub
    needs management CORS for an allowlisted client origin, or the client listener
    relays. Both appear in 010 with the relay constrained to a fixed target.
-

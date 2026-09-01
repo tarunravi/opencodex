@@ -27,17 +27,31 @@ runtime behavior. All code paths remain standalone-compatible when `runtimeRole`
   changes only its source for hub deployments by preferring
   `hub.managementPublicOrigin`; the field and parser do not change.
 - Data-authenticated exact `GET /v1/catalog` returns the same serialized catalog bytes as
-  `GET /api/catalog`, with a strong ETag calculated from those bytes and conditional
-  `If-None-Match` support.
+  `GET /api/catalog`. It carries **no ETag and no conditional `If-None-Match` support**,
+  and never answers 304.
+
+  A previous revision gave this response a strong ETag derived from the bytes plus
+  `Cache-Control: private, no-cache`, while also varying the body-adjacent
+  `x-opencodex-key-id` by identity. That pairing is unsafe: a strong validator asserts
+  that one entity-tag names one representation, but the representation here varies by
+  key type and key id. Any store that keys on URL plus validator — a shared intermediary,
+  a client cache reused across key rotation, a future hub relay — can serve or revalidate
+  one identity's representation to another. `no-cache` does not prevent storage; it only
+  forces revalidation, and the revalidation itself is what crosses identities.
+
+  Making the validator safe would require an identity-partitioned cache key and validator
+  proven across every store in the path, including ones we do not control. That proof is
+  more expensive than the bandwidth a 304 saves on a catalog this size, so the design
+  does not attempt it.
 - `/v1/catalog` admits only the two forms used by the Codex injector contract:
   `x-opencodex-api-key: <our secret>` or `Authorization: Bearer <our secret>`.
   `x-api-key`, a foreign bearer, the admin token, and no credential are rejected on a
   non-loopback bind. The row is added to `AUTH_MATRIX` with `xApiKey: "rejected"`.
 - A `/v1/catalog` response admitted by a configured key includes `x-opencodex-key-id` with
-  that key's id on both 200 and 304. Environment-token and loopback paths, plus rejected
+  that key's id on the 200. Environment-token and loopback paths, plus rejected
   and unauthenticated responses, never include this header. Revalidate the id at emission as
   `^[A-Za-z0-9._-]{1,64}$`; on mismatch omit the header and log one non-secret warning.
-  Every successful catalog response includes `Cache-Control: private, no-cache`.
+  Every successful catalog response includes `Cache-Control: no-store` and no validator.
 - A serialized catalog larger than `MAX_REMOTE_CATALOG_BYTES = 32 * 1024 * 1024` is not
   returned over `/v1/catalog`; it fails with HTTP 503 and the stable code
   `catalog_too_large`. The management route continues to expose the same serialized bytes
@@ -124,15 +138,18 @@ One function reads the current catalog, serializes it exactly once with
 result. The test oracle compares the two route bodies byte-for-byte; it does not derive an
 expected body by calling the serializer twice.
 
-The ETag is `"sha256-<base64url digest>"` over the exact UTF-8 response bytes. A matching
-strong tag, weak spelling of that same tag, a comma-list containing it, or `*` returns 304
-with ETag and no body. A stale/malformed `If-None-Match` returns 200. Both 200 and 304 carry
-`Cache-Control: private, no-cache`. ETag is computed only after the 32 MiB bound passes.
+`/api/catalog` keeps its byte-derived ETag and `If-None-Match` handling: that route is
+management-authenticated, loopback-scoped, and its representation does not vary by data
+key identity.
+
+`/v1/catalog` does not participate. It emits no ETag, ignores `If-None-Match`, never
+returns 304, and carries `Cache-Control: no-store`. The two routes therefore share
+serialization and the size bound, but not the validator.
 
 `/v1/catalog` uses `resolveResponsesApiAuth(req, policy)`, not `resolveApiAuth`, because the
 former is the existing dedicated-header/our-secret-Bearer matrix and rejects `x-api-key`
 (`src/server/auth-cors.ts:465-478`). It performs the existing data-plane origin check after
-admission, then sets `x-opencodex-key-id` on 200 and 304 only when the admitted identity is
+admission, then sets `x-opencodex-key-id` on the 200 only when the admitted identity is
 a configured API key and its id passes `^[A-Za-z0-9._-]{1,64}$` again at emission. A
 mismatch omits the header and emits one non-secret warning without the id. Environment-token,
 loopback, rejected, and unauthenticated paths never emit the header. No Direct passthrough
@@ -150,13 +167,13 @@ All paths below exist in the current tree except the two files marked **NEW**.
 | NEW | `src/server/catalog-download.ts` | Own `MAX_REMOTE_CATALOG_BYTES`, one persisted-catalog serialization result, byte-derived ETag matching, `/api/catalog` response construction, and bounded `/v1/catalog` response construction. |
 | MODIFY | `src/server/management/model-routes.ts` | Replace the inline `/api/catalog` read/`JSON.stringify` block at lines 334–345 with the shared response builder; preserve 404 and `x-opencodex-codex-version`. |
 | MODIFY | `src/server/auth-cors.ts` | Add the `/v1/catalog` `AUTH_MATRIX` row with bearer/dedicated accepted and `xApiKey` rejected. Do not change any existing row or credential precedence. |
-| MODIFY | `src/server/index.ts` | Add protocol metadata to the current `/readyz` body at lines 991–998 by passing `(config, req)` to the builder. Mount exact `GET /v1/catalog` after readiness/management handling and before the unknown-`/v1/*` guard at line 1604; use `resolveResponsesApiAuth` plus the existing origin policy, add `Cache-Control: private, no-cache`, and emit `x-opencodex-key-id` on 200/304 only for a configured-key identity whose id passes the emission-time header-safe guard. Omit and log once without the id on mismatch. Keep `startServer` synchronous and add no `await` between `Bun.serve` and `labActivationRequired`. |
+| MODIFY | `src/server/index.ts` | Add protocol metadata to the current `/readyz` body at lines 991–998 by passing `(config, req)` to the builder. Mount exact `GET /v1/catalog` after readiness/management handling and before the unknown-`/v1/*` guard at line 1604; use `resolveResponsesApiAuth` plus the existing origin policy, add `Cache-Control: no-store` with no validator, and emit `x-opencodex-key-id` on the 200 only for a configured-key identity whose id passes the emission-time header-safe guard. Omit and log once without the id on mismatch. Keep `startServer` synchronous and add no `await` between `Bun.serve` and `labActivationRequired`. |
 | MODIFY | `src/server/proxy-liveness.ts` | Keep existing identity/status parsing additive; extend the internal body type/comments so protocol fields are recognized but do not make ordinary `ocx ready` reject a v0/legacy standalone server. Remote compatibility remains in `src/remote/protocol.ts`. |
 | MODIFY | `tests/config.test.ts` | Extend the existing config-default/validation sibling tests with absent/default, three valid roles, malformed live candidate, and malformed persisted role preservation cases. |
 | MODIFY | `tests/server-live.test.ts` | Extend the existing `GET /readyz` suite (lines 1220+) for exact protocol values on ready/pending/failed/draining, sanitized keys, management origin, method/path negatives, and no-auth behavior. |
 | MODIFY | `tests/proxy-liveness.test.ts` | Extend the current strict readiness parser/probe tests to prove additive protocol fields neither invalidate readiness nor bypass identity/status checks. |
 | MODIFY | `tests/api-catalog-route.test.ts` | Extend the existing `/api/catalog` sibling suite with fixed fixture bytes and version-header preservation after serializer extraction. |
-| MODIFY | `tests/server-auth.test.ts` | Extend live-server auth/order coverage with `/v1/catalog` admission matrix, exact configured-key `x-opencodex-key-id` on 200 and 304, `Cache-Control: private, no-cache`, header absence for environment-token/loopback/rejected/unauthenticated paths, invalid-id omission with one id-free log, exact-path/method negatives, foreign/admin bearer rejection, bound overflow, ETag/304, and unknown-`/v1` guard preservation. |
+| MODIFY | `tests/server-auth.test.ts` | Extend live-server auth/order coverage with `/v1/catalog` admission matrix, exact configured-key `x-opencodex-key-id` on the 200, `Cache-Control: no-store`, absence of `ETag`, a request carrying `If-None-Match` still receiving 200 with full bytes, header absence for environment-token/loopback/rejected/unauthenticated paths, invalid-id omission with one id-free log, exact-path/method negatives, foreign/admin bearer rejection, bound overflow, and unknown-`/v1` guard preservation. |
 | MODIFY | `tests/api-key-attribution.test.ts` | Extend the existing live `AUTH_MATRIX` loop so `/v1/catalog` is a GET route, each cell reaches the real handler rather than the generic 404, configured-key dedicated/Bearer admission echoes that key's id, and environment/loopback admission does not. |
 
 No other production or test file is in scope. If implementation proves another path is
@@ -235,9 +252,9 @@ an empty catalog. No function accepts a caller-provided catalog path.
 | P1-A07 | Feed `{protocol: 2, minimumClientProtocol: 2}` to a protocol-v1 client. | `hub-too-new` and the exact “Upgrade ocx on this client” string are returned before catalog access. |
 | P1-A08 | Feed `{protocol: 1, minimumClientProtocol: 1}` to a protocol-v2 client requiring minimum hub protocol 2. | `hub-too-old` and the exact “Upgrade ocx on the hub” string are returned. |
 | P1-A09 | Supply zero, omit, mistype, overflow, set minimum above protocol, or give a path-bearing `managementUrl`. | The malformed-input class (`400`) returns `invalid` and the exact malformed-metadata string; it is never classified as a version mismatch and never falls back to protocol 1. |
-| P1-A10 | Persist a fixed catalog fixture; call authorized `/api/catalog` and authorized `/v1/catalog`. | Status 200 and response bytes are byte-identical; the ETag independently hashes those bytes and `/v1/catalog` carries `Cache-Control: private, no-cache`. |
-| P1-A11 | Repeat `/v1/catalog` with configured-key dedicated/Bearer admission, environment-token admission, loopback admission, `x-api-key`, foreign Bearer, admin token, and no token; inject an invalid configured key id, repeat the request, and capture logs. | Configured-key 200 and matching 304 carry the exact safe key id. Environment/loopback/rejected/unauthenticated responses omit it; invalid id is omitted with one non-secret warning and no key id appears in logs. No case reaches the generic unknown-route 404. |
-| P1-A12 | Call `/v1/catalog` with matching tag, weak matching tag, tag list, `*`, stale tag, and malformed tag. | Matches return 304/no body/same ETag; stale or malformed values return 200/full bytes; every successful response carries `Cache-Control: private, no-cache`. |
+| P1-A10 | Persist a fixed catalog fixture; call authorized `/api/catalog` and authorized `/v1/catalog`. | Status 200 and response bytes are byte-identical. `/api/catalog` carries its byte-derived ETag; `/v1/catalog` carries `Cache-Control: no-store` and no `ETag`. |
+| P1-A11 | Repeat `/v1/catalog` with configured-key dedicated/Bearer admission, environment-token admission, loopback admission, `x-api-key`, foreign Bearer, admin token, and no token; inject an invalid configured key id, repeat the request, and capture logs. | The configured-key 200 carries the exact safe key id. Environment/loopback/rejected/unauthenticated responses omit it; invalid id is omitted with one non-secret warning and no key id appears in logs. No case reaches the generic unknown-route 404. |
+| P1-A12 | Call `/v1/catalog` with a matching tag, weak matching tag, tag list, `*`, stale tag, and malformed tag in `If-None-Match`. | Every case returns 200 with the full bytes, no `ETag`, and `Cache-Control: no-store`: the route has no validator to match against, so no request can elicit a 304. The same tags against `/api/catalog` still return 304, proving the removal is scoped to the identity-varying route. |
 | P1-A13 | Serialize exactly the cap and cap+1 fixtures through an injected serialization seam. | Exact cap returns 200; cap+1 returns 503 `catalog_too_large`, never a partial body. |
 | P1-A14 | Call POST `/v1/catalog`, GET `/v1/catalog/`, and an unrelated `/v1/does-not-exist`. | Every request returns the existing JSON 404 envelope; route ordering does not widen path/method matching. |
 | P1-A15 | Run the import-graph and synchronous-window guard after the diff. | No new subsystem is reachable from the three protected core files; `startServer` remains non-async and its guarded window contains no top-level `await`. |

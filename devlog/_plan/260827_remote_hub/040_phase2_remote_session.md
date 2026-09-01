@@ -8,15 +8,35 @@ Unit: `260827_remote_hub` · Branch: `codex/remote-hub-design` · Phase: 2 · St
 
 ## 1. Outcome and non-negotiable boundary
 
-Remote hub dashboards can obtain an origin-bound `gui-session` through one of four
+Remote hub dashboards can obtain an origin-bound `gui-session` through one of three
 evidence paths, ordered from strongest automatic path to explicit opt-in:
 
 1. `loopback` — current behavior, unchanged and fixed at five minutes.
 2. `tailscale-identity` — trusted Tailscale Serve ingress plus exact
    `remoteGui.allowedTailscaleUsers` membership.
-3. `pairing` — a short-lived, origin-bound, single-use grant printed by `ocx gui pair`.
-4. `insecure-http-pairing` — the same grant over non-loopback HTTP only when
-   `remoteGui.allowInsecureHttp === true`.
+3. `pairing` — a short-lived, origin-bound, single-use grant printed by `ocx gui pair`,
+   transmitted only over loopback or authenticated HTTPS.
+
+**There is no fourth path.** A previous revision of this document defined
+`insecure-http-pairing`: the same reusable grant over non-loopback plaintext HTTP,
+gated behind `remoteGui.allowInsecureHttp === true`. That path is removed, not
+merely discouraged.
+
+Operator opt-in does not defeat a passive network observer or an on-path attacker.
+A grant crossing plaintext HTTP is captured verbatim, and the session it mints is
+reusable. An opt-in flag records that the operator accepted a risk they cannot
+actually bound, so the flag was doing no security work.
+
+A "bootstrap over HTTP, then upgrade to HTTPS" variant was considered and rejected:
+the plaintext hop has no trust anchor, so an on-path attacker substitutes its own
+valid HTTPS origin and the upgrade authenticates the attacker. An upgrade is only
+admissible when the HTTPS origin is already known to the client out of band, the
+scheme upgrade stays on the same host, certificate validation is ordinary, and no
+authority is derived from a redirect.
+
+Non-loopback plaintext HTTP therefore carries no grant, no session, no admin token,
+and no client key. What it may carry is an unauthenticated error naming the required
+scheme. Nothing else.
 
 The admin token remains an ordinary management principal. It cannot create a pairing grant,
 is never accepted by the session bootstrap/exchange endpoint, is never re-labeled as
@@ -68,7 +88,7 @@ consumption of that credential is the only pairing exchange.
 
 - `GuiSessionRecord.serverOrigin` / `browserOrigin` split and full server/GUI consumer chain.
 - Config validation for `hub.managementPublicOrigin`,
-  `remoteGui.allowedTailscaleUsers`, and `remoteGui.allowInsecureHttp`.
+  and `remoteGui.allowedTailscaleUsers`.
 - Automatic loopback and trusted-Tailscale issuance; pairing grant creation and exchange.
 - Separate loopback/remote TTLs and sliding renewal for remote sessions.
 - Exact management CORS header widening for GUI-origin and CSRF headers.
@@ -106,7 +126,6 @@ export interface OcxHubConfig {
 
 export interface OcxRemoteGuiConfig {
   allowedTailscaleUsers?: string[];
-  allowInsecureHttp?: boolean;
 }
 
 export interface OcxConfig {
@@ -124,8 +143,10 @@ Validation rules:
 - `remoteGui.allowedTailscaleUsers` contains at most 64 unique, trimmed, non-empty strings,
   each at most 320 UTF-8 bytes and containing no ASCII control character. Matching is exact
   after trim; no substring/domain matching.
-- `remoteGui.allowInsecureHttp` is optional and defaults false. It affects pairing only;
-  tailscale-identity issuance still requires HTTPS.
+- `remoteGui.allowInsecureHttp` no longer exists. A persisted `true` from a
+  pre-release tree is not honored: it is dropped with a warning naming the key, and
+  remote issuance continues under the loopback/HTTPS-only rule. A config key cannot
+  re-enable a transmission path this design removed.
 - A malformed live candidate is rejected with its full config path. A malformed persisted
   optional block degrades to remote issuance disabled while preserving providers, accounts,
   and API keys, and emits a diagnostic that never repeats the malformed value.
@@ -142,7 +163,7 @@ export type GuiSessionIssuance =
   | "loopback"
   | "tailscale-identity"
   | "pairing"
-  | "insecure-http-pairing";
+  ;
 
 export interface GuiSessionRecord {
   serverOrigin: string;
@@ -239,8 +260,10 @@ memory-only and are never written to web storage.
   - strict body `{ "grant": "…" }`, 4 KiB maximum, unknown fields rejected.
   - requires an `Origin` matching the grant's `browserOrigin`; the grant is the only
     credential accepted. Admin/data/session credentials in headers do not substitute.
-  - HTTPS issues `pairing`; non-loopback HTTP issues `insecure-http-pairing` only when the
-    config opt-in is true. The grant is consumed before minting; all replays fail.
+  - Loopback and authenticated HTTPS issue `pairing`. A non-loopback plaintext HTTP
+    request is refused **before** the grant is read, so a captured request cannot even
+    consume the grant as a denial-of-service. The grant is consumed before minting;
+    all replays fail.
   - Phase 4's fixed-target relay path allowlist admits this exact POST exchange in addition
     to GET bootstrap and forwards the browser's `Origin` header verbatim; no other
     non-`/api/*` method/path is widened.
@@ -438,7 +461,8 @@ sessions renew at most once per request.
 | P2-A07 | Call grant creation with admin token, GUI session, data key, wrong/replayed/expired capability, changed PID/port/origin, or an origin outside public origin/`corsAllowOrigins`. | 403/401 as appropriate; no grant/session state change. Admin authority cannot reach grant creation. |
 | P2-A08 | HTTPS POST bootstrap with fresh grant and exact `Origin`. | Grant is deleted and one `pairing` session is returned with both origin meta values. |
 | P2-A09 | Replay consumed grant; use expired grant, wrong Origin, wrong server destination, data key, admin token, or session token in place of grant. | No session for every case; replay and alternate credentials cannot enter the exchange branch. |
-| P2-A10 | Non-loopback HTTP pairing with opt-in absent/false, then true. | False path refuses without consuming into a session; true path consumes once and issues `insecure-http-pairing`. Automatic Tailscale issuance remains refused on HTTP in both cases. |
+| P2-A10 | Non-loopback HTTP pairing exchange, with and without a legacy persisted `remoteGui.allowInsecureHttp: true`. | Refused in both cases, before the grant is read, so the grant survives for a later HTTPS exchange. The legacy key is dropped with a warning and grants nothing. Automatic Tailscale issuance remains refused on HTTP. |
+| P2-A11 | Plaintext HTTP request for the session bootstrap on a non-loopback bind. | Response carries no grant, session, admin token, or client key — only an unauthenticated error naming the required scheme. |
 | P2-A11 | Authorized remote safe read immediately before expiry. | Full origin predicate passes and expiry slides to `now + 12h`; token/CSRF unchanged. |
 | P2-A12 | Wrong destination, wrong claimed browser origin, wrong browser `Origin`, absent/wrong CSRF mutation, and an expired session. | 401 and expiry remains unchanged/deleted as applicable; principal is never projected as `gui-session`. |
 | P2-A13 | Admin token calls ordinary management, pairing-grant creation, bootstrap exchange, and then a consent route; valid remote GUI session calls ordinary/consent routes with correct CSRF. | Admin remains ordinary management-capable but the other three are refused; remote session reaches consent route. No admin-to-grant or admin-to-session exchange exists. |

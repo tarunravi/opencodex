@@ -300,9 +300,24 @@ slashes/backslashes, authority syntax, userinfo, query-host tricks, and path tra
 The caller supplies no host/scheme/port. `redirect: "manual"`; every 3xx is an error.
 Strip `Host`, connection/hop-by-hop headers, machine auth headers, proxy credentials,
 cookies, and forwarding headers. Forward only the bounded management header allowlist,
-including hub session, GUI-origin, CSRF, content type, and conditional cache headers. For
-the exact `POST /opencodex-session` exchange, forward the browser's `Origin` value verbatim;
-do not synthesize it from the hub URL, localhost bind, or GUI-origin header.
+including hub session, GUI-origin, CSRF, and content type.
+
+Forward the browser's `Origin` value **verbatim on every allowed session-authenticated
+request**: the `POST /opencodex-session` exchange, the `GET` bootstrap, and every allowed
+`/api/` method including `POST`, `PUT`, `PATCH`, and `DELETE`. Never synthesize it from
+the hub URL, the localhost bind, or the GUI-origin header, and never omit it.
+
+A previous revision forwarded `Origin` only for the exact `POST /opencodex-session`
+exchange. That is both a functional and a security defect. The minted GUI session is
+origin-bound and management mutations enforce Origin/CSRF, so a relayed mutation arriving
+without `Origin` loses the evidence the hub requires and is refused — the relay silently
+breaks every write path it is supposed to carry. Repairing that by synthesizing an
+`Origin` would be worse: the relay would be attesting to a fact it did not observe, and
+the hub's CSRF check would be validating the relay against itself. The browser value is
+the only admissible source, so it is forwarded unchanged or the request does not go.
+
+When the browser sends no `Origin` on a request that requires it, the relay refuses
+rather than inventing one.
 Response headers are similarly allowlisted; `Set-Cookie` and hop-by-hop headers are
 never returned. Request and response bodies have named constants and abort on overflow.
 No URL query, auth header, body, or response body is logged.
@@ -472,6 +487,8 @@ appearing after disconnect.
 | P4-A2 | Request every known data/shared route on the machine listener. | Every `/v1/*`, `/api/config`, `/api/usage`, OAuth/provider/Lab path is JSON 404; only explicit machine routes/assets answer. |
 | P4-A3 | GET status/clients with valid loopback GUI session, then without it. | Valid request returns redacted DTO; missing/admin-only/expired/wrong-origin session is rejected and no secret/fingerprint leaks. |
 | P4-A4 | POST sync/shim/disconnect with valid session but missing/wrong CSRF or browser Origin. | Mutation is rejected before work; exact session+Origin+CSRF reaches the handler. Admin token never becomes GUI session. |
+| P4-A4b | Relay every allowed session-authenticated method — GET bootstrap, POST `/opencodex-session`, and `/api/` POST, PUT, PATCH, DELETE — from a browser origin the hub allows. | Each request arrives at the hub carrying the browser's `Origin` byte-for-byte. No case is missing `Origin`, and no case carries a value the browser did not send. |
+| P4-A4c | Relay an allowed mutation whose browser request has no `Origin`. | The relay refuses without contacting the hub, and does not synthesize an `Origin` from the hub URL, the localhost bind, or the GUI-origin header. |
 | P4-A5 | Connected direct transport with Phase-2 session issued by an exact `remoteGui.allowedTailscaleUsers` match or a consumed pairing grant; hub CORS includes the localhost browser origin. | Shared requests go directly to exact hub origin with hub headers only; machine pages remain localhost; CORS/session validation succeeds. A non-allowlisted Tailscale identity mints no session and gets no local fallback. |
 | P4-A6 | Connected relay transport and valid machine + hub sessions. | Browser sends dual auth domains; relay validates machine session, strips custom headers, forwards hub session only to fixed hub target, and rejects redirect/SSRF variants. |
 | P4-A7 | Relay path requested while transport is direct/disabled or caller supplies host/scheme/traversal. | Default 404/refusal before outbound fetch; no credential or body is logged. |

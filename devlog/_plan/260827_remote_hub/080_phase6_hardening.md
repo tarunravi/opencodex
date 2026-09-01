@@ -316,11 +316,34 @@ or replace the backup directly.
    and aborts. Never replay commit without this evidence.
 
 On startup/status, `src/client/state.ts` treats a rotate `pendingOperation` as a recovery gate:
-verify that `oldKeyBackupPath` is exactly `<tokenfile>.prev`, require an owner-only regular file,
-probe current and backup keys using the authenticated catalog key-id echo, then complete the same
-commit-or-restore chain. Doubly accepted evidence commits the current new key with the persisted
-`rotationId`, deletes `.prev`, and clears `pendingOperation`; doubly rejected, missing, or unsafe
-evidence stops with an exact recovery instruction and never deletes either candidate blindly.
+verify that `oldKeyBackupPath` is exactly `<tokenfile>.prev` and require an owner-only regular
+file.
+
+**Compare the two candidates' identities before probing anything.** If the live token and
+`.prev` carry the same identity, the process stopped after `pendingOperation` was persisted
+but before the token was replaced. Both candidates are the old key, so both probe
+successfully — and a "both accepted" rule would read that as a completed issuance and commit
+a rotation that never happened, permanently losing the new key. Identical candidates
+therefore mean pre-replacement: never commit, restore nothing, and resume the rotation from
+the beginning.
+
+Only when the candidates differ does probing decide anything, and only a confirmed authority
+may act:
+
+- New and old both accepted: issuance completed, overlap still pending. Commit the new key
+  with the stored `rotationId`.
+- New only: commit already took effect. Clear the operation.
+- Old only: issuance did not take effect. Restore and abort.
+- Neither accepted, a probe that fails for a reason other than rejection, or any state the
+  above does not name: stop with an exact recovery instruction. Delete nothing.
+
+If an abort or restore itself fails, the uncertainty is retained rather than papered over:
+keep both candidates and the `pendingOperation` record, and report which step could not be
+confirmed. A restore performed without confirmed authority can install the wrong generation
+and is worse than stopping.
+
+A concurrent `ocx connect status` never deletes a backup belonging to an in-flight rotation.
+Recovery only acts on a `pendingOperation` it can prove is abandoned.
 
 The GUI exposes the same lifecycle for an operator updating a client manually, with explicit
 copy-once and commit-after-client-probe wording. Closing the modal does not imply commit; pending
@@ -497,8 +520,18 @@ the pure validator with raw tuples for otherwise-unconstructible header shapes.
 
 - Rebuild response headers and strip hop-by-hop headers, `Set-Cookie`, proxy auth, server identity
   headers, Tailscale identity, and connection-nominated headers.
-- Preserve safe content type, cache control, ETag, retry-after, and approved CORS/session bootstrap
-  metadata only.
+- Preserve safe content type, retry-after, and approved CORS/session bootstrap metadata only.
+- Relayed session, bootstrap, and management responses are rewritten to
+  `Cache-Control: no-store` and have `ETag` and `Last-Modified` removed. The relay does
+  not pass an upstream validator through, and does not honor a conditional request against
+  one.
+
+  A previous revision preserved upstream `cache control` and `ETag` on relayed responses.
+  That reintroduces the Phase-1 defect one layer up: relayed responses vary by hub session
+  and client identity, so a preserved strong validator lets a store revalidate one
+  identity's representation for another — and the relay sits in exactly the position where
+  an intermediary cache is most likely to exist. The relay is not the right place to prove
+  an identity-partitioned cache key, so it does not carry a validator at all.
 - Enforce Phase-4 management body caps. Phase-6 streaming uses backpressure and abort propagation;
   it must not buffer an unbounded response or continue after browser disconnect.
 - Errors name only status/category and fixed hub label. No destination URL query, session token,
@@ -684,3 +717,6 @@ the matching CI partition before classifying it; never call a red result environ
 Final live evidence runs on `clisu-oracle`/MacBook per 070 §8 after the remote gates. It proves
 health, readiness, authenticated catalog, one routed response, remote session, consent refusal,
 rotation, usage slice, disconnect/local store, rollback, and both constructible protocol directions.
+| P6-A20 | Persist `pendingOperation`, then stop before the token is replaced so the live token and `.prev` hold the same key. Restart. | Recovery detects identical candidates before probing, refuses to commit, leaves both files intact, and resumes the rotation. The pre-fix "both probes accepted implies commit" rule is what this row exists to keep dead. |
+| P6-A21 | Rotation reaches installed-new-token state, then the abort request fails transiently. | Neither candidate is deleted and `pendingOperation` survives with the unconfirmed step named. No generation is restored on unconfirmed authority. |
+| P6-A22 | Run `ocx connect status` while `rotateConnectedClientKey` is awaiting `/api/keys/rotate`. | The in-flight `.prev` backup is not deleted and the rotation completes normally. |
