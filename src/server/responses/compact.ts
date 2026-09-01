@@ -562,7 +562,10 @@ export async function handleResponsesCompact(
   // Native /responses/compact exists on the canonical ChatGPT backend and on the
   // official OpenAI API. Any other Responses-shaped gateway must take the routed
   // summarizer path below, or compaction fails against an endpoint it never had (#422).
-  if (supportsNativeResponsesCompactEndpoint(route.providerName, route.provider) && !accountGatedCompactWireModel) {
+  // Combo-resolved targets skip native compact so failover can advance through the
+  // combo target list when the picked model returns 429/5xx — the routed path below
+  // dispatches through handleResponses → handleComboResponses with full failover.
+  if (supportsNativeResponsesCompactEndpoint(route.providerName, route.provider) && !accountGatedCompactWireModel && !route.combo) {
     if (req.signal.aborted) {
       return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
     }
@@ -1003,8 +1006,10 @@ export async function handleResponsesCompact(
     ...raw,
     // Canonical ChatGPT Responses rejects non-streaming turns. Daybreak cannot use the
     // native compact endpoint either, so run its synthetic compaction as SSE and collapse
-    // the completed event back into the v1 compact JSON contract below.
-    stream: accountGatedCompactWireModel ? true : false,
+    // the completed event back into the v1 compact JSON contract below. Combo-dispatched
+    // turns also go out as SSE: failover can land on a canonical child that rejects a
+    // non-streaming turn, and every combo-capable provider already serves streaming traffic.
+    stream: accountGatedCompactWireModel || route.combo ? true : false,
     input: [...inputItems, { type: "compaction_trigger" }],
   };
   const internalHeaders = new Headers({ "content-type": "application/json" });
@@ -1078,9 +1083,12 @@ export async function handleResponsesCompact(
       `compaction turn produced ${compactionItems.length} compaction items, expected exactly 1`,
     );
   }
-  // The canonical Responses stream returns a real OpenAI-encrypted compaction item. OCX cannot
-  // and should not decrypt it; /responses/compact callers can consume that item directly.
-  if (accountGatedCompactWireModel) {
+  // Native Responses backends return a real opaque OpenAI-encrypted compaction item. OCX cannot
+  // and should not decrypt it; preserve that item for /responses/compact callers. Synthetic
+  // routed summaries are our `ocx1:` envelope and must be decoded into v1 history items.
+  if (typeof compactionItems[0]!.encrypted_content === "string"
+    && compactionItems[0]!.encrypted_content.trim().length > 0
+    && !compactionItems[0]!.encrypted_content.startsWith("ocx1:")) {
     const result = new Response(JSON.stringify({ output: compactionItems }), {
       headers: { "Content-Type": "application/json" },
     });
