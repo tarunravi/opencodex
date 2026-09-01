@@ -2125,17 +2125,17 @@ describe("server local API auth", () => {
       expiresAt: now + CODEX_THREAD_AFFINITY_IDLE_TTL_MS + 10 * 60_000,
       chatgptAccountId: "acct-pool-a",
     });
-    updateAccountQuota("pool-a", 10, 5);
-
     const originalNow = Date.now;
     // Pin the clock BEFORE startServer, not after. `startServer` returns synchronously but
     // arms an async pool-quota prime (src/server/index.ts:2054-2064) that outlives its
     // return, and that prime decides staleness with `Date.now() - quota.updatedAt >=
-    // POOL_CACHE_TTL` (src/codex/auth-api.ts:1334-1337). `updateAccountQuota` above stamped
-    // `updatedAt` with the REAL clock, so a prime that lands after a 2027 fake clock is
-    // installed sees months of cache age, fetches, and rotates the credential out from under
-    // the assertions. Installing the clock first closes the window entirely.
+    // POOL_CACHE_TTL` (src/codex/auth-api.ts:1334-1337), where a MISSING entry is stale too.
+    // Seeding the quota after the pin is what actually keeps the prime quiet: a seed written
+    // before the pin stamps `updatedAt` with the real clock, which reads as months of cache
+    // age against this 2027 `now` and sends the prime off to fetch and rotate the credential
+    // out from under the assertions.
     Date.now = () => now;
+    updateAccountQuota("pool-a", 10, 5);
     const server = startServer(0);
     try {
       for (const threadId of ["expired-http", "expired-compact", "expired-ws"]) {
@@ -2240,14 +2240,6 @@ describe("server local API auth", () => {
       codexAccountNamespaces: { "ws-refresh": "pool-a" },
       activeCodexAccountId: "pool-a",
     } as OcxConfig);
-    saveCodexAccountCredential("pool-a", {
-      accessToken: "old-access-token",
-      refreshToken: "old-refresh-token",
-      expiresAt: now + 120_000,
-      chatgptAccountId: "acct-pool-a",
-    });
-    updateAccountQuota("pool-a", 10, 5);
-
     const originalNow = Date.now;
     const originalFetch = globalThis.fetch;
     // Both the clock and the fetch stub go up before `startServer`. The async pool-quota
@@ -2258,6 +2250,23 @@ describe("server local API auth", () => {
     // credential before the first turn was served — so `seenAuth[0]` was already the new
     // token. The failure diff was always the first element, never the second.
     Date.now = () => now;
+    // Seed the credential and quota AFTER the clock is pinned.
+    //
+    // Both writes stamp real time when they run before the pin: `updateAccountQuota` sets
+    // `updatedAt: Date.now()`, and `saveCodexAccountCredential` sets `replacedAt`. The
+    // startup pool-quota prime then compares those stamps
+    // against this 2027 `now` and judges stale — so it refreshes the credential before the
+    // first turn is served and `seenAuth[0]` is already the new token. Pinning the clock
+    // and the fetch stub first (#3139) closed the window for the prime's own reads, but not
+    // for a timestamp written before either was in place, which is why this kept flaking on
+    // loaded runners after that fix.
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "old-access-token",
+      refreshToken: "old-refresh-token",
+      expiresAt: now + 120_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+    updateAccountQuota("pool-a", 10, 5);
     globalThis.fetch = (async (input, init) => {
         const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
         if (url === "https://auth.openai.com/oauth/token") {
