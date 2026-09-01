@@ -46,6 +46,7 @@ import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspect
 import { configuredAdminToken } from "../src/lib/admin-secrets";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../src/lib/system-restart-contract";
 import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../src/lib/local-provider-reload-contract";
+import { GUI_PAIR_CAPABILITY_VERSION } from "../src/lib/gui-pair-capability";
 import { resetCodexModelEntitlementCacheForTests } from "../src/codex/model-entitlements";
 import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
 import { resetDebugSettingsForTests, setDebugSettings } from "../src/lib/debug-settings";
@@ -1071,6 +1072,7 @@ describe("server local API auth", () => {
       expect(health.status).toBe(200);
       const healthBody = await health.json() as Record<string, unknown>;
       expect(Object.keys(healthBody).sort()).toEqual([
+        "guiPairCapability",
         "pid",
         "port",
         "providerReloadCapability",
@@ -1082,6 +1084,7 @@ describe("server local API auth", () => {
       ]);
       expect(healthBody.restartCapability).toBe(SYSTEM_RESTART_CAPABILITY_VERSION);
       expect(healthBody.providerReloadCapability).toBe(LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION);
+      expect(healthBody.guiPairCapability).toBe(GUI_PAIR_CAPABILITY_VERSION);
       expect("rss" in healthBody).toBe(false);
     } finally {
       await server.stop(true);
@@ -1115,6 +1118,10 @@ describe("server local API auth", () => {
       });
       expect(accepted.status).toBe(204);
       expect(accepted.headers.get("access-control-allow-origin")).toBe(loopbackOrigin);
+      const allowedHeaders = accepted.headers.get("access-control-allow-headers") ?? "";
+      expect(allowedHeaders).toContain("X-OpenCodex-GUI-Origin");
+      expect(allowedHeaders).toContain("X-OpenCodex-CSRF-Token");
+      expect(allowedHeaders).not.toContain("X-Unrelated-Custom-Header");
     } finally {
       await server.stop(true);
     }
@@ -1165,6 +1172,30 @@ describe("server local API auth", () => {
       });
       expect(managementPreflight.status).toBe(204);
       expect(managementPreflight.headers.get("access-control-allow-origin")).toBe(extensionOrigin);
+      expect(managementPreflight.headers.get("access-control-allow-headers")).toContain("X-OpenCodex-GUI-Origin");
+      expect(managementPreflight.headers.get("access-control-allow-headers")).toContain("X-OpenCodex-CSRF-Token");
+
+      const managementUnrelated = await fetch(managementUrl, {
+        method: "OPTIONS",
+        headers: {
+          origin: extensionOrigin,
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "X-Unrelated-Custom-Header",
+        },
+      });
+      expect(managementUnrelated.status).toBe(204);
+      expect(managementUnrelated.headers.get("access-control-allow-headers")).not.toContain("X-Unrelated-Custom-Header");
+
+      const dataPlaneDynamic = await fetch(modelsUrl, {
+        method: "OPTIONS",
+        headers: {
+          origin: extensionOrigin,
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "X-Unrelated-Custom-Header",
+        },
+      });
+      expect(dataPlaneDynamic.status).toBe(204);
+      expect(dataPlaneDynamic.headers.get("access-control-allow-headers")).toContain("X-Unrelated-Custom-Header");
 
       const managementRejected = await fetch(managementUrl, {
         method: "OPTIONS",
@@ -4204,6 +4235,74 @@ describe("GET /v1/catalog remote data plane", () => {
         expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
         expect(response.headers.get("x-opencodex-key-id")).toBeNull();
       }
+    } finally {
+      await server.stop(true);
+    }
+  });
+});
+
+describe("POST /opencodex-session pairing body bound", () => {
+  // This endpoint is reachable without a credential, so the body bound has to hold against a
+  // caller who controls the framing. The pre-check reads Content-Length, which the caller
+  // chooses: omit it and `Number(null ?? "0")` is 0, or send chunked and there is no header
+  // to read. Both used to pass the check and reach `req.text()`, which buffers whatever
+  // arrives — an unauthenticated caller decided how much memory the process spent.
+
+  test("a chunked body with no Content-Length is bounded rather than buffered whole", async () => {
+    saveConfig(remoteCatalogConfig());
+    const server = startServer(0);
+    try {
+      // 512 KiB against a 4 KiB limit, streamed so no Content-Length is sent. The stream
+      // reports how many chunks the server actually pulled: a bounded read stops early, an
+      // unbounded one drains all of them.
+      const chunkCount = 128;
+      const chunkBytes = 4 * 1024;
+      let pulled = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulled >= chunkCount) {
+            controller.close();
+            return;
+          }
+          pulled += 1;
+          controller.enqueue(new Uint8Array(chunkBytes).fill(0x61));
+        },
+      });
+
+      const response = await fetch(new URL("/opencodex-session", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", Origin: "http://localhost" },
+        body,
+        // Required by fetch for a streaming request body.
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
+
+      expect(response.status).toBe(413);
+      // The bound is what stopped it, not the peer running out of data.
+      expect(pulled).toBeLessThan(chunkCount);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a body exactly at the limit is still accepted for parsing", async () => {
+    saveConfig(remoteCatalogConfig());
+    const server = startServer(0);
+    try {
+      // Exactly 4096 bytes of valid JSON: the bound must reject over-limit bodies without
+      // also rejecting one that sits on the limit.
+      const filler = "a".repeat(4096 - '{"grant":""}'.length);
+      const atLimit = `{"grant":"${filler}"}`;
+      expect(Buffer.byteLength(atLimit)).toBe(4096);
+
+      const response = await fetch(new URL("/opencodex-session", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", Origin: "http://localhost" },
+        body: atLimit,
+      });
+
+      // 401, not 413: the body was read and parsed, and the grant simply does not exist.
+      expect(response.status).toBe(401);
     } finally {
       await server.stop(true);
     }

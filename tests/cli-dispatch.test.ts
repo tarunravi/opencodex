@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { CLI_COMMANDS } from "../src/cli/registry";
 import { DISPATCH_ALIASES, DISPATCH_COMMANDS, dispatchCommand, resolveDispatchCommand } from "../src/cli/dispatch";
 import type { CliDispatchDeps } from "../src/cli/dispatch";
+import { runGuiCommand } from "../src/cli/gui";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../src/config";
@@ -481,6 +482,65 @@ describe("doctor refuses --json rather than printing prose as success", () => {
   test("exact --json, --json=true, and Unicode dashes all exit 2", async () => {
     for (const flag of ["--json", "--json=true", "\u2014json"]) {
       expect(await runDoctor(flag), `${JSON.stringify(flag)} must be refused`).toBe(2);
+    }
+  });
+});
+
+describe("GUI command delegation", () => {
+  const config = {
+    port: 10100,
+    runtimeRole: "hub" as const,
+    hub: { managementPublicOrigin: "https://hub.example.test" },
+    corsAllowOrigins: ["https://dashboard.example.test"],
+    providers: {},
+    defaultProvider: "openai",
+  };
+
+  test("keeps the default open behavior and requires an explicit pairing origin", async () => {
+    let opens = 0;
+    const deps = {
+      loadConfig: () => config,
+      openDefaultGui: async () => { opens += 1; return 0; },
+    };
+    expect(await runGuiCommand([], deps)).toBe(0);
+    expect(opens).toBe(1);
+    expect(await runGuiCommand(["pair"], deps)).toBe(1);
+    expect(await runGuiCommand(["pair", "--origin", "https://dashboard.example.test", "extra"], deps)).toBe(1);
+  });
+
+  test("prints a created grant once and maps remote API refusal to exit 1 without echoing response data", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const logSpy = spyOn(console, "log").mockImplementation(value => { stdout.push(String(value)); });
+    const errorSpy = spyOn(console, "error").mockImplementation(value => { stderr.push(String(value)); });
+    try {
+      const base = {
+        loadConfig: () => config,
+        openDefaultGui: async () => 0,
+        findLiveProxy: async () => ({ pid: 4242, port: 10100, source: "runtime" as const }),
+      };
+      const grant = `ocx_pair_${"C".repeat(43)}`;
+      expect(await runGuiCommand(["pair", "--origin", "https://dashboard.example.test", "--json"], {
+        ...base,
+        requestPairingGrant: async () => ({
+          kind: "created",
+          grant,
+          browserOrigin: "https://dashboard.example.test",
+          serverOrigin: "https://hub.example.test",
+          expiresAt: 1_800_000_300_000,
+        }),
+      })).toBe(0);
+      expect(stdout.join(" ").split(grant)).toHaveLength(2);
+
+      stdout.length = 0;
+      expect(await runGuiCommand(["pair", "--origin", "https://dashboard.example.test"], {
+        ...base,
+        requestPairingGrant: async () => ({ kind: "unavailable", reason: "rejected" }),
+      })).toBe(1);
+      expect(`${stdout.join(" ")} ${stderr.join(" ")}`).not.toContain("remote-response-secret");
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
     }
   });
 });

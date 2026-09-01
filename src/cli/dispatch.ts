@@ -451,27 +451,34 @@ const commandRunners: Record<string, CommandRunner> = {
     return ok ? 0 : 1;
   },
   gui: async deps => {
-    const config = deps.loadConfig();
-    // Identity-checked liveness (not the pid file + a fixed sleep): finds a fallback-port
-    // proxy and waits until the spawned one actually answers before opening the browser.
-    let live = await deps.findLiveProxy();
-    if (!live) {
-      console.log("Proxy not running. Starting...");
-      deps.spawnDetached(deps.startArgv((config.port ?? 10100) > 0 ? (config.port ?? 10100) : undefined));
-      live = await deps.waitForProxy();
-      if (!live) {
-        console.error("❌ Proxy did not become healthy after starting. Not opening the GUI.");
-        return 1;
-      }
-    }
-    // Open the host the proxy actually binds — `localhost` only answers for
-    // loopback/wildcard binds, not a concrete LAN/IPv6 hostname.
-    const guiHost = deps.probeHostname(live?.hostname ?? config.hostname);
-    const guiUrl = `http://${guiHost === "127.0.0.1" ? "localhost" : guiHost}:${live?.port ?? config.port}`;
-    console.log(`Opening ${guiUrl}`);
-    const { openUrl } = await import("../lib/open-url");
-    openUrl(guiUrl);
-    return 0;
+    const { runGuiCommand } = await import("./gui");
+    return runGuiCommand(deps.args.slice(1), {
+      loadConfig: deps.loadConfig,
+      findLiveProxy: deps.findLiveProxy,
+      openDefaultGui: async () => {
+        const config = deps.loadConfig();
+        // Identity-checked liveness (not the pid file + a fixed sleep): finds a fallback-port
+        // proxy and waits until the spawned one actually answers before opening the browser.
+        let live = await deps.findLiveProxy();
+        if (!live) {
+          console.log("Proxy not running. Starting...");
+          deps.spawnDetached(deps.startArgv((config.port ?? 10100) > 0 ? (config.port ?? 10100) : undefined));
+          live = await deps.waitForProxy();
+          if (!live) {
+            console.error("❌ Proxy did not become healthy after starting. Not opening the GUI.");
+            return 1;
+          }
+        }
+        // Open the host the proxy actually binds — `localhost` only answers for
+        // loopback/wildcard binds, not a concrete LAN/IPv6 hostname.
+        const guiHost = deps.probeHostname(live?.hostname ?? config.hostname);
+        const guiUrl = `http://${guiHost === "127.0.0.1" ? "localhost" : guiHost}:${live?.port ?? config.port}`;
+        console.log(`Opening ${guiUrl}`);
+        const { openUrl } = await import("../lib/open-url");
+        openUrl(guiUrl);
+        return 0;
+      },
+    });
   },
   service: async deps => {
     process.exitCode = 0;

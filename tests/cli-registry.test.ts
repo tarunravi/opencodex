@@ -104,6 +104,13 @@ describe("CLI command registry parity", () => {
     expect(details).toContain("ocx system codex-cli-update check [--json]");
     expect(details.some(line => line.includes("dry-run"))).toBe(false);
   });
+
+  test("GUI registry usage documents explicit-origin single-use pairing", () => {
+    const gui = findCommand("gui");
+    expect(gui?.usage).toBe("ocx gui [pair --origin <browser-origin> [--json]]");
+    expect(gui?.details?.join(" ")).toContain("single-use");
+    expect(gui?.details?.join(" ")).toContain("no localhost or config-derived default");
+  });
 });
 
 describe("help banner command coverage", () => {

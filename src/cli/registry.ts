@@ -137,7 +137,15 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   { name: "login", usage: "ocx login <provider>", summary: "OAuth or API-key login for a provider." },
   { name: "logout", usage: "ocx logout <provider>", summary: "Remove a stored provider login." },
-  { name: "gui", usage: "ocx gui", summary: "Open the opencodex dashboard." },
+  {
+    name: "gui",
+    usage: "ocx gui [pair --origin <browser-origin> [--json]]",
+    summary: "Open the opencodex dashboard or create a secret single-use remote pairing grant.",
+    details: [
+      "Pairing requires an explicit allowed --origin; there is no localhost or config-derived default.",
+      "The printed grant is secret, single-use, short-lived, and must not be persisted.",
+    ],
+  },
   {
     name: "update",
     usage: "ocx update [--tag latest|preview]",

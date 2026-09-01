@@ -27,6 +27,7 @@ const OURS = { status: "ok", service: "opencodex", version: "2.6.17", uptime: 12
 describe("isOpencodexHealthz", () => {
   test("accepts the explicit service marker", () => {
     expect(isOpencodexHealthz(OURS)).toBe(true);
+    expect(isOpencodexHealthz({ ...OURS, guiPairCapability: "v1" })).toBe(true);
   });
 
   test("accepts the legacy pre-identity body (still-running old proxy after update)", () => {
@@ -38,6 +39,7 @@ describe("isOpencodexHealthz", () => {
     expect(isOpencodexHealthz({ status: "ok" })).toBe(false);
     expect(isOpencodexHealthz({ service: "something-else", status: "ok", version: "1", uptime: 1 })).toBe(false);
     expect(isOpencodexHealthz({ healthy: true } as never)).toBe(false);
+    expect(isOpencodexHealthz({ guiPairCapability: "v1", pid: 4242, port: 10100 })).toBe(false);
   });
 });
 
@@ -669,6 +671,22 @@ describe("remote readiness protocol metadata", () => {
       minimumClientProtocol: 1,
       managementUrl: "http://hub.example.test:8443",
     });
+  });
+
+  test("configured hub management origin wins while other roles keep the observed fallback", () => {
+    const request = new Request("http://127.0.0.1/readyz", {
+      headers: { Host: "observed.example.test:8443" },
+    });
+    expect(readyProtocolMetadata({
+      ...getDefaultConfig(),
+      runtimeRole: "hub",
+      hub: { managementPublicOrigin: "https://hub.example.test:443" },
+    }, request).managementUrl).toBe("https://hub.example.test");
+    expect(readyProtocolMetadata({
+      ...getDefaultConfig(),
+      runtimeRole: "client",
+      hub: { managementPublicOrigin: "https://ignored.example.test" },
+    }, request).managementUrl).toBe("http://observed.example.test:8443");
   });
 
   test("classifies a hub that requires a newer client with the exact message", () => {

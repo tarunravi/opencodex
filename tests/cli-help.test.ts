@@ -128,6 +128,16 @@ describe("CLI subcommand help", () => {
     expect(result.stdout).toContain("--no-start");
   });
 
+  test("GUI help documents explicit-origin pairing without making a live request", () => {
+    const result = runCli(["help", "gui"]);
+    expectSpawnFinished(result, "ocx help gui");
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: ocx gui [pair --origin <browser-origin> [--json]]");
+    expect(result.stdout).toContain("single-use");
+    expect(result.stdout).toContain("must not be persisted");
+  });
+
   test("unknown command with help flag remains an error", () => {
     const result = runCli(["foobar", "--help"]);
     expectSpawnFinished(result, "ocx foobar --help");
