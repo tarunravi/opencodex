@@ -3,6 +3,7 @@ import { Notice } from "../ui";
 import { useI18n, LOCALES } from "../i18n/shared";
 import { formatProviderDisplayName } from "../provider-icons";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
+import { isConnectedRuntime } from "../api-targets";
 import {
   classifyExternalModel,
   externalModelId,
@@ -530,11 +531,18 @@ export default function ApiKeys({ apiBase, active = true }: { apiBase: string; a
         onCopyKey={() => { void copyKey(); }}
         onDelete={handleDelete}
         onRename={handleRename}
-        onRotationStart={handleRotationStart}
-        onRotationCommit={(id, rotationId) => finishRotation(id, rotationId, "commit")}
-        onRotationAbort={(id, rotationId) => finishRotation(id, rotationId, "abort")}
-        onCopyRotationSecret={() => { void copyRotationSecret(); }}
-        onDismissRotationSecret={() => setRotationSecret(null)}
+        {...(isConnectedRuntime() ? {
+          // Key rotation is a connected-client operation: it swaps the data key this
+          // machine uses against its hub, with a commit/abort handshake the hub arbitrates.
+          // A standalone install has no hub to rotate against, so offering the control
+          // there advertises remote hub to someone who never enabled it — and the buttons
+          // would drive a handshake with nothing on the other end.
+          onRotationStart: handleRotationStart,
+          onRotationCommit: (id: string, rotationId: string) => finishRotation(id, rotationId, "commit"),
+          onRotationAbort: (id: string, rotationId: string) => finishRotation(id, rotationId, "abort"),
+          onCopyRotationSecret: () => { void copyRotationSecret(); },
+          onDismissRotationSecret: () => setRotationSecret(null),
+        } : {})}
         onModelQueryChange={setModelQuery}
         onCopyModelId={(modelId) => { void copyModelId(modelId); }}
         onTestModel={(model, protocol) => { void testModel(model, protocol); }}
