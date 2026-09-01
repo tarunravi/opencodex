@@ -127,6 +127,14 @@ afterEach(async () => {
   releasePut = null;
   putGate = null;
   testWindow.close();
+  // Clear the auth-fetch install latch along with the window it was installed against.
+  //
+  // `installApiAuthFetch` installs once per module instance. Leaving the latch set after
+  // this window closes makes a LATER test's own install a silent no-op, so its requests go
+  // out unwrapped and it fails only when run after this file. Restoring the globals is not
+  // enough; the latch lives in the module.
+  const { resetApiAuthFetchForTests } = await import("../src/api");
+  resetApiAuthFetchForTests();
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
   }

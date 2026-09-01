@@ -1,28 +1,7 @@
-/* eslint-disable react-refresh/only-export-components -- pairing transport and its form share one session-install boundary */
 import { createElement, useState, type ChangeEvent, type FormEvent } from "react";
-import { installApiSessionFromHtml } from "./api";
 import type { ApiTarget } from "./api-targets";
 import { useT } from "./i18n/shared";
-
-const PAIRING_CODE = /^ocx_pair_[A-Za-z0-9_-]{43}$/;
-
-export async function submitConnectPairing(
-  target: ApiTarget,
-  grant: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<boolean> {
-  const code = grant.trim();
-  if (!PAIRING_CODE.test(code)) throw new Error("pairing_code_invalid");
-  const response = await fetchImpl(target.bootstrapPath, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/html" },
-    body: JSON.stringify({ grant: code }),
-  });
-  if (!response.ok) throw new Error("pairing_refused");
-  const html = await response.text();
-  if (!installApiSessionFromHtml("shared", html)) throw new Error("pairing_response_invalid");
-  return true;
-}
+import { submitConnectPairing } from "./connect-pairing-transport";
 
 export function ConnectPairingForm({
   target,

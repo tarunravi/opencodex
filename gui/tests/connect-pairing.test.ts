@@ -66,6 +66,19 @@ test("App mounts the relay pairing form and installs only the returned shared se
   const container = document.createElement("div");
   document.body.append(container);
   const { LanguageProvider } = await import("../src/i18n/provider");
+  // Bind the auth-fetch wrapper to THIS window before App mounts.
+  //
+  // App calls installApiAuthFetch() at module scope, so it runs on first import only. A
+  // later test importing App gets the cached module and no install, leaving the wrapper
+  // bound to whichever window imported it first. The relayed pairing request then goes out
+  // unwrapped — no machine-session headers, which is exactly what this test asserts.
+  // Standalone the ordering happens to work; in the full suite it does not. Re-binding here
+  // makes the test independent of import order rather than of any product behavior.
+  const { resetApiAuthFetchForTests, installApiAuthFetch, configureApiTargets } = await import("../src/api");
+  const { standaloneApiTargets } = await import("../src/api-targets");
+  resetApiAuthFetchForTests();
+  configureApiTargets(standaloneApiTargets(""));
+  installApiAuthFetch();
   const { default: App } = await import("../src/App");
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: win.fetch });
   const { createRoot } = await import("react-dom/client");
