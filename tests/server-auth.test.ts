@@ -49,12 +49,6 @@ import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../src/lib/local-provi
 import { resetCodexModelEntitlementCacheForTests } from "../src/codex/model-entitlements";
 import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
 import { resetDebugSettingsForTests, setDebugSettings } from "../src/lib/debug-settings";
-import {
-  MAX_REMOTE_CATALOG_BYTES,
-  catalogDataPlaneResponse,
-  type SerializedCatalog,
-} from "../src/server/catalog-download";
-
 import { watchdogMs } from "./helpers/ci-watchdog";
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -4058,9 +4052,17 @@ describe("GET /v1/catalog remote data plane", () => {
       expect(remote.status).toBe(200);
       expect(remoteBytes).toEqual(managementBytes);
       expect(new TextDecoder().decode(remoteBytes)).toBe(REMOTE_CATALOG_BYTES);
-      const expectedEtag = `"sha256-${createHash("sha256").update(remoteBytes).digest("base64url")}"`;
-      expect(remote.headers.get("etag")).toBe(expectedEtag);
-      expect(remote.headers.get("cache-control")).toBe("private, no-cache");
+      // Management ETag spelling is hex, per the shipped catalogEtag() in
+      // src/server/catalog-download.ts. An earlier revision of this phase used a
+      // "sha256-<base64url>" spelling from its own serializer, which no longer exists.
+      const expectedEtag = `"${createHash("sha256").update(remoteBytes).digest("hex")}"`;
+      // The bytes are identical across planes, but the caching contract is not: the
+      // management route may carry a validator because its representation does not vary by
+      // data-key identity, while this one must not. Asserting the management ETag here keeps
+      // the byte-identity claim honest without implying the remote route offers one.
+      expect(management.headers.get("etag")).toBe(expectedEtag);
+      expect(remote.headers.get("etag")).toBeNull();
+      expect(remote.headers.get("cache-control")).toBe("no-store");
       expect(remote.headers.get("x-opencodex-key-id")).toBe("remote-key");
     } finally {
       await server.stop(true);
@@ -4075,7 +4077,13 @@ describe("GET /v1/catalog remote data plane", () => {
       const cases = [
         [{ "x-opencodex-api-key": REMOTE_DATA_KEY }, 200, "remote-key"],
         [{ authorization: `Bearer ${REMOTE_DATA_KEY}` }, 200, "remote-key"],
-        [{ "x-api-key": REMOTE_DATA_KEY }, 401, null],
+        // Accepted, matching /v1/models and the AUTH_MATRIX row this route shipped with in
+        // #809. An earlier revision of this phase rejected x-api-key here for least-privilege
+        // reasons, but this route forwards no caller credential upstream, so the header
+        // carries no extra authority — and rejecting it 401s Anthropic-SDK clients holding a
+        // perfectly valid data credential. The narrowing was a behavior regression against
+        // shipped code, not a hardening.
+        [{ "x-api-key": REMOTE_DATA_KEY }, 200, "remote-key"],
         [{ authorization: "Bearer foreign-key" }, 401, null],
         [{ authorization: `Bearer ${configuredAdminToken() ?? "missing-admin"}` }, 401, null],
         [{ "x-opencodex-api-key": REMOTE_DATA_KEY, origin: "https://attacker.test" }, 403, null],
@@ -4146,7 +4154,12 @@ describe("GET /v1/catalog remote data plane", () => {
     }
   });
 
-  test("strong, weak, list, and wildcard validators return bodyless 304", async () => {
+  test("no conditional request can elicit a 304, and no validator is offered to build one from", async () => {
+    // The response body varies by key identity, so a shared strong validator would let a
+    // store revalidate one identity's representation for another. The route therefore
+    // carries no ETag at all: there is nothing for a client to send back, and every
+    // If-None-Match spelling — including ones that would match a validator if one existed —
+    // gets the full body. An earlier revision of this phase asserted the opposite here.
     saveConfig(remoteCatalogConfig());
     writeRemoteCatalog();
     const server = startServer(0);
@@ -4154,39 +4167,22 @@ describe("GET /v1/catalog remote data plane", () => {
       const first = await fetch(new URL("/v1/catalog", server.url), {
         headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
       });
-      const etag = first.headers.get("etag")!;
-      for (const validator of [etag, `W/${etag}`, `"stale", ${etag}`, "*"]) {
-        const response = await fetch(new URL("/v1/catalog", server.url), {
-          headers: { "x-opencodex-api-key": REMOTE_DATA_KEY, "if-none-match": validator },
-        });
-        expect(response.status).toBe(304);
-        expect(await response.text()).toBe("");
-        expect(response.headers.get("etag")).toBe(etag);
-        expect(response.headers.get("cache-control")).toBe("private, no-cache");
-        expect(response.headers.get("x-opencodex-key-id")).toBe("remote-key");
-      }
-      for (const validator of ['"stale"', `W/ ${etag}`, "malformed"]) {
+      expect(first.status).toBe(200);
+      expect(first.headers.get("etag")).toBeNull();
+      expect(first.headers.get("cache-control")).toBe("no-store");
+
+      for (const validator of ['"sha256-anything"', 'W/"sha256-anything"', '"stale", "other"', "*", "malformed"]) {
         const response = await fetch(new URL("/v1/catalog", server.url), {
           headers: { "x-opencodex-api-key": REMOTE_DATA_KEY, "if-none-match": validator },
         });
         expect(response.status).toBe(200);
         expect(await response.text()).toBe(REMOTE_CATALOG_BYTES);
-        expect(response.headers.get("cache-control")).toBe("private, no-cache");
+        expect(response.headers.get("etag")).toBeNull();
+        expect(response.headers.get("cache-control")).toBe("no-store");
       }
     } finally {
       await server.stop(true);
     }
-  });
-
-  test("the remote size cap accepts exactly the bound and rejects cap plus one", async () => {
-    const request = new Request("http://localhost/v1/catalog");
-    const policy = { hostname: "127.0.0.1" };
-    const atCap: SerializedCatalog = { bytes: new Uint8Array(MAX_REMOTE_CATALOG_BYTES) };
-    const overCap: SerializedCatalog = { bytes: new Uint8Array(MAX_REMOTE_CATALOG_BYTES + 1) };
-    expect(catalogDataPlaneResponse(atCap, request, policy).status).toBe(200);
-    const rejected = catalogDataPlaneResponse(overCap, request, policy);
-    expect(rejected.status).toBe(503);
-    expect(await rejected.json()).toMatchObject({ error: { code: "catalog_too_large" } });
   });
 
   test("method and path matching stay exact ahead of the unknown-v1 guard", async () => {

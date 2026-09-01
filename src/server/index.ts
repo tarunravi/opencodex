@@ -155,6 +155,7 @@ import {
   resolveApiAuth,
   resolveResponsesApiAuth,
   requestPolicyView,
+  type DataPlaneAdmission,
   type RequestPolicyView,
   safeConfigDTO,
   setCorsOrigin,
@@ -214,6 +215,33 @@ import { readyProtocolMetadata } from "../remote/protocol";
 
 export const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
+
+// Header-safe by construction: a key id reaches a response header, so anything outside this
+// class could inject a header break or a control character into a response we control.
+const REMOTE_CATALOG_KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * Name WHICH configured credential was admitted, so a multi-key operator can attribute a
+ * catalog read.
+ *
+ * Scoped to configured keys on purpose: an environment token or a loopback bind has no key
+ * to name, and emitting one anyway would invent an attribution that does not exist. 200 only
+ * — this route emits no validator and therefore never answers 304.
+ *
+ * An id that fails the header-safe pattern is omitted rather than sanitized, with one warning
+ * that does NOT repeat the id: logging the offending value is how a malformed id becomes a
+ * log-injection vector instead of a dropped header.
+ */
+function withRemoteCatalogKeyId(response: Response, admission: DataPlaneAdmission): Response {
+  if (response.status !== 200 || admission.kind !== "configured") return response;
+  if (!REMOTE_CATALOG_KEY_ID_PATTERN.test(admission.keyId)) {
+    console.warn("[remote-catalog] configured API key id is not header-safe; omitting x-opencodex-key-id");
+    return response;
+  }
+  response.headers.set("x-opencodex-key-id", admission.keyId);
+  return response;
+}
+
 const LIVE_SIDEBAND_PENDING_MAX = 32;
 const LIVE_SIDEBAND_PENDING_BYTES_MAX = 1024 * 1024;
 const LIVE_SIDEBAND_CLOSE_FALLBACK_MS = 1_000;
@@ -1123,23 +1151,34 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         }
         const headers: Record<string, string> = {
           "content-type": "application/json",
-          // Identity-varying content behind a credential: never let a shared cache keep it.
-          "cache-control": "private, no-cache",
+          // Identity-varying content behind a credential: never let a shared cache keep it,
+          // and never hand out a validator it could revalidate with. `no-cache` alone does
+          // not prevent storage — it forces revalidation, and the revalidation is exactly
+          // what would cross identities here, because this body varies by key type and key
+          // id while the ETag would be derived from bytes alone. A store keyed on URL plus
+          // validator could then serve one credential's representation to another. Proving
+          // an identity-partitioned cache key across every intermediary in the path is a
+          // much larger commitment than the bandwidth a 304 saves on this payload, so this
+          // route declines the trade: no-store, no ETag, no 304.
+          //
+          // GET /api/catalog keeps its validator. That route is management-authenticated
+          // and loopback-scoped, and its representation does not vary by data-key identity.
+          "cache-control": "no-store",
         };
-        if (serialized.etag) headers.ETag = serialized.etag;
         const version = await persistedCodexVersion();
         if (version) headers["x-opencodex-codex-version"] = version;
-        // Conditional GET: a client that already holds these bytes re-validates cheaply.
-        const ifNoneMatch = req.headers.get("if-none-match")?.trim();
-        if (serialized.etag && ifNoneMatch && ifNoneMatch === serialized.etag) {
-          return withCors(new Response(null, { status: 304, headers }), req, policy);
-        }
+        // No conditional handling: with no validator emitted, an If-None-Match on this route
+        // can only have been guessed or copied from elsewhere, and honoring it would
+        // reintroduce the cross-identity path above. Every request gets the full body.
         if (serialized.bytes !== undefined) headers["content-length"] = String(serialized.bytes);
         // HEAD returns identical status and headers with no body.
-        return withCors(
-          new Response(req.method === "HEAD" ? null : serialized.body, { status: 200, headers }),
-          req,
-          policy,
+        return withRemoteCatalogKeyId(
+          withCors(
+            new Response(req.method === "HEAD" ? null : serialized.body, { status: 200, headers }),
+            req,
+            policy,
+          ),
+          admission,
         );
       }
 
