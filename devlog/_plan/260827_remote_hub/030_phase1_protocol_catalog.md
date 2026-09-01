@@ -65,8 +65,9 @@ runtime behavior. All code paths remain standalone-compatible when `runtimeRole`
 - Protocol-v1 metadata in every ready/pending/failed `/readyz` body.
 - A parser/compatibility predicate for future `ocx connect`, including additive-field
   tolerance for a dev hub paired with the latest released client.
-- Shared catalog serialization, ETag, `If-None-Match`, size cap, data-plane admission, and
-  configured-key-only `x-opencodex-key-id` attribution.
+- Shared catalog serialization, size cap, data-plane admission, and configured-key-only
+  `x-opencodex-key-id` attribution. The byte-derived ETag and `If-None-Match` handling
+  belong to `/api/catalog` alone; `/v1/catalog` has no validator (§ above).
 - Route placement before the unknown-`/v1/*` JSON-404 guard.
 - Focused and full remote-only verification commands.
 

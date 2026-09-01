@@ -462,7 +462,6 @@ sessions renew at most once per request.
 | P2-A08 | HTTPS POST bootstrap with fresh grant and exact `Origin`. | Grant is deleted and one `pairing` session is returned with both origin meta values. |
 | P2-A09 | Replay consumed grant; use expired grant, wrong Origin, wrong server destination, data key, admin token, or session token in place of grant. | No session for every case; replay and alternate credentials cannot enter the exchange branch. |
 | P2-A10 | Non-loopback HTTP pairing exchange, with and without a legacy persisted `remoteGui.allowInsecureHttp: true`. | Refused in both cases, before the grant is read, so the grant survives for a later HTTPS exchange. The legacy key is dropped with a warning and grants nothing. Automatic Tailscale issuance remains refused on HTTP. |
-| P2-A11 | Plaintext HTTP request for the session bootstrap on a non-loopback bind. | Response carries no grant, session, admin token, or client key — only an unauthenticated error naming the required scheme. |
 | P2-A11 | Authorized remote safe read immediately before expiry. | Full origin predicate passes and expiry slides to `now + 12h`; token/CSRF unchanged. |
 | P2-A12 | Wrong destination, wrong claimed browser origin, wrong browser `Origin`, absent/wrong CSRF mutation, and an expired session. | 401 and expiry remains unchanged/deleted as applicable; principal is never projected as `gui-session`. |
 | P2-A13 | Admin token calls ordinary management, pairing-grant creation, bootstrap exchange, and then a consent route; valid remote GUI session calls ordinary/consent routes with correct CSRF. | Admin remains ordinary management-capable but the other three are refused; remote session reaches consent route. No admin-to-grant or admin-to-session exchange exists. |
@@ -473,6 +472,7 @@ sessions renew at most once per request.
 | P2-A18 | Run `ocx gui pair --origin <browser-origin>` with an explicit allowed origin, then missing `--origin`, malformed/disallowed origin, `--json`, extra args, stale target, failed attestation, and capability/API failure. | Valid cases create one grant and print once; every absent/invalid origin fails with no default and without falling back to admin auth or echoing secrets; no grant appears in argv/config/disk/log fixtures. |
 | P2-A19 | Run native-profile mutation suite with admin, malformed remote session, and valid remote session. | Existing consent boundary remains: only the valid session + correct origin + CSRF dispatches the mutation. |
 | P2-A20 | Run import-graph and synchronous-window guard. | No protected core import reaches GUI-session code; `startServer` remains synchronous and activation ordering is unchanged. |
+| P2-A21 | Plaintext HTTP request for the session bootstrap on a non-loopback bind. | Response carries no grant, session, admin token, or client key — only an unauthenticated error naming the required scheme. |
 
 ## 10. Verification — remote only on `lidge-ai`
 

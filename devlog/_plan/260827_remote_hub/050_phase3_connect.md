@@ -317,8 +317,8 @@ export function issueClientKey(
 export function downloadClientCatalog(
   serverUrl: string,
   admissionToken: string,
-  options?: { etag?: string; timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch },
-): Promise<{ kind: "fresh"; body: string; etag?: string } | { kind: "not-modified" }>;
+  options?: { timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch },
+): Promise<{ kind: "fresh"; body: string }>;
 ```
 
 `fetchHubReady()` parses through Phase 1's `parseRemoteReadyMetadata()` and evaluates
@@ -456,9 +456,10 @@ connected `ocx sync` is the sole apply path.
 - `client.kind === invalid`: exit non-zero before proxy discovery, provider discovery,
   catalog write, or injection.
 - `client.kind === connected`: read and fingerprint-check the service token, request
-  `/v1/catalog` with `If-None-Match`, and inject the saved `CodexRoutingTarget`.
-- Connected 304 reuses the existing catalog only if it is a bounded regular file and
-  the configured catalog path is the expected absolute path.
+  `/v1/catalog` unconditionally, and inject the saved `CodexRoutingTarget`.
+  `/v1/catalog` carries no validator (Phase 1, D2), so the client sends no
+  `If-None-Match` and never receives a 304. There is no conditional-fetch state to keep
+  correct, and no way for a cached representation to cross client keys.
 - Connected timeout/5xx keeps last-known-good catalog and reports stale age; it does
   not gather local providers. Missing/changed token file and 401 are hard failures and
   do not inject or fall back.
@@ -535,7 +536,7 @@ No test sends live hub traffic or reads the developer's homes.
 | P3-A5 | Key POST returns 401/403/409 or malformed/oversized JSON. | No token/catalog/journal/config writes and no secret in diagnostics. |
 | P3-A6 | Token, catalog, injector preflight, inject commit, or final role+state commit is fault-injected in turn. | Prior machine bytes are restored at every point; neither `runtimeRole=client` nor visible `client` remains; remote orphan cleanup status is explicit by safe key id only. |
 | P3-A7 | Existing standalone config runs every current injector golden. | Output bytes are identical; no connected-only env/header/config key appears. |
-| P3-A8 | Connected state plus valid token; hub catalog returns 200 then 304. | First sync atomically updates/injects; second uses last-known-good and ETag; local provider gather fake is never called. |
+| P3-A8 | Connected state plus valid token; two consecutive syncs. | Each sync fetches unconditionally and atomically updates/injects; no request carries `If-None-Match`; a hub that answered 304 anyway is treated as a protocol error rather than as an empty catalog. The local provider gather fake is never called. |
 | P3-A9 | Connected state with hub down, 401, missing token, changed token, or malformed-present client config. | No local-provider fallback and no new local catalog; timeout keeps LKG as stale, credential/state errors fail hard. |
 | P3-A10 | Connected Claude launch with no user Anthropic overrides. | Child receives hub base and client token; no local proxy is started; gateway cache uses hub `/v1/models`. |
 | P3-A11 | Connected Claude launch with user-owned different `ANTHROPIC_BASE_URL`. | User destination wins and the hub admission token is absent from child env. |

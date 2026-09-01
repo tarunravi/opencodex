@@ -310,10 +310,11 @@ or replace the backup directly.
    is 401. After verified commit, delete `<tokenfile>.prev` and clear `pendingOperation`.
 6. If steps 2–5 fail before a confirmed commit, restore the old token atomically through
    `restoreTokenBackup`, abort the pending rotation, then delete the backup and clear the
-   operation. If commit outcome is uncertain, probe with both keys. New+old both accepted means
-   issuance completed and overlap is still pending, so commit the new key with the stored
-   `rotationId`; new-only accepted means commit already took effect; old-only accepted restores
-   and aborts. Never replay commit without this evidence.
+   operation — but only when the restore and abort are both confirmed. If the commit outcome
+   is uncertain, follow the recovery gate below rather than probing directly: the identity
+   comparison comes first, because two candidates holding the same key both probe
+   successfully and would otherwise be read as a completed issuance. Never replay commit,
+   and never delete a candidate, without evidence that survives that comparison.
 
 On startup/status, `src/client/state.ts` treats a rotate `pendingOperation` as a recovery gate:
 verify that `oldKeyBackupPath` is exactly `<tokenfile>.prev` and require an owner-only regular
@@ -324,8 +325,21 @@ file.
 but before the token was replaced. Both candidates are the old key, so both probe
 successfully — and a "both accepted" rule would read that as a completed issuance and commit
 a rotation that never happened, permanently losing the new key. Identical candidates
-therefore mean pre-replacement: never commit, restore nothing, and resume the rotation from
-the beginning.
+therefore mean pre-replacement: never commit and restore nothing.
+
+What happens next is constrained by two facts. The new secret is returned exactly once, so
+if it was issued it is already unrecoverable from disk; and startup/status holds no
+management authority, so it cannot ask the hub anything. Recovery at startup/status
+therefore **stops** — it does not "resume," because nothing at that point is able to.
+It reports the exact state, leaves both candidates and `pendingOperation` intact, and
+names the command the operator runs next.
+
+Resumption belongs to the next `ocx connect rotate`, which carries fresh transient
+authority. That command sees the stored `rotationId`, confirms its abort with the hub,
+and only then starts a new rotation. It is not blocked by the `already-pending` rule
+(§ rotate contract), because confirming and clearing the stranded operation is precisely
+what it is doing. If the abort cannot be confirmed, it stops with the evidence preserved
+rather than starting a second rotation on top of an unresolved one.
 
 Only when the candidates differ does probing decide anything, and only a confirmed authority
 may act:
@@ -463,7 +477,9 @@ leaf that depends only on `src/lib/bounded-body.ts`.
 
 Validation order:
 
-1. Status/redirect: only 200 or valid 304; redirect is refused, not followed.
+1. Status/redirect: only 200; redirect is refused, not followed. `/v1/catalog` carries no
+   validator (Phase 1, D2), so the client sends no conditional request and a 304 is a
+   protocol error rather than a cache hit.
 2. Content type is JSON-compatible; content length above cap rejects early, but streamed bytes are
    still counted because length may be absent or false.
 3. Read at most cap+1 decompressed bytes; exactly cap is allowed, one byte over cancels/discards.
@@ -473,13 +489,15 @@ Validation order:
    required shape passes.
 6. Serialize/write only after complete validation. Failed refresh retains the exact LKG bytes and
    stale age; no local provider fallback and no partial file.
-7. A 304 without an existing validated LKG triggers one unconditional refetch; a second 304 is a
-   protocol error, not an empty catalog.
+7. A 304 is a protocol error in every case. The client never issued a conditional request,
+   so a hub answering 304 is either misconfigured or being impersonated; treat it as a
+   failed refresh that retains the exact LKG bytes, never as an empty catalog.
 
 Adversarial tests include: forged small Content-Length with oversized chunks, gzip/decompressed
 oversize fixture, exact-cap and cap+1, fragmented trickle, malformed/truncated/UTF-8 JSON, null,
 array top level, missing/non-array models, 2,001 rows, non-object row, empty/control/duplicate slug,
-unexpected future fields, stale/mismatched ETag, and filesystem write failure after validation.
+unexpected future fields, an unsolicited 304, an unsolicited `ETag` on the 200, and
+filesystem write failure after validation.
 Every rejection asserts token/catalog/state/journal bytes are unchanged.
 
 ## 8. Relay SSRF and header-smuggling negatives
@@ -551,7 +569,11 @@ Phase 6 extends them rather than creating parallel “hardening2” files.
 | second start | Existing unexpired pending rotation | 409; no third secret/state change. |
 | client commit | New key written + authenticated catalog succeeds | Pending promoted atomically; old next request 401; id/usage bucket stable; `.prev` deleted and pending operation cleared; sessions/grants unchanged. |
 | client write/probe fail | Fail backup/temp write, hardening, rename, or new-key probe | Old file restored/unchanged from `.prev`; pending aborted or expires; old key remains valid. |
-| uncertain commit/crash | Drop commit response or restart with pending operation | Probe current+`.prev`; both accepted commits the current new key with stored `rotationId`, new-only finalizes committed state, old-only restores+aborts, and both rejected stops without deletion. |
+| uncertain commit/crash | Drop commit response or restart with pending operation | Compare candidate identities FIRST. Differing candidates: both accepted commits the current new key with stored `rotationId`, new-only finalizes committed state, old-only restores+aborts, both rejected stops without deletion. |
+| pre-replacement crash | Persist `pendingOperation`, then stop before the token is replaced, so the live token and `.prev` hold the same key | Identical candidates are detected before any probe. No commit, no restore, no deletion; both files and `pendingOperation` survive and recovery stops with the operator instruction. The old "both probes accepted implies commit" reading is what this row keeps dead — it would commit a rotation that never happened and lose the new key permanently. |
+| unconfirmed abort | Rotation reaches installed-new-token state, then the abort request fails transiently | Neither candidate is deleted and `pendingOperation` survives naming the unconfirmed step. No generation is restored on unconfirmed authority. |
+| status during rotation | Run `ocx connect status` while `rotateConnectedClientKey` awaits `/api/keys/rotate` | The in-flight `.prev` backup is not deleted and the rotation completes normally. |
+| stranded-operation resume | After a pre-replacement crash, run `ocx connect rotate` | The stored `rotationId` is confirmed aborted with the hub before a new rotation starts; `already-pending` does not block this path. An unconfirmable abort stops with evidence preserved rather than starting a second rotation. |
 | pending expiry | Fake clock past 10 minutes | Pending rejected/removed; old accepted. |
 | connected operator revoke | Valid connected state + `ocx connect revoke --admin-token-stdin` | CLI reads the issuance-derived `apiKeyId` from state, accepts no id argument, and revokes that key; sessions/grants remain unchanged. |
 | post-disconnect revoke | Disconnect clears local client state while its hub key remains | CLI revoke refuses before any request; output points to hub GUI **Integrations → API Keys**, the sole post-disconnect revocation path. |
@@ -564,7 +586,7 @@ Phase 6 extends them rather than creating parallel “hardening2” files.
 | malformed protocol | Invalid `/readyz` fields | Malformed error; no catalog/token/inject/state write. |
 | oversized catalog | Content-Length lie or chunked cap+1 | Cancel/discard, LKG unchanged, no fallback. |
 | malformed/schema catalog | Each §7 shape | Precise safe error class, LKG unchanged. |
-| 304 no LKG | Empty cache + 304 | One unconditional retry; second 304 errors. |
+| unsolicited 304 | Hub answers 304 to an unconditional request, with and without an existing LKG | Treated as a protocol error in both cases; LKG unchanged where present, no empty catalog written, no local provider fallback. |
 | relay URL override | Absolute/scheme-relative/encoded authority path | Reject before fetch; fixed hub sees zero requests. |
 | relay redirect | Fixed hub returns 3xx to attacker | No follow, no credential at target. |
 | request smuggling | Raw CL/TE, duplicate CL, Connection-nominated secret header | Reject/strip before fetch. |
@@ -581,7 +603,8 @@ The Remote Hub guide in all eight locales must cover:
 - connected usage = hub store filtered to this `apiKeyId`; disconnected usage = local store;
   no mirroring;
 - loopback management ingress, Tailscale Serve, exact `allowedTailscaleUsers`, pairing, and the
-  explicit insecure-HTTP warning;
+  requirement that pairing runs over loopback or HTTPS only — plaintext HTTP carries no
+  credential and there is no opt-in that changes this;
 - admin token ordinary-management scope and permanent inability to mint consent sessions;
 - systemd/launchd, Docker volume/secret/probes, headless OAuth, rotation, rollback, and protocol
   upgrade errors;
@@ -717,6 +740,3 @@ the matching CI partition before classifying it; never call a red result environ
 Final live evidence runs on `clisu-oracle`/MacBook per 070 §8 after the remote gates. It proves
 health, readiness, authenticated catalog, one routed response, remote session, consent refusal,
 rotation, usage slice, disconnect/local store, rollback, and both constructible protocol directions.
-| P6-A20 | Persist `pendingOperation`, then stop before the token is replaced so the live token and `.prev` hold the same key. Restart. | Recovery detects identical candidates before probing, refuses to commit, leaves both files intact, and resumes the rotation. The pre-fix "both probes accepted implies commit" rule is what this row exists to keep dead. |
-| P6-A21 | Rotation reaches installed-new-token state, then the abort request fails transiently. | Neither candidate is deleted and `pendingOperation` survives with the unconfirmed step named. No generation is restored on unconfirmed authority. |
-| P6-A22 | Run `ocx connect status` while `rotateConnectedClientKey` is awaiting `/api/keys/rotate`. | The in-flight `.prev` backup is not deleted and the rotation completes normally. |

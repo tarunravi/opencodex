@@ -302,10 +302,21 @@ Strip `Host`, connection/hop-by-hop headers, machine auth headers, proxy credent
 cookies, and forwarding headers. Forward only the bounded management header allowlist,
 including hub session, GUI-origin, CSRF, and content type.
 
-Forward the browser's `Origin` value **verbatim on every allowed session-authenticated
-request**: the `POST /opencodex-session` exchange, the `GET` bootstrap, and every allowed
-`/api/` method including `POST`, `PUT`, `PATCH`, and `DELETE`. Never synthesize it from
-the hub URL, the localhost bind, or the GUI-origin header, and never omit it.
+Two separate rules govern `Origin`, and conflating them is what produced the earlier defect.
+
+**Forwarding.** Whenever the browser sends `Origin`, forward that value verbatim, on every
+allowed session-authenticated request: the `POST /opencodex-session` exchange, the `GET`
+bootstrap, and every allowed `/api/` method including `POST`, `PUT`, `PATCH`, and
+`DELETE`. Never synthesize it from the hub URL, the localhost bind, or the GUI-origin
+header, and never drop a value the browser did send.
+
+**Requiring.** The hub's own predicate (Phase 2 §5.2) decides when `Origin` must be
+present: mandatory for the pairing exchange and for every mutation, optional for safe
+same-browser `GET`/`HEAD` reads. The relay does not tighten or loosen that predicate; a
+safe read whose browser sent no `Origin` still relays and still succeeds.
+
+So the relay refuses only when it would otherwise have to invent a value: a mutation
+arriving without `Origin` is rejected rather than given a synthesized one.
 
 A previous revision forwarded `Origin` only for the exact `POST /opencodex-session`
 exchange. That is both a functional and a security defect. The minted GUI session is
@@ -316,8 +327,8 @@ breaks every write path it is supposed to carry. Repairing that by synthesizing 
 the hub's CSRF check would be validating the relay against itself. The browser value is
 the only admissible source, so it is forwarded unchanged or the request does not go.
 
-When the browser sends no `Origin` on a request that requires it, the relay refuses
-rather than inventing one.
+When the browser sends no `Origin` on a request the Phase-2 predicate requires it for,
+the relay refuses rather than inventing one.
 Response headers are similarly allowlisted; `Set-Cookie` and hop-by-hop headers are
 never returned. Request and response bodies have named constants and abort on overflow.
 No URL query, auth header, body, or response body is logged.
@@ -466,7 +477,7 @@ appearing after disconnect.
 | Test file | Required cases |
 |---|---|
 | `tests/client-machine-listener.test.ts` (NEW) | IPv4 loopback bind; GUI/bootstrap; exact allowlist; every `/v1/*` 404; unknown/wrong-method 404; safe GET auth; mutation Origin/CSRF; status redaction; sync success/failure; shim actions; disconnect offline; recycle to standalone; invalid state refuses startup; no provider/timer fake invoked. |
-| `tests/client-hub-relay.test.ts` (NEW) | Relay disabled 404; direct mode 404; fixed host/path; exact `POST /api/machine/hub-relay/opencodex-session` reaches only hub `POST /opencodex-session` and forwards browser `Origin` verbatim; direct/encoded traversal and authority injection rejected; redirects rejected; request/response caps; hop-by-hop/cookie/forwarded/machine headers stripped; hub auth retained; timeout/abort; no body/header log. |
+| `tests/client-hub-relay.test.ts` (NEW) | Relay disabled 404; direct mode 404; fixed host/path; exact `POST /api/machine/hub-relay/opencodex-session` reaches only hub `POST /opencodex-session`; browser `Origin` forwarded byte-for-byte on the pairing exchange, the GET bootstrap, and each allowed `/api/` POST, PUT, PATCH, and DELETE; a mutation whose browser sent no `Origin` is refused without contacting the hub and without a synthesized value; a safe GET/HEAD whose browser sent no `Origin` still relays and succeeds; direct/encoded traversal and authority injection rejected; redirects rejected; request/response caps; hop-by-hop/cookie/forwarded/machine headers stripped; hub auth retained; timeout/abort; no body/header log. |
 | `tests/cli-start-journal-order.test.ts` | Matching durable client journal survives start; missing/mismatched client owner restores; connected branch never starts full server; disconnected branch remains current. |
 | `tests/api-usage.test.ts` | Exact `apiKeyId` response/echo; old and other-key rows excluded; no match; combined filters; filtered request cannot poison cache; unfiltered next request remains whole hub. |
 | `tests/usage-summary.test.ts` | Pure projection totals/days/models/providers/accounts consistency; exact-case id; combo attempts; absent id; provider/model/key cross-product. |
@@ -488,7 +499,7 @@ appearing after disconnect.
 | P4-A3 | GET status/clients with valid loopback GUI session, then without it. | Valid request returns redacted DTO; missing/admin-only/expired/wrong-origin session is rejected and no secret/fingerprint leaks. |
 | P4-A4 | POST sync/shim/disconnect with valid session but missing/wrong CSRF or browser Origin. | Mutation is rejected before work; exact session+Origin+CSRF reaches the handler. Admin token never becomes GUI session. |
 | P4-A4b | Relay every allowed session-authenticated method — GET bootstrap, POST `/opencodex-session`, and `/api/` POST, PUT, PATCH, DELETE — from a browser origin the hub allows. | Each request arrives at the hub carrying the browser's `Origin` byte-for-byte. No case is missing `Origin`, and no case carries a value the browser did not send. |
-| P4-A4c | Relay an allowed mutation whose browser request has no `Origin`. | The relay refuses without contacting the hub, and does not synthesize an `Origin` from the hub URL, the localhost bind, or the GUI-origin header. |
+| P4-A4c | Relay an allowed mutation whose browser request has no `Origin`, then a safe `GET` whose browser request has no `Origin`. | The mutation is refused without contacting the hub and without a synthesized `Origin`. The safe read is relayed unchanged and succeeds, preserving the Phase-2 §5.2 allowance. |
 | P4-A5 | Connected direct transport with Phase-2 session issued by an exact `remoteGui.allowedTailscaleUsers` match or a consumed pairing grant; hub CORS includes the localhost browser origin. | Shared requests go directly to exact hub origin with hub headers only; machine pages remain localhost; CORS/session validation succeeds. A non-allowlisted Tailscale identity mints no session and gets no local fallback. |
 | P4-A6 | Connected relay transport and valid machine + hub sessions. | Browser sends dual auth domains; relay validates machine session, strips custom headers, forwards hub session only to fixed hub target, and rejects redirect/SSRF variants. |
 | P4-A7 | Relay path requested while transport is direct/disabled or caller supplies host/scheme/traversal. | Default 404/refusal before outbound fetch; no credential or body is logged. |
