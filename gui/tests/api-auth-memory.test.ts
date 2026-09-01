@@ -19,6 +19,14 @@ beforeEach(() => {
     fetch: { configurable: true, value: testWindow.fetch.bind(testWindow) },
   });
   originalPrompt = window.prompt;
+  // happy-dom does not implement `prompt`, so the admin-token fallback below throws a
+  // TypeError instead of returning null the moment a test actually reaches it. Most tests
+  // never do; the ones that clear a rejected session do, and they failed on a missing
+  // function rather than on the behavior they assert. A null-returning stub is the honest
+  // stand-in for "the operator dismissed the prompt".
+  if (typeof window.prompt !== "function") {
+    Object.defineProperty(testWindow, "prompt", { configurable: true, writable: true, value: () => null });
+  }
   resetApiAuthFetchForTests(async () => {
     return window.prompt("OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)")?.trim() || null;
   });
