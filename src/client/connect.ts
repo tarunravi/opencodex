@@ -54,7 +54,6 @@ export interface ConnectOptions {
   selectedClients: OcxConnectedClientId[];
   managementTransport: "direct" | "relay";
   noSync?: boolean;
-  allowInsecureHttp?: boolean;
 }
 
 export interface ClientConnectDeps {
@@ -107,10 +106,17 @@ function validLocalCatalog(): string {
   return snapshot.body;
 }
 
-function catalogMatchesEtag(body: string, etag: string | undefined): boolean {
-  if (!etag) return false;
-  const digest = createHash("sha256").update(body).digest("base64url");
-  return etag === `"sha256-${digest}"` || etag === `W/"sha256-${digest}"`;
+/**
+ * Is the on-disk catalog still the one this connection wrote?
+ *
+ * Recorded as our own hash rather than the hub's ETag: /v1/catalog emits no validator
+ * (Phase 1, D2), so there is no server-supplied tag to keep. This is an ownership check on
+ * local bytes, which never needed the hub's participation — the previous spelling only
+ * looked like a cache concern because it reused the ETag string.
+ */
+function catalogMatchesFingerprint(body: string, fingerprint: string | undefined): boolean {
+  if (!fingerprint) return false;
+  return createHash("sha256").update(body).digest("base64url") === fingerprint;
 }
 
 function routingTarget(serverUrl: string): CodexRoutingTarget {
@@ -183,16 +189,13 @@ export async function connectClient(
     const ready = await fetchHubReady(serverUrl, { fetchImpl: deps.fetchImpl });
     if (ready.status !== "ready") throw new Error(`hub is not ready (${ready.status})`);
     managementUrl = managementUrl || ready.metadata.managementUrl;
-    if (options.managementTransport === "relay") {
-      throw new Error("relay management transport is not available before Remote Hub Phase 4");
-    }
 
     if (options.credential.kind === "pairing-grant") {
       const session = await exchangeConnectPairingGrant(
         managementUrl,
         localGuiOrigin(),
         options.credential.value,
-        { allowInsecureHttp: options.allowInsecureHttp, fetchImpl: deps.fetchImpl },
+        { fetchImpl: deps.fetchImpl },
       );
       cleanupCredential = { kind: "gui-session", value: session };
     } else {
@@ -205,9 +208,6 @@ export async function connectClient(
     tokenFingerprint = persisted.fingerprint;
 
     const catalog = await downloadClientCatalog(serverUrl, issued.key, { fetchImpl: deps.fetchImpl });
-    if (catalog.kind !== "fresh" || !catalog.etag) {
-      throw new Error("initial hub catalog did not include a fresh ETag");
-    }
     atomicWriteFile(DEFAULT_CATALOG_PATH, catalog.body);
     writtenCatalogFingerprint = sha256(catalog.body);
 
@@ -244,9 +244,9 @@ export async function connectClient(
       tokenFingerprint: persisted.fingerprint,
       protocolVersion: 1,
       connectedAt: now,
-      catalogEtag: catalog.etag,
+      catalogFingerprint: createHash("sha256").update(catalog.body).digest("base64url"),
       // Durable so disconnect — a different process — can put back whatever was here
-      // before. `priorCatalog` above is only reachable by a connect that fails and rolls
+      // before. The in-memory `priorCatalog` only covers a connect that fails and rolls
       // back in the same run.
       priorCatalog: priorCatalog.kind === "file" ? Buffer.from(priorCatalog.body, "utf8").toString("base64") : "",
       catalogSyncedAt: now,
@@ -305,22 +305,17 @@ export async function syncConnectedClient(
   let next = state.value;
   try {
     const downloaded = await downloadClientCatalog(state.value.serverUrl, token.token, {
-      etag: state.value.catalogEtag,
       fetchImpl: deps.fetchImpl,
     });
-    if (downloaded.kind === "fresh") {
-      atomicWriteFile(DEFAULT_CATALOG_PATH, downloaded.body);
-      catalogWritten = true;
-      const now = (deps.now ?? (() => new Date()))().toISOString();
-      next = {
-        ...state.value,
-        ...(downloaded.etag ? { catalogEtag: downloaded.etag } : {}),
-        catalogSyncedAt: now,
-      };
-      commitClientConnection(next);
-    } else {
-      validLocalCatalog();
-    }
+    atomicWriteFile(DEFAULT_CATALOG_PATH, downloaded.body);
+    catalogWritten = true;
+    const now = (deps.now ?? (() => new Date()))().toISOString();
+    next = {
+      ...state.value,
+      catalogFingerprint: createHash("sha256").update(downloaded.body).digest("base64url"),
+      catalogSyncedAt: now,
+    };
+    commitClientConnection(next);
   } catch (error) {
     const transient = error instanceof HubClientError
       && (error.code === "unreachable" || (error.status !== undefined && error.status >= 500));
@@ -359,7 +354,7 @@ function restorePriorCatalog(connection: OcxClientConnectionConfig): "removed" |
   if (!existsSync(DEFAULT_CATALOG_PATH)) return "absent";
   try {
     const body = validLocalCatalog();
-    if (!catalogMatchesEtag(body, connection.catalogEtag)) return "changed";
+    if (!catalogMatchesFingerprint(body, connection.catalogFingerprint)) return "changed";
     if (connection.priorCatalog) {
       atomicWriteFile(DEFAULT_CATALOG_PATH, Buffer.from(connection.priorCatalog, "base64").toString("utf8"));
       return "restored";

@@ -103,24 +103,34 @@ describe("remote hub client boundary", () => {
     expect(seen[1]?.body).toBe(JSON.stringify({ name: "client" }));
   });
 
-  test("pairing HTTP requires explicit client opt-in and catalog is bounded/conditional", async () => {
+  test("plaintext HTTP cannot carry a pairing grant, with no opt-in and no request sent", async () => {
+    // An earlier revision accepted `--allow-insecure-http` here and this test asserted the
+    // opt-in message. The option is gone: the hub refuses the exchange outright, so sending
+    // it would only burn a single-use code against a certain rejection.
     let calls = 0;
     await expect(exchangeConnectPairingGrant(
       "http://hub.example.test",
       "http://localhost:10100",
       new TextEncoder().encode(`ocx_pair_${"c".repeat(43)}`),
       { fetchImpl: async () => { calls += 1; return new Response(); } },
-    )).rejects.toThrow("--allow-insecure-http");
+    )).rejects.toThrow("loopback or HTTPS");
+    // Refused before any request: the grant is still spendable over a permitted transport.
     expect(calls).toBe(0);
+  });
 
-    const notModified = await downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
-      etag: '"etag"',
+  test("the catalog fetch is unconditional and still bounded", async () => {
+    // /v1/catalog emits no validator (Phase 1, D2), so the client sends no If-None-Match and
+    // has no 304 branch to keep correct. The size bound is unaffected by that change.
+    let sentConditional: string | null = null;
+    const fresh = await downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       fetchImpl: async (_input, init) => {
-        expect(new Headers(init?.headers).get("if-none-match")).toBe('"etag"');
-        return new Response(null, { status: 304 });
+        sentConditional = new Headers(init?.headers).get("if-none-match");
+        return new Response('{"models":[]}');
       },
     });
-    expect(notModified).toEqual({ kind: "not-modified" });
+    expect(sentConditional).toBeNull();
+    expect(fresh).toMatchObject({ kind: "fresh" });
+
     await expect(downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       maxBytes: 4,
       fetchImpl: async () => new Response('{"models":[]}'),
@@ -302,7 +312,7 @@ function runConnectedStateScenario(mode: "sync-401" | "sync-503" | "disconnect-c
   const token = `ocx_data_${"e".repeat(40)}`;
   const fingerprint = createHash("sha256").update(token).digest("hex");
   const catalog = '{"models":[]}';
-  const etag = `"sha256-${createHash("sha256").update(catalog).digest("base64url")}"`;
+  const catalogFingerprint = createHash("sha256").update(catalog).digest("base64url");
   const isDisconnect = mode === "disconnect-conflict" || mode === "disconnect-process-journal";
   const selectedClients = isDisconnect ? ["codex"] : ["claude"];
   writeFileSync(join(opencodexHome, "config.json"), JSON.stringify({
@@ -320,7 +330,7 @@ function runConnectedStateScenario(mode: "sync-401" | "sync-503" | "disconnect-c
       tokenFingerprint: fingerprint,
       protocolVersion: 1,
       connectedAt: "2026-08-28T00:00:00.000Z",
-      catalogEtag: etag,
+      catalogFingerprint,
       catalogSyncedAt: "2026-08-28T00:00:00.000Z",
     },
   }), "utf8");

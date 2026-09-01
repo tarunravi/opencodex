@@ -287,7 +287,7 @@ describe("opencodex config defaults", () => {
       tokenFingerprint: "a".repeat(64),
       protocolVersion: 1 as const,
       connectedAt: "2026-08-28T00:00:00.000Z",
-      catalogEtag: '"sha256-example"',
+      catalogFingerprint: "sha256-example",
       catalogSyncedAt: "2026-08-28T00:01:00.000Z",
       pendingOperation: {
         kind: "rotate" as const,

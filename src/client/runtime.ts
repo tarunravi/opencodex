@@ -24,7 +24,24 @@ export function scheduleStandaloneRecycle(): void {
     const port = activePort;
     try { activeServer?.stop(true); } catch { /* best effort */ }
     cleanup();
-    if (process.env.OCX_SERVICE !== "1" && port) {
+    // Recycling back to standalone after `ocx disconnect` must actually bring a standalone
+    // proxy back, under either launch shape.
+    //
+    // Unsupervised: spawn the replacement ourselves and exit 0.
+    //
+    // Supervised (`OCX_SERVICE=1`): do NOT spawn — the supervisor owns the process, and a
+    // second copy would fight it for the port. But exit 0 does not work either: the real
+    // supervisor configs are failure-only (systemd `Restart=on-failure`, WinSW
+    // `<onfailure action="restart"/>`, the Task Scheduler ERRORLEVEL loop), so a clean exit
+    // reads as "the service finished" and nothing restarts. The client stayed down until the
+    // operator noticed. Exit 1 is what those configs are watching for, and it is the same
+    // policy the dashboard recycle already uses (src/server/management/system-restart.ts).
+    //
+    // launchd's KeepAlive restarts on any exit, so it is correct under both branches.
+    if (process.env.OCX_SERVICE === "1") {
+      process.exit(1);
+    }
+    if (port) {
       const child = spawn(process.execPath, selfLaunchArgv(["start", "--port", String(port)]), {
         detached: true,
         stdio: "ignore",

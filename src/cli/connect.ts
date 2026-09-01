@@ -24,7 +24,7 @@ export const CONNECT_USAGE = `Usage:
   ocx connect <url> [--management-url <url>]
       (--pairing-code-stdin | --admin-token-stdin)
       [--clients codex,claude] [--management-transport direct|relay]
-      [--allow-insecure-http] [--no-sync]
+      [--no-sync]
   ocx connect status [--json]
   ocx connect revoke --admin-token-stdin [--json]`;
 
@@ -127,7 +127,6 @@ async function runConnect(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   }
   const pairing = takeFlag(args, "--pairing-code-stdin");
   const admin = takeFlag(args, "--admin-token-stdin");
-  const allowInsecureHttp = takeFlag(args, "--allow-insecure-http");
   const noSync = takeFlag(args, "--no-sync");
   if (Number(pairing) + Number(admin) !== 1) {
     throw new CliUsageError("choose exactly one of --pairing-code-stdin or --admin-token-stdin", CONNECT_USAGE);
@@ -141,7 +140,6 @@ async function runConnect(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     credential: { kind: pairing ? "pairing-grant" : "admin", value },
     selectedClients: clients,
     managementTransport,
-    allowInsecureHttp,
     noSync,
   }, { fetchImpl: deps.fetchImpl });
   console.log(`Connected to ${connection.serverUrl} as key ${connection.apiKeyId}.`);
