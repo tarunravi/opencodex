@@ -244,8 +244,12 @@ export interface OcxConfigRebaseProvenance {
   deletedTopLevelKeys: string[];
 }
 
+export type OcxRuntimeRole = "standalone" | "hub" | "client";
+
 export interface OcxConfig {
   port: number;
+  /** Runtime topology role. Absence preserves the historical standalone behavior. */
+  runtimeRole?: OcxRuntimeRole;
   /** Opt in to one identical-turn retry when a Responses completion has no text or tool call. */
   emptyCompletionRetry?: boolean;
   /**

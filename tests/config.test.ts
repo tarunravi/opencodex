@@ -22,6 +22,7 @@ import {
   readRuntimePort,
   removePid,
   removeRuntimePort,
+  runtimeRole,
   ocxStartProcessCacheSizeForTests,
   setOcxStartProcessCacheForTests,
   setProcessCommandLineExecForTests,
@@ -115,6 +116,68 @@ function writeAccountNamespaceConfig(
 }
 
 describe("opencodex config defaults", () => {
+  test("runtime role is absent-by-default and resolves to standalone", () => {
+    const defaults = getDefaultConfig();
+    expect(Object.hasOwn(defaults, "runtimeRole")).toBe(false);
+    expect(runtimeRole(defaults)).toBe("standalone");
+    writeConfig(defaults);
+    const before = readFileSync(getConfigPath(), "utf8");
+    expect(runtimeRole(loadConfig())).toBe("standalone");
+    expect(readFileSync(getConfigPath(), "utf8")).toBe(before);
+  });
+
+  test("runtime role accepts the three explicit contract values", () => {
+    for (const role of ["standalone", "hub", "client"] as const) {
+      expect(validateConfigCandidate({ ...getDefaultConfig(), runtimeRole: role })).toMatchObject({
+        ok: true,
+        config: { runtimeRole: role },
+      });
+    }
+  });
+
+  test("runtime role rejects malformed live candidates", () => {
+    for (const runtimeRole of ["server", "", 1, null]) {
+      expect(validateConfigCandidate({ ...getDefaultConfig(), runtimeRole })).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("runtimeRole"),
+      });
+    }
+  });
+
+  test("a malformed persisted runtime role preserves providers and API keys", () => {
+    const invalidRole = "future-secret-shaped-role";
+    writeConfig({
+      port: 12345,
+      runtimeRole: invalidRole,
+      defaultProvider: "custom",
+      providers: { custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "upstream-secret" } },
+      apiKeys: [{ id: "key-1", name: "default", key: "ocx_persisted", createdAt: "2026-08-28T00:00:00.000Z" }],
+    });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const loaded = loadConfig();
+      const diagnostics = readConfigDiagnostics();
+      expect(runtimeRole(loaded)).toBe("standalone");
+      expect(loaded.runtimeRole).toBeUndefined();
+      expect(loaded).toMatchObject({
+        port: 12345,
+        defaultProvider: "custom",
+        providers: { custom: { baseUrl: "https://example.test/v1", apiKey: "upstream-secret" } },
+        apiKeys: [expect.objectContaining({ id: "key-1", key: "ocx_persisted" })],
+      });
+      expect(diagnostics).toMatchObject({
+        source: "file",
+        error: null,
+        warnings: [expect.stringContaining("runtimeRole ignored")],
+      });
+      expect(backupNames()).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls.flat().join(" ")).not.toContain(invalidRole);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test("malformed classifier config is normalized at load, even with subagentEffort absent (#1697)", () => {
     // normalizePersistedClaudeCode used to be reached only through a subagentEffort short-circuit,
     // so a config whose ONLY defect was elsewhere in claudeCode was never normalized. These

@@ -1,5 +1,6 @@
 import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { logsFromApiBody } from "./helpers/logs-api";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -48,7 +49,6 @@ import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../src/lib/local-provi
 import { resetCodexModelEntitlementCacheForTests } from "../src/codex/model-entitlements";
 import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
 import { resetDebugSettingsForTests, setDebugSettings } from "../src/lib/debug-settings";
-
 import { watchdogMs } from "./helpers/ci-watchdog";
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -80,6 +80,22 @@ function config(hostname?: string): OcxConfig {
       },
     },
   };
+}
+
+const REMOTE_CATALOG_BYTES = '{"models":[{"slug":"fixture/model","display_name":"Fixture Model","priority":1,"visibility":"list","base_instructions":"Fixture instructions","input_modalities":["text"]}]}';
+const REMOTE_DATA_KEY = "ocx_data_remote_catalog";
+
+function remoteCatalogConfig(keyId = "remote-key"): OcxConfig {
+  return {
+    ...config("0.0.0.0"),
+    port: 0,
+    apiKeys: [{ id: keyId, name: "remote", key: REMOTE_DATA_KEY, createdAt: "2026-08-28T00:00:00.000Z" }],
+  };
+}
+
+function writeRemoteCatalog(): void {
+  if (!isolatedCodexHome) throw new Error("isolated Codex home is not installed");
+  writeFileSync(join(isolatedCodexHome.path, "opencodex-catalog.json"), REMOTE_CATALOG_BYTES);
 }
 
 function managementHeaders(initial?: HeadersInit): Headers {
@@ -4016,6 +4032,180 @@ describe("server local API auth", () => {
     } finally {
       await server.stop(true);
       await upstream.stop(true);
+    }
+  });
+});
+
+describe("GET /v1/catalog remote data plane", () => {
+  test("management and data-plane routes return byte-identical catalog bodies", async () => {
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const server = startServer(0);
+    try {
+      const management = await fetch(new URL("/api/catalog", server.url), { headers: managementHeaders() });
+      const remote = await fetch(new URL("/v1/catalog", server.url), {
+        headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
+      });
+      const managementBytes = new Uint8Array(await management.arrayBuffer());
+      const remoteBytes = new Uint8Array(await remote.arrayBuffer());
+      expect(management.status).toBe(200);
+      expect(remote.status).toBe(200);
+      expect(remoteBytes).toEqual(managementBytes);
+      expect(new TextDecoder().decode(remoteBytes)).toBe(REMOTE_CATALOG_BYTES);
+      // Management ETag spelling is hex, per the shipped catalogEtag() in
+      // src/server/catalog-download.ts. An earlier revision of this phase used a
+      // "sha256-<base64url>" spelling from its own serializer, which no longer exists.
+      const expectedEtag = `"${createHash("sha256").update(remoteBytes).digest("hex")}"`;
+      // The bytes are identical across planes, but the caching contract is not: the
+      // management route may carry a validator because its representation does not vary by
+      // data-key identity, while this one must not. Asserting the management ETag here keeps
+      // the byte-identity claim honest without implying the remote route offers one.
+      expect(management.headers.get("etag")).toBe(expectedEtag);
+      expect(remote.headers.get("etag")).toBeNull();
+      expect(remote.headers.get("cache-control")).toBe("no-store");
+      expect(remote.headers.get("x-opencodex-key-id")).toBe("remote-key");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("admission accepts configured dedicated and bearer keys, and rejects every foreign class", async () => {
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const server = startServer(0);
+    try {
+      const cases = [
+        [{ "x-opencodex-api-key": REMOTE_DATA_KEY }, 200, "remote-key"],
+        [{ authorization: `Bearer ${REMOTE_DATA_KEY}` }, 200, "remote-key"],
+        // Accepted, matching /v1/models and the AUTH_MATRIX row this route shipped with in
+        // #809. An earlier revision of this phase rejected x-api-key here for least-privilege
+        // reasons, but this route forwards no caller credential upstream, so the header
+        // carries no extra authority — and rejecting it 401s Anthropic-SDK clients holding a
+        // perfectly valid data credential. The narrowing was a behavior regression against
+        // shipped code, not a hardening.
+        [{ "x-api-key": REMOTE_DATA_KEY }, 200, "remote-key"],
+        [{ authorization: "Bearer foreign-key" }, 401, null],
+        [{ authorization: `Bearer ${configuredAdminToken() ?? "missing-admin"}` }, 401, null],
+        [{ "x-opencodex-api-key": REMOTE_DATA_KEY, origin: "https://attacker.test" }, 403, null],
+        [{}, 401, null],
+      ] as const;
+      for (const [headers, status, keyId] of cases) {
+        const response = await fetch(new URL("/v1/catalog", server.url), { headers });
+        expect(response.status).toBe(status);
+        expect(response.headers.get("x-opencodex-key-id")).toBe(keyId);
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("environment-token and loopback admission never emit a configured key id", async () => {
+    process.env.OPENCODEX_API_AUTH_TOKEN = "environment-catalog-token";
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const remote = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/catalog", remote.url), {
+        headers: { "x-opencodex-api-key": "environment-catalog-token" },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-opencodex-key-id")).toBeNull();
+    } finally {
+      await remote.stop(true);
+    }
+
+    const loopbackConfig = remoteCatalogConfig();
+    loopbackConfig.hostname = "127.0.0.1";
+    saveConfig(loopbackConfig);
+    const loopback = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/catalog", loopback.url));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-opencodex-key-id")).toBeNull();
+    } finally {
+      await loopback.stop(true);
+    }
+  });
+
+  test("an unsafe configured key id is omitted with one id-free warning", async () => {
+    const unsafeId = "unsafe key id";
+    saveConfig(remoteCatalogConfig(unsafeId));
+    writeRemoteCatalog();
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/catalog", server.url), {
+        headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-opencodex-key-id")).toBeNull();
+      // Other subsystems (config repair, provider migration) may warn during startup;
+      // this contract is about the remote-catalog warning specifically: exactly one,
+      // and it never echoes the unsafe id.
+      const remoteCatalogWarns = warnSpy.mock.calls
+        .map(call => call.map(String).join(" "))
+        .filter(line => line.includes("[remote-catalog]"));
+      expect(remoteCatalogWarns).toHaveLength(1);
+      expect(remoteCatalogWarns[0]).not.toContain(unsafeId);
+      expect(warnSpy.mock.calls.flat().map(String).join(" ")).not.toContain(unsafeId);
+    } finally {
+      await server.stop(true);
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("no conditional request can elicit a 304, and no validator is offered to build one from", async () => {
+    // The response body varies by key identity, so a shared strong validator would let a
+    // store revalidate one identity's representation for another. The route therefore
+    // carries no ETag at all: there is nothing for a client to send back, and every
+    // If-None-Match spelling — including ones that would match a validator if one existed —
+    // gets the full body. An earlier revision of this phase asserted the opposite here.
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const server = startServer(0);
+    try {
+      const first = await fetch(new URL("/v1/catalog", server.url), {
+        headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
+      });
+      expect(first.status).toBe(200);
+      expect(first.headers.get("etag")).toBeNull();
+      expect(first.headers.get("cache-control")).toBe("no-store");
+
+      for (const validator of ['"sha256-anything"', 'W/"sha256-anything"', '"stale", "other"', "*", "malformed"]) {
+        const response = await fetch(new URL("/v1/catalog", server.url), {
+          headers: { "x-opencodex-api-key": REMOTE_DATA_KEY, "if-none-match": validator },
+        });
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe(REMOTE_CATALOG_BYTES);
+        expect(response.headers.get("etag")).toBeNull();
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("method and path matching stay exact ahead of the unknown-v1 guard", async () => {
+    saveConfig(remoteCatalogConfig());
+    writeRemoteCatalog();
+    const server = startServer(0);
+    try {
+      for (const [path, method] of [
+        ["/v1/catalog", "POST"],
+        ["/v1/catalog/", "GET"],
+        ["/v1/does-not-exist", "GET"],
+      ] as const) {
+        const response = await fetch(new URL(path, server.url), {
+          method,
+          headers: { "x-opencodex-api-key": REMOTE_DATA_KEY },
+        });
+        expect(response.status).toBe(404);
+        expect(response.headers.get("content-type")).toContain("application/json");
+        expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+        expect(response.headers.get("x-opencodex-key-id")).toBeNull();
+      }
+    } finally {
+      await server.stop(true);
     }
   });
 });
