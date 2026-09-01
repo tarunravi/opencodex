@@ -232,6 +232,46 @@ const REMOTE_CATALOG_KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const GUI_PAIRING_EXCHANGE_BODY_LIMIT = 4 * 1024;
 
 /**
+ * Read at most `limit` bytes of a request body, or refuse.
+ *
+ * Returns null the moment the body is known to exceed `limit`, without retaining the excess.
+ * `req.text()` cannot express that: it buffers to completion first, so a caller who omits
+ * Content-Length or uses chunked framing decides how much memory the process spends. That
+ * matters here because the one caller is an unauthenticated endpoint.
+ *
+ * limit+1 is the stopping point rather than limit, so a body exactly at the limit is still
+ * accepted and only a genuinely over-limit body is rejected.
+ */
+async function readBoundedRequestText(req: Request, limit: number): Promise<string | null> {
+  const body = req.body;
+  if (!body) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > limit) return null;
+      chunks.push(value);
+    }
+  } finally {
+    // Cancel rather than only releasing the lock: on the reject path the peer may still be
+    // sending, and an uncancelled body keeps that transfer alive.
+    await reader.cancel().catch(() => {});
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(joined);
+}
+
+/**
  * Name WHICH configured credential was admitted, so a multi-key operator can attribute a
  * catalog read.
  *
@@ -1812,14 +1852,25 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             : withManagementCors(new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } }), req, config);
         }
         if (req.method === "POST") {
+          // This endpoint is reachable WITHOUT a credential — that is the point of a pairing
+          // exchange — so the body limit has to hold against a caller who controls the
+          // framing. A declared Content-Length is a claim, not a bound: omit the header and
+          // `Number(null ?? "0")` is 0, send `Transfer-Encoding: chunked` and there is no
+          // header at all. Both used to pass the pre-check and land in `req.text()`, which
+          // buffers whatever arrives. The post-check then measured a string the process had
+          // already been forced to hold.
+          //
+          // So the declared length is only a cheap early reject, and the real bound is
+          // applied while reading: stop at limit+1 bytes and never accumulate more.
           const declaredLength = Number(req.headers.get("content-length") ?? "0");
           if (!Number.isFinite(declaredLength) || declaredLength > GUI_PAIRING_EXCHANGE_BODY_LIMIT) {
             return withManagementCors(Response.json({ error: "pairing exchange body too large" }, { status: 413, headers: { "Cache-Control": "no-store" } }), req, config);
           }
-          const text = await req.text();
-          if (Buffer.byteLength(text) > GUI_PAIRING_EXCHANGE_BODY_LIMIT) {
+          const bounded = await readBoundedRequestText(req, GUI_PAIRING_EXCHANGE_BODY_LIMIT);
+          if (bounded === null) {
             return withManagementCors(Response.json({ error: "pairing exchange body too large" }, { status: 413, headers: { "Cache-Control": "no-store" } }), req, config);
           }
+          const text = bounded;
           let body: unknown;
           try {
             body = JSON.parse(text);

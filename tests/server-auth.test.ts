@@ -4240,3 +4240,71 @@ describe("GET /v1/catalog remote data plane", () => {
     }
   });
 });
+
+describe("POST /opencodex-session pairing body bound", () => {
+  // This endpoint is reachable without a credential, so the body bound has to hold against a
+  // caller who controls the framing. The pre-check reads Content-Length, which the caller
+  // chooses: omit it and `Number(null ?? "0")` is 0, or send chunked and there is no header
+  // to read. Both used to pass the check and reach `req.text()`, which buffers whatever
+  // arrives — an unauthenticated caller decided how much memory the process spent.
+
+  test("a chunked body with no Content-Length is bounded rather than buffered whole", async () => {
+    saveConfig(remoteCatalogConfig());
+    const server = startServer(0);
+    try {
+      // 512 KiB against a 4 KiB limit, streamed so no Content-Length is sent. The stream
+      // reports how many chunks the server actually pulled: a bounded read stops early, an
+      // unbounded one drains all of them.
+      const chunkCount = 128;
+      const chunkBytes = 4 * 1024;
+      let pulled = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulled >= chunkCount) {
+            controller.close();
+            return;
+          }
+          pulled += 1;
+          controller.enqueue(new Uint8Array(chunkBytes).fill(0x61));
+        },
+      });
+
+      const response = await fetch(new URL("/opencodex-session", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", Origin: "http://localhost" },
+        body,
+        // Required by fetch for a streaming request body.
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
+
+      expect(response.status).toBe(413);
+      // The bound is what stopped it, not the peer running out of data.
+      expect(pulled).toBeLessThan(chunkCount);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a body exactly at the limit is still accepted for parsing", async () => {
+    saveConfig(remoteCatalogConfig());
+    const server = startServer(0);
+    try {
+      // Exactly 4096 bytes of valid JSON: the bound must reject over-limit bodies without
+      // also rejecting one that sits on the limit.
+      const filler = "a".repeat(4096 - '{"grant":""}'.length);
+      const atLimit = `{"grant":"${filler}"}`;
+      expect(Buffer.byteLength(atLimit)).toBe(4096);
+
+      const response = await fetch(new URL("/opencodex-session", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", Origin: "http://localhost" },
+        body: atLimit,
+      });
+
+      // 401, not 413: the body was read and parsed, and the grant simply does not exist.
+      expect(response.status).toBe(401);
+    } finally {
+      await server.stop(true);
+    }
+  });
+});

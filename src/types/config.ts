@@ -254,7 +254,17 @@ export interface OcxHubConfig {
 export interface OcxRemoteGuiConfig {
   /** Exact Tailscale login identities permitted to receive an automatic remote GUI session. */
   allowedTailscaleUsers?: string[];
-  /** Explicitly permit one-time pairing exchange over non-loopback HTTP. */
+  /**
+   * Retired. Once permitted a one-time pairing exchange over non-loopback plaintext HTTP.
+   *
+   * Still parsed so an existing config file keeps loading, but it grants nothing: a pairing
+   * grant now crosses loopback or authenticated HTTPS only. A persisted `true` is reported
+   * once and otherwise ignored. Kept in the type rather than deleted because the schema is
+   * strict — dropping the key outright would make an older config fail to load entirely,
+   * which is a worse outcome than ignoring one retired field.
+   *
+   * @deprecated has no effect; remove it from your config.
+   */
   allowInsecureHttp?: boolean;
 }
 

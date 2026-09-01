@@ -906,6 +906,8 @@ const remoteGuiConfigSchema = z.object({
       seen.add(user);
     }
   }).optional(),
+  // Retired (see OcxRemoteGuiConfig): accepted so an existing file still loads, ignored by
+  // the pairing path. Removing it from a strict schema would reject the whole config.
   allowInsecureHttp: z.boolean().optional(),
 }).strict();
 

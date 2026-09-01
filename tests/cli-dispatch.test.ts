@@ -2,11 +2,11 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { CLI_COMMANDS } from "../src/cli/registry";
 import { DISPATCH_ALIASES, DISPATCH_COMMANDS, dispatchCommand, resolveDispatchCommand } from "../src/cli/dispatch";
 import type { CliDispatchDeps } from "../src/cli/dispatch";
+import { runGuiCommand } from "../src/cli/gui";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../src/config";
 import { getAccountSet, removeCredential, saveCredential } from "../src/oauth/store";
-import { runGuiCommand } from "../src/cli/gui";
 
 /** Minimal fake deps. dispatchCommand only touches deps for real command
  * runners, which these tests never invoke, so an empty object is enough. */
@@ -482,6 +482,10 @@ describe("doctor refuses --json rather than printing prose as success", () => {
   test("exact --json, --json=true, and Unicode dashes all exit 2", async () => {
     for (const flag of ["--json", "--json=true", "\u2014json"]) {
       expect(await runDoctor(flag), `${JSON.stringify(flag)} must be refused`).toBe(2);
+    }
+  });
+});
+
 describe("GUI command delegation", () => {
   const config = {
     port: 10100,

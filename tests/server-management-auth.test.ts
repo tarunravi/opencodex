@@ -1022,7 +1022,11 @@ describe("management and data-plane credential separation", () => {
     )).toBeNull();
   });
 
-  test("insecure HTTP pairing is explicit and a refused exchange can be retried after opt-in", () => {
+  test("non-loopback plaintext HTTP cannot carry a pairing grant, and no opt-in re-opens it", () => {
+    // An earlier revision let this exchange succeed when `remoteGui.allowInsecureHttp` was
+    // true, and this test asserted exactly that. The flag is retired: a reusable grant on
+    // plaintext HTTP is readable by anything on the path, and the session it mints is
+    // reusable, so operator opt-in recorded a risk it could not bound.
     const config = hubConfig("http://hub.example.test");
     const state = initializeManagementAuthState(config);
     if (!state.available) throw new Error("expected management auth state");
@@ -1032,13 +1036,32 @@ describe("management and data-plane credential separation", () => {
       method: "POST",
       headers: { Host: "hub.example.test", Origin: "https://dashboard.example.test" },
     });
+
     expect(consumeGuiPairingGrant(request, { grant: created.grant }, config, state, now + 1)).toBeNull();
+    // The grant SURVIVES the refusal. Rejecting before the grant is read is what stops an
+    // attacker who strips TLS from burning every code the operator prints.
     expect(state.pairingGrants.size).toBe(1);
+
+    // The retired flag is still accepted by the schema so old configs load, and still grants
+    // nothing.
     config.remoteGui = { ...config.remoteGui, allowInsecureHttp: true };
-    expect(consumeGuiPairingGrant(request, { grant: created.grant }, config, state, now + 2)).toMatchObject({
-      issuance: "insecure-http-pairing",
+    expect(consumeGuiPairingGrant(request, { grant: created.grant }, config, state, now + 2)).toBeNull();
+    expect(state.pairingGrants.size).toBe(1);
+
+    // The same unspent grant still works over HTTPS, proving the refusal was about transport
+    // rather than the grant being invalidated.
+    const secureConfig = hubConfig("https://hub.example.test");
+    const secureState = initializeManagementAuthState(secureConfig);
+    if (!secureState.available) throw new Error("expected management auth state");
+    const secureGrant = createGuiPairingGrant("https://dashboard.example.test", secureConfig, secureState, now);
+    const secureRequest = new Request("https://hub.example.test/opencodex-session", {
+      method: "POST",
+      headers: { Host: "hub.example.test", Origin: "https://dashboard.example.test" },
     });
-    expect(state.pairingGrants.size).toBe(0);
+    expect(consumeGuiPairingGrant(secureRequest, { grant: secureGrant.grant }, secureConfig, secureState, now + 1)).toMatchObject({
+      issuance: "pairing",
+    });
+    expect(secureState.pairingGrants.size).toBe(0);
   });
 
   test("pairing grant creation is bounded by a per-state rate limit", () => {

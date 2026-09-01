@@ -12,8 +12,7 @@ import {
 export type GuiSessionIssuance =
   | "loopback"
   | "tailscale-identity"
-  | "pairing"
-  | "insecure-http-pairing";
+  | "pairing";
 
 export interface GuiSessionRecord {
   serverOrigin: string;
@@ -249,6 +248,19 @@ export function consumeGuiPairingGrant(
   now = Date.now(),
 ): GuiSessionBootstrap | null {
   if (req.method !== "POST" || hasAlternateCredential(req) || config.runtimeRole !== "hub") return null;
+  // Scheme check FIRST, before the grant is parsed or looked up.
+  //
+  // A grant is single-use, so consuming one and then refusing to mint would burn the
+  // operator's code on a request that was never going to succeed — an unauthenticated
+  // caller could strip TLS termination and spend every code the operator prints. Refusing
+  // here leaves the grant intact for a later request over a scheme that can carry it.
+  //
+  // There is no opt-in for plaintext. An earlier revision allowed non-loopback HTTP when
+  // `remoteGui.allowInsecureHttp` was true; a reusable grant on plaintext HTTP is readable
+  // by anything on the path and the session it mints is reusable, so the flag recorded a
+  // risk the operator could not bound rather than controlling one.
+  const destination = managementRequestOrigin(req, config);
+  if (!destination || !isPairingTransportPermitted(destination)) return null;
   const grant = strictPairingGrantBody(body);
   const browserOrigin = canonicalGuiBrowserOrigin(req.headers.get("Origin"));
   if (!grant || !browserOrigin) return null;
@@ -262,17 +274,29 @@ export function consumeGuiPairingGrant(
   if (browserOrigin !== record.browserOrigin) return null;
   const serverOrigin = managementRequestOrigin(req, config);
   if (serverOrigin !== record.serverOrigin) return null;
-  const serverUrl = new URL(serverOrigin);
-  let issuance: GuiSessionIssuance;
-  if (serverUrl.protocol === "https:") issuance = "pairing";
-  else if (
-    serverUrl.protocol === "http:"
-    && !isLoopbackHostname(serverUrl.hostname)
-    && config.remoteGui?.allowInsecureHttp === true
-  ) issuance = "insecure-http-pairing";
-  else return null;
+  // Re-checked against the grant's own recorded origin rather than only the request's:
+  // the two are compared just above, but this keeps the transport rule true of the value
+  // the session is actually minted from.
+  if (!isPairingTransportPermitted(record.serverOrigin)) return null;
   state.pairingGrants.delete(digest);
-  return mintSession(record.serverOrigin, record.browserOrigin, issuance, state, now);
+  return mintSession(record.serverOrigin, record.browserOrigin, "pairing", state, now);
+}
+
+/**
+ * A pairing grant may cross loopback or authenticated HTTPS, and nothing else.
+ *
+ * Loopback plaintext is admissible because the bytes never leave the machine. Non-loopback
+ * plaintext is not, and no configuration re-opens it.
+ */
+function isPairingTransportPermitted(origin: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && isLoopbackHostname(url.hostname);
 }
 
 function requestCredential(req: Request): string | null {
