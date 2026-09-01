@@ -144,7 +144,10 @@ describe("remote hub client boundary", () => {
   });
 });
 
-function runTransactionScenario(stage: "success" | "catalog" | "preflight" | "commit") {
+/** A catalog the user already had before ever connecting. */
+const PRIOR_CATALOG_BYTES = '{"models":[{"slug":"local/only-model"}]}';
+
+function runTransactionScenario(stage: "success" | "catalog" | "preflight" | "commit" | "prior-catalog") {
   const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-client-connect-home-"));
   const codexHome = mkdtempSync(join(tmpdir(), "ocx-client-connect-codex-"));
   const configPath = join(opencodexHome, "config.json");
@@ -155,6 +158,10 @@ function runTransactionScenario(stage: "success" | "catalog" | "preflight" | "co
   };
   writeFileSync(configPath, `${JSON.stringify(originalConfig, null, 2)}\n`, "utf8");
   if (stage !== "preflight") writeFileSync(join(codexHome, "config.toml"), 'model_provider = "openai"\n', "utf8");
+  // A catalog the user already had. Connect overwrites it; disconnect has to put it back.
+  if (stage === "prior-catalog") {
+    writeFileSync(join(codexHome, "opencodex-catalog.json"), PRIOR_CATALOG_BYTES, "utf8");
+  }
   if (stage === "commit") {
     const { mkdirSync } = require("node:fs") as typeof import("node:fs");
     mkdirSync(join(opencodexHome, "config-mutation.sqlite"));
@@ -207,8 +214,9 @@ function runTransactionScenario(stage: "success" | "catalog" | "preflight" | "co
         credentialZeroed: credential.every(value => value === 0),
       };
       let disconnected = null;
-      if (stage === "success" && connected) disconnected = await disconnectClient();
-      console.log(JSON.stringify({ connected, error, beforeDisconnect, artifacts, disconnected, after: readClientConnectionState(), calls }));
+      if ((stage === "success" || stage === "prior-catalog") && connected) disconnected = await disconnectClient();
+      const catalogAfter = existsSync(DEFAULT_CATALOG_PATH) ? readFileSync(DEFAULT_CATALOG_PATH, "utf8") : null;
+      console.log(JSON.stringify({ connected, error, beforeDisconnect, artifacts, disconnected, catalogAfter, after: readClientConnectionState(), calls }));
     })();
   `;
   const result = spawnSync(process.execPath, ["--eval", script], {
@@ -242,6 +250,31 @@ describe("connect transaction and offline disconnect", () => {
       expect(run.parsed.disconnected).toMatchObject({ apiKeyId: "issued-id", tokenRemoved: true, catalogRemoved: true });
       expect(run.parsed.after).toEqual({ kind: "disconnected" });
       expect(run.parsed.calls.filter((call: any) => call.method === "DELETE")).toEqual([]);
+    } finally { run.cleanup(); }
+  });
+
+  test("disconnect puts back the catalog the user had before connecting", () => {
+    // Connect overwrites whatever catalog is already on disk. Disconnect used to delete the
+    // remote one and report that native Codex state was restored, which left a user who had
+    // their own catalog with no catalog at all — the one artifact a rollback cannot
+    // reconstruct from anywhere else.
+    const run = runTransactionScenario("prior-catalog");
+    try {
+      expect(run.status).toBe(0);
+      expect(run.parsed.error).toBeNull();
+      expect(run.parsed.disconnected).toMatchObject({ catalogRestored: true, catalogRemoved: true });
+      expect(run.parsed.catalogAfter).toBe(PRIOR_CATALOG_BYTES);
+      expect(run.parsed.after).toEqual({ kind: "disconnected" });
+    } finally { run.cleanup(); }
+  });
+
+  test("disconnect removes the catalog when the user had none", () => {
+    // The other half of the same contract: `priorCatalog: ""` records "there genuinely was
+    // none", so removal IS the restoration and must not be mistaken for a lost file.
+    const run = runTransactionScenario("success");
+    try {
+      expect(run.parsed.disconnected).toMatchObject({ catalogRemoved: true, catalogRestored: false });
+      expect(run.parsed.catalogAfter).toBeNull();
     } finally { run.cleanup(); }
   });
 

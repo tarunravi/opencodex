@@ -245,6 +245,10 @@ export async function connectClient(
       protocolVersion: 1,
       connectedAt: now,
       catalogEtag: catalog.etag,
+      // Durable so disconnect — a different process — can put back whatever was here
+      // before. `priorCatalog` above is only reachable by a connect that fails and rolls
+      // back in the same run.
+      priorCatalog: priorCatalog.kind === "file" ? Buffer.from(priorCatalog.body, "utf8").toString("base64") : "",
       catalogSyncedAt: now,
     };
     commitClientConnection(connection);
@@ -340,11 +344,28 @@ export async function syncConnectedClient(
   return { catalogWritten, cacheSynced, injected, stale };
 }
 
-function removeOwnedCatalog(connection: OcxClientConnectionConfig): "removed" | "absent" | "changed" {
+/**
+ * Put the catalog back the way connect found it.
+ *
+ * Not a delete. Connect overwrites whatever catalog was already there, so removing the
+ * remote one leaves the user with nothing — and disconnect still reports that native Codex
+ * state was restored. If the connection recorded a prior catalog, it is rewritten;
+ * `priorCatalog: ""` means there genuinely was none and removal is the restoration.
+ *
+ * Still ownership-checked first: a catalog the user edited or replaced since connect is
+ * theirs, and `changed` refuses rather than overwriting it.
+ */
+function restorePriorCatalog(connection: OcxClientConnectionConfig): "removed" | "restored" | "absent" | "changed" {
   if (!existsSync(DEFAULT_CATALOG_PATH)) return "absent";
   try {
     const body = validLocalCatalog();
     if (!catalogMatchesEtag(body, connection.catalogEtag)) return "changed";
+    if (connection.priorCatalog) {
+      atomicWriteFile(DEFAULT_CATALOG_PATH, Buffer.from(connection.priorCatalog, "base64").toString("utf8"));
+      return "restored";
+    }
+    // Undefined means the connection predates this field: the pre-connect catalog was
+    // never recorded, so removal is the only honest option and matches the old behavior.
     unlinkSync(DEFAULT_CATALOG_PATH);
     return "removed";
   } catch {
@@ -354,7 +375,15 @@ function removeOwnedCatalog(connection: OcxClientConnectionConfig): "removed" | 
 
 export async function disconnectClient(
   options: { keepCatalog?: boolean } = {},
-): Promise<{ restored: boolean; tokenRemoved: boolean; catalogRemoved: boolean; apiKeyId: string }> {
+): Promise<{
+  restored: boolean;
+  tokenRemoved: boolean;
+  /** True when the catalog no longer holds remote bytes: removed outright or overwritten. */
+  catalogRemoved: boolean;
+  /** True only when a recorded pre-connect catalog was written back. */
+  catalogRestored: boolean;
+  apiKeyId: string;
+}> {
   const state = readClientConnectionState();
   if (state.kind !== "connected") throw new Error(`disconnect refused: client state is ${state.kind}`);
   const token = readServiceApiTokenState();
@@ -393,9 +422,9 @@ export async function disconnectClient(
 
   const tokenRemoval = removeServiceApiTokenFileIfOwned(state.value.tokenFingerprint);
   if (tokenRemoval === "changed") throw new Error("disconnect refused: service token changed before removal");
-  let catalogRemoval: "removed" | "absent" | "changed" = "absent";
+  let catalogRemoval: "removed" | "restored" | "absent" | "changed" = "absent";
   if (!options.keepCatalog) {
-    catalogRemoval = removeOwnedCatalog(state.value);
+    catalogRemoval = restorePriorCatalog(state.value);
     if (catalogRemoval === "changed") throw new Error("disconnect refused: catalog ownership changed");
   }
   if (clearClientConnection(state.value.apiKeyId) !== "committed") {
@@ -404,7 +433,8 @@ export async function disconnectClient(
   return {
     restored,
     tokenRemoved: tokenRemoval === "removed",
-    catalogRemoved: catalogRemoval === "removed",
+    catalogRemoved: catalogRemoval === "removed" || catalogRemoval === "restored",
+    catalogRestored: catalogRemoval === "restored",
     apiKeyId: state.value.apiKeyId,
   };
 }

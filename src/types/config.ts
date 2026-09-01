@@ -281,6 +281,16 @@ export interface OcxClientConnectionConfig {
   protocolVersion: 1;
   connectedAt: string;
   catalogEtag?: string;
+  /**
+   * The catalog that was on disk before connect overwrote it, base64-encoded, or the
+   * empty string when there was none.
+   *
+   * Durable because disconnect runs in a different process than connect: an in-memory
+   * snapshot only covers a connect that fails and rolls back on the spot. Without this,
+   * disconnect deletes the remote catalog and reports a restored native state while the
+   * user's own catalog is simply gone.
+   */
+  priorCatalog?: string;
   catalogSyncedAt?: string;
   pendingOperation?: {
     kind: "rotate";

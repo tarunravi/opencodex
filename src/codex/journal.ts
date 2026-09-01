@@ -210,10 +210,22 @@ export function restoreJournalState(): RestoreJournalResult {
   if (profileUnchanged) {
     if (journal.originalProfile !== null) {
       atomicWriteFile(CODEX_PROFILE_PATH, Buffer.from(journal.originalProfile, "base64").toString("utf-8"));
+      profileRestored = true;
     } else if (existsSync(CODEX_PROFILE_PATH)) {
-      try { unlinkSync(CODEX_PROFILE_PATH); } catch { /* ignore */ }
+      // "There was no profile before, so remove the one we generated." Claiming success
+      // without checking is how a caller ends up deleting the journal, reporting a clean
+      // restore, and leaving our profile on disk with nothing left that records it should
+      // not be there. ENOENT is the one benign outcome: the file is already gone, which is
+      // the state we wanted.
+      try {
+        unlinkSync(CODEX_PROFILE_PATH);
+        profileRestored = true;
+      } catch (error) {
+        profileRestored = (error as NodeJS.ErrnoException).code === "ENOENT";
+      }
+    } else {
+      profileRestored = true;
     }
-    profileRestored = true;
   }
   const complete = configRestored && profileRestored;
   if (complete) removeJournal();

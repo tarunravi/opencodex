@@ -652,4 +652,28 @@ describe("codex-journal", () => {
     runScript(testDir, `require("./src/codex/journal").writeJournal(); console.log("done");`);
     expect(existsSync(join(testDir, "opencodex-journal.json"))).toBe(false);
   });
+
+  test("a restore that leaves the profile behind never reports complete (source-level)", () => {
+    // "There was no profile before, so delete the one we generated." When that unlink
+    // fails, reporting success also deletes the journal — the only record that the leftover
+    // profile is ours — and disconnect then tells the user native state was restored.
+    //
+    // Source-level because the failure is not reachable from a test process: making unlink
+    // fail requires denying writes on the Codex home, and that denies the atomic config
+    // write earlier in the same function, so the call throws before the branch runs.
+    // Asserting the shape is honest about what is being checked; asserting a fabricated
+    // runtime failure would not be.
+    const source = readFileSync(join(repoRoot, "src/codex/journal.ts"), "utf8");
+    const restore = source.slice(source.indexOf("export function restoreJournalState"));
+    const body = restore.slice(0, restore.indexOf("\nexport "));
+
+    // The unlink result must decide profileRestored. The pre-fix shape set it
+    // unconditionally after a swallowed try/catch.
+    expect(body).not.toMatch(/catch \{ \/\* ignore \*\/ \}\s*\n\s*\}\s*\n\s*profileRestored = true;/);
+    // ENOENT is the one benign unlink failure: the file is already gone, which is the
+    // outcome the removal wanted.
+    expect(body).toContain('=== "ENOENT"');
+    // And completeness still gates journal deletion.
+    expect(body).toContain("if (complete) removeJournal();");
+  });
 });
