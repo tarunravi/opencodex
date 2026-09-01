@@ -352,7 +352,12 @@ const commandRunners: Record<string, CommandRunner> = {
           ? "Hub unavailable; retained and applied the last-known-good remote catalog (stale)."
           : "Remote hub catalog synchronized.");
         await handleConnectedSyncCatalogWrite(result, restartCodex, restartDesktopApp);
-        return 0;
+        // `process.exitCode` rather than a literal 0, for the same reason every other
+        // runner does it (tests/cli-transport-honesty.test.ts): the catalog-write helper
+        // drives app-server restarts, and one of those recording a failure must not be
+        // erased by the value this runner returns. It reads 0 on the ordinary path. Node
+        // types it as `number | string`; only a numeric code means anything here.
+        return typeof process.exitCode === "number" ? process.exitCode : 0;
       } catch (error) {
         console.error(`Connected sync failed without local fallback: ${error instanceof Error ? error.message : String(error)}`);
         return 1;
