@@ -2,6 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { handleAccessCommand } from "../src/cli/access";
 import { handleAgentCommand } from "../src/cli/agent";
 import { handleComboCommand } from "../src/cli/combo";
@@ -11,6 +12,7 @@ import { handleModelsRuntimeCommand } from "../src/cli/models-runtime";
 import { handleProviderRuntimeCommand } from "../src/cli/provider-runtime";
 import { providerQuotaLine } from "../src/cli/account-extended";
 import { formatAccountTable } from "../src/cli/account";
+import { handleConnectCommand } from "../src/cli/connect";
 
 type Recorded = { path: string; method: string; body: unknown };
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
@@ -514,6 +516,25 @@ describe("headless GUI parity CLI", () => {
       : undefined);
     expect(await handleAccessCommand(["key", "create", "deploy", "--json"], runtime.deps)).toBe(0);
     expect(runtime.requests[0]).toEqual({ path: "/api/keys", method: "POST", body: { name: "deploy" } });
+  });
+
+  test("remote connect status is headless and revoke refuses disconnected state before hub traffic", async () => {
+    let requests = 0;
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await handleConnectCommand(["status", "--json"], {
+        fetchImpl: async () => { requests += 1; return new Response(); },
+      })).toBe(0);
+      expect(await handleConnectCommand(["revoke", "--admin-token-stdin", "--json"], {
+        stdinImpl: Readable.from(["ocx_admin_test\n"]),
+        fetchImpl: async () => { requests += 1; return new Response(); },
+      })).toBe(1);
+      expect(requests).toBe(0);
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 
   test("Grok include edits the persisted exclusion set before apply", async () => {

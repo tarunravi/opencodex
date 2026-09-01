@@ -1,9 +1,79 @@
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
 import { getConfigDir } from "../config";
+import { atomicWriteFile } from "../config/atomic-write";
+
+const MAX_SERVICE_API_TOKEN_BYTES = 4096;
+
+export interface PersistedServiceApiToken {
+  path: string;
+  fingerprint: string;
+}
+
+export type ServiceApiTokenState =
+  | { kind: "absent" }
+  | { kind: "present"; token: string; fingerprint: string }
+  | { kind: "unsafe"; reason: string };
 
 export function serviceApiTokenFilePath(): string {
   return join(getConfigDir(), "service-api-token");
+}
+
+export function serviceApiTokenFingerprint(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+export function readServiceApiTokenState(): ServiceApiTokenState {
+  const path = serviceApiTokenFilePath();
+  if (!existsSync(path)) return { kind: "absent" };
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return { kind: "unsafe", reason: "service token path could not be inspected" };
+  }
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_SERVICE_API_TOKEN_BYTES) {
+    return { kind: "unsafe", reason: "service token path is not a bounded regular file" };
+  }
+  try {
+    const token = readFileSync(path, "utf8").trim();
+    if (!token) return { kind: "unsafe", reason: "service token file is empty" };
+    return { kind: "present", token, fingerprint: serviceApiTokenFingerprint(token) };
+  } catch {
+    return { kind: "unsafe", reason: "service token file could not be read" };
+  }
+}
+
+export function writeServiceApiTokenFile(token: string): PersistedServiceApiToken {
+  const value = token.trim();
+  if (!value || /[\r\n\0]/.test(value) || Buffer.byteLength(value) > MAX_SERVICE_API_TOKEN_BYTES) {
+    throw new Error("refusing to persist an invalid service API token");
+  }
+  const path = serviceApiTokenFilePath();
+  const existing = readServiceApiTokenState();
+  if (existing.kind !== "absent") {
+    throw new Error(existing.kind === "unsafe"
+      ? existing.reason
+      : "refusing to replace a pre-existing service API token");
+  }
+  atomicWriteFile(path, `${value}\n`);
+  return { path, fingerprint: serviceApiTokenFingerprint(value) };
+}
+
+export function removeServiceApiTokenFileIfOwned(
+  expectedFingerprint: string,
+): "removed" | "absent" | "changed" {
+  const state = readServiceApiTokenState();
+  if (state.kind === "absent") return "absent";
+  if (state.kind !== "present" || state.fingerprint !== expectedFingerprint) return "changed";
+  try {
+    unlinkSync(serviceApiTokenFilePath());
+    return "removed";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    throw new Error("owned service API token could not be removed", { cause: error });
+  }
 }
 
 /**

@@ -84,6 +84,29 @@ afterEach(() => {
 });
 
 describe("POST /api/keys", () => {
+  test("a raw pairing grant cannot authorize the key route", async () => {
+    saveConfig({
+      ...baseConfig(),
+      runtimeRole: "hub",
+      hub: { managementPublicOrigin: "https://hub.example.test" },
+    });
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/keys", server.url), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-opencodex-api-key": `ocx_pair_${"a".repeat(43)}`,
+        },
+        body: JSON.stringify({ name: "forbidden" }),
+      });
+      expect(response.status).toBe(401);
+      expect(loadConfig().apiKeys ?? []).toHaveLength(0);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("persists a key and returns the full secret exactly once", async () => {
     saveConfig(baseConfig());
     const server = startServer(0);

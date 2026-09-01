@@ -9,6 +9,7 @@ import {
   runCodexHistoryJob,
 } from "../codex/history-job";
 import { reconcileJournal } from "../codex/journal";
+import { readClientConnectionState } from "../client/state";
 import {
   codexAutoStartEnabled,
   getConfigDir,
@@ -224,7 +225,12 @@ async function findProxyOwnerBeforeJournalRecovery(
   // The probe established that the snapshotted owner is stale. Compare before
   // deleting so a concurrent start that rewrote the PID file keeps its state.
   removePidIfValueIs(pidSnapshot);
-  if (!currentExternalCodexModelProvider()) reconcileJournal();
+  if (!currentExternalCodexModelProvider()) {
+    const clientState = readClientConnectionState();
+    reconcileJournal(clientState.kind === "connected"
+      ? { activeClientApiKeyId: clientState.value.apiKeyId }
+      : undefined);
+  }
   return { live: null, pidSnapshot };
 }
 
@@ -1294,6 +1300,10 @@ async function handleStatus() {
   console.log(`   Runtime: ${status.json.paths.runtime}`);
   console.log(`   Runtime source: ${status.json.runtime.source}${status.json.runtime.overrideEnv ? ` (${status.json.runtime.overrideEnv})` : ""}`);
   console.log(`   Default provider: ${status.json.defaultProvider}`);
+  console.log(`   Remote hub: ${status.json.connection.state}${status.json.connection.serverUrl ? ` (${status.json.connection.serverUrl})` : ""}`);
+  if (status.json.connection.state === "invalid" || status.json.connection.state === "mismatched") {
+    console.log(`   ⚠️  ${status.json.connection.reason}`);
+  }
   console.log(`   Codex autostart: ${status.json.codexAutostart ? "enabled" : "disabled"}`);
   console.log(`   Restart safety: ${startupHealthSummary(status.json.startup)}`);
   console.log(`   ${formatStartupRoutingDetail(status.json.startup)}`);

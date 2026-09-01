@@ -23,6 +23,7 @@ import { stripGrokConfig } from "../grok/inject";
 import { afterCatalogWriteHandleAppServers } from "../codex/app-server-processes";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { isJsonOption, takeFlag } from "./runtime-api";
+import type { ClientConnectionState } from "../client/state";
 
 export interface CliDispatchDeps {
   args: string[];
@@ -59,6 +60,17 @@ const commandRunners: Record<string, CommandRunner> = {
     return Number(process.exitCode ?? 0);
   },
   start: async deps => {
+    const { readClientConnectionState } = await import("../client/state");
+    const clientState = readClientConnectionState();
+    await reconcileClientJournalBeforeLifecycle(clientState);
+    if (clientState.kind === "connected") {
+      console.error("Client mode does not start a local provider proxy in Remote Hub Phase 3; use 'ocx sync'.");
+      return 1;
+    }
+    if (clientState.kind === "invalid" || clientState.kind === "mismatched") {
+      console.error(`Client state is ${clientState.kind}: ${clientState.reason}`);
+      return 1;
+    }
     await deps.handleStart();
     return Number(process.exitCode ?? 0);
   },
@@ -245,6 +257,15 @@ const commandRunners: Record<string, CommandRunner> = {
     return 0;
   },
   ensure: async deps => {
+    const { readClientConnectionState } = await import("../client/state");
+    const clientState = readClientConnectionState();
+    await reconcileClientJournalBeforeLifecycle(clientState);
+    if (clientState.kind !== "disconnected") {
+      console.error(clientState.kind === "connected"
+        ? "Client mode does not start a local provider proxy; use 'ocx sync'."
+        : `Client state is ${clientState.kind}: ${clientState.reason}`);
+      return 1;
+    }
     await deps.handleEnsure();
     return Number(process.exitCode ?? 0);
   },
@@ -317,6 +338,31 @@ const commandRunners: Record<string, CommandRunner> = {
     // Separate flag on purpose: --restart-codex promises app-server-only scope,
     // and quitting the desktop app ends live conversations.
     const restartDesktopApp = syncArgs.includes("--restart-desktop-app");
+    const { readClientConnectionState } = await import("../client/state");
+    const clientState = readClientConnectionState();
+    if (clientState.kind === "invalid" || clientState.kind === "mismatched") {
+      console.error(`Client state is ${clientState.kind}: ${clientState.reason}`);
+      return 1;
+    }
+    if (clientState.kind === "connected") {
+      try {
+        const { syncConnectedClient } = await import("../client/connect");
+        const result = await syncConnectedClient({ restartCodex });
+        console.log(result.stale
+          ? "Hub unavailable; retained and applied the last-known-good remote catalog (stale)."
+          : "Remote hub catalog synchronized.");
+        await handleConnectedSyncCatalogWrite(result, restartCodex, restartDesktopApp);
+        // `process.exitCode` rather than a literal 0, for the same reason every other
+        // runner does it (tests/cli-transport-honesty.test.ts): the catalog-write helper
+        // drives app-server restarts, and one of those recording a failure must not be
+        // erased by the value this runner returns. It reads 0 on the ordinary path. Node
+        // types it as `number | string`; only a numeric code means anything here.
+        return typeof process.exitCode === "number" ? process.exitCode : 0;
+      } catch (error) {
+        console.error(`Connected sync failed without local fallback: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+      }
+    }
     const live = await deps.findLiveProxy();
     const synced = await syncModelsToCodex(
       live?.port,
@@ -371,6 +417,14 @@ const commandRunners: Record<string, CommandRunner> = {
   v2: async deps => {
     const { cmdV2 } = await import("./v2");
     return await cmdV2(deps.args.slice(1), {}, async () => (await deps.findLiveProxy())?.port);
+  },
+  connect: async deps => {
+    const { handleConnectCommand } = await import("./connect");
+    return await handleConnectCommand(deps.args.slice(1));
+  },
+  disconnect: async deps => {
+    const { handleDisconnectCommand } = await import("./connect");
+    return await handleDisconnectCommand(deps.args.slice(1));
   },
   "sync-cache": async deps => {
     const cacheArgs = deps.args.slice(1);
@@ -861,4 +915,24 @@ async function handleDesktopAppRestart(log: Pick<Console, "log" | "error">): Pro
         log.log("Codex desktop app restarted; its model picker will re-read the catalog.");
       }
   }
+}
+
+async function handleConnectedSyncCatalogWrite(
+  result: { catalogWritten: boolean; cacheSynced: boolean },
+  restartCodex: boolean,
+  restartDesktopApp: boolean,
+): Promise<void> {
+  if (!result.catalogWritten && !result.cacheSynced) return;
+  afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
+  if (restartDesktopApp) await handleDesktopAppRestart(console);
+}
+
+async function reconcileClientJournalBeforeLifecycle(
+  state: ClientConnectionState,
+): Promise<void> {
+  if (state.kind === "disconnected") return;
+  const { reconcileJournal } = await import("../codex/journal");
+  reconcileJournal(state.kind === "connected"
+    ? { activeClientApiKeyId: state.value.apiKeyId }
+    : undefined);
 }

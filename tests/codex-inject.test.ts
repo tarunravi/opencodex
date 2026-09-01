@@ -10,6 +10,7 @@ import {
   stripInjectedOpenaiBaseUrl,
   stripOpencodexConfig,
   stripRootContextWindowOverrides,
+  standaloneCodexRoutingTarget,
 } from "../src/codex/inject";
 import {
   MANAGED_AGENTS_TABLE_MARKER,
@@ -17,6 +18,32 @@ import {
 } from "../src/codex/subagent-defaults";
 
 describe("Codex config injection", () => {
+  test("standalone routing-target wrappers remain byte-compatible", () => {
+    const target = standaloneCodexRoutingTarget(10100, { hostname: "192.168.1.20" });
+    expect(buildProviderTableBlock(target, true)).toBe(
+      buildProviderTableBlock(10100, true, true, "192.168.1.20"),
+    );
+    expect(buildProfileFile(target, "/tmp/opencodex-catalog.json", true)).toBe(
+      buildProfileFile(10100, "/tmp/opencodex-catalog.json", true, true, "192.168.1.20"),
+    );
+  });
+
+  test("explicit HTTPS target emits exact provider destination and admission env", () => {
+    const target = {
+      baseUrl: "https://hub.example.test/v1",
+      requiresAdmissionToken: true,
+      tokenEnv: "OPENCODEX_API_AUTH_TOKEN" as const,
+    };
+    const block = buildProviderTableBlock(target);
+    expect(block).toContain('base_url = "https://hub.example.test/v1"');
+    expect(block).toContain('env_key = "OPENCODEX_API_AUTH_TOKEN"');
+    const loopbackLooking = buildProviderTableBlock({ ...target, baseUrl: "https://127.0.0.1/v1" });
+    expect(loopbackLooking).toContain('env_key = "OPENCODEX_API_AUTH_TOKEN"');
+    expect(() => buildProviderTableBlock({ ...target, baseUrl: "https://hub.example.test/not-v1" })).toThrow(
+      "canonical HTTP(S) /v1 URL",
+    );
+  });
+
   test("omits provider-level Responses WebSocket support by default", () => {
     const block = buildProviderTableBlock(10100);
 

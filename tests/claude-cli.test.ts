@@ -26,6 +26,32 @@ const AUTH_PRESENT = {
 };
 
 describe("ocx claude env assembly", () => {
+  test("connected target injects only the hub base and client admission token", () => {
+    const env = buildClaudeEnv(cfg(), {
+      baseUrl: "https://hub.example.test",
+      admissionToken: "ocx_data_connected",
+    }, {}, {}, AUTH_PRESENT);
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://hub.example.test");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("ocx_data_connected");
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe("1");
+  });
+
+  test("user-owned connected destination wins and cannot receive the hub token", () => {
+    const env = buildClaudeEnv(cfg(), {
+      baseUrl: "https://hub.example.test",
+      admissionToken: "ocx_data_connected",
+    }, {
+      ANTHROPIC_BASE_URL: "https://user-gateway.example.test",
+      ANTHROPIC_AUTH_TOKEN: "ocx_data_connected",
+    }, {}, {
+      ...AUTH_PRESENT,
+      preBunAnthropicSlots: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+    });
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://user-gateway.example.test");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+
   test("root skip-permissions bypass requires both the explicit flag and uid 0", () => {
     expect(shouldAllowRootSkipPermissions(["--dangerously-skip-permissions"], () => 0)).toBe(true);
     expect(shouldAllowRootSkipPermissions([], () => 0)).toBe(false);

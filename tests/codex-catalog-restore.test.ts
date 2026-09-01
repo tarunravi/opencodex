@@ -38,6 +38,46 @@ describe("Codex catalog restore", () => {
     if (existsSync(opencodexHome)) rmSync(opencodexHome, { recursive: true, force: true });
   });
 
+  test("version-1 process journals restore, while matching client ownership is durable", () => {
+    const configPath = join(codexHome, "config.toml");
+    const journalPath = join(codexHome, "opencodex-journal.json");
+    const original = '# original\nmodel_provider = "openai"\n';
+    const injected = '# injected\nmodel_provider = "opencodex"\n';
+    writeFileSync(configPath, injected);
+    writeFileSync(journalPath, JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from(original).toString("base64"),
+      originalProfile: null,
+      pid: 999_999,
+      timestamp: new Date().toISOString(),
+    }));
+    const legacy = runScript(codexHome, opencodexHome, `
+      const { reconcileJournal } = require("./src/codex/journal");
+      console.log(JSON.stringify({ restored: reconcileJournal() }));
+    `);
+    expect(legacy.status).toBe(0);
+    expect(JSON.parse(legacy.stdout).restored).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+
+    writeFileSync(configPath, injected);
+    writeFileSync(journalPath, JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from(original).toString("base64"),
+      originalProfile: null,
+      owner: { kind: "client", apiKeyId: "client-key-1" },
+      pid: 999_999,
+      timestamp: new Date().toISOString(),
+    }));
+    const client = runScript(codexHome, opencodexHome, `
+      const { reconcileJournal } = require("./src/codex/journal");
+      console.log(JSON.stringify({ restored: reconcileJournal({ activeClientApiKeyId: "client-key-1" }) }));
+    `);
+    expect(client.status).toBe(0);
+    expect(JSON.parse(client.stdout).restored).toBe(false);
+    expect(readFileSync(configPath, "utf8")).toBe(injected);
+    expect(existsSync(journalPath)).toBe(true);
+  });
+
   // spawnSync(bun --eval) under `bun test --isolate` on Windows can exceed the
   // default 5s case budget when the runner is under load (seen at ~5.4s on GHA).
   test("drops routed entries without overwriting user-added native entries", () => {

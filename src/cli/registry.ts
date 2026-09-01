@@ -96,6 +96,21 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   { name: "ensure", usage: "ocx ensure", summary: "Ensure the proxy is running and Codex config/cache are current." },
   {
+    name: "connect",
+    usage: "ocx connect <url> [--management-url <url>] (--pairing-code-stdin | --admin-token-stdin) [--clients codex,claude] [--management-transport direct|relay] [--allow-insecure-http] [--no-sync]",
+    summary: "Connect this machine to a remote OpenCodex hub without persisting the one-time authority.",
+    details: [
+      "Status: ocx connect status [--json]",
+      "Revoke while connected: ocx connect revoke --admin-token-stdin [--json]",
+      "Credentials are accepted only through stdin; argv and environment credential forms are not supported.",
+    ],
+  },
+  {
+    name: "disconnect",
+    usage: "ocx disconnect [--keep-catalog] [--json]",
+    summary: "Restore local client state offline and clear the remote-hub connection.",
+  },
+  {
     name: "sync",
     usage: "ocx sync [--restart-codex] [--restart-desktop-app]",
     summary: "Fetch provider models and inject them into Codex config.",

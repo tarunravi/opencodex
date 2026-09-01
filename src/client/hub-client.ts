@@ -1,0 +1,301 @@
+import { MAX_REMOTE_CATALOG_BYTES } from "../server/catalog-download";
+import {
+  checkRemoteProtocolCompatibility,
+  parseRemoteReadyMetadata,
+  type RemoteReadyMetadata,
+} from "../remote/protocol";
+
+const READY_BODY_LIMIT = 64 * 1024;
+const MANAGEMENT_BODY_LIMIT = 128 * 1024;
+const DEFAULT_TIMEOUT_MS = 5_000;
+
+export type OneTimeConnectCredential =
+  | { kind: "admin"; value: Uint8Array }
+  | { kind: "pairing-grant"; value: Uint8Array };
+
+export interface ConnectGuiSession {
+  token: string;
+  csrfToken: string;
+  browserOrigin: string;
+  serverOrigin: string;
+}
+
+export interface IssuedClientKey {
+  id: string;
+  key: string;
+  createdAt: string;
+  name: string;
+}
+
+export class HubClientError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status?: number,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "HubClientError";
+  }
+}
+
+function credentialString(value: Uint8Array): string {
+  const decoded = new TextDecoder("utf-8", { fatal: true }).decode(value).trim();
+  if (!decoded || /[\r\n\0]/.test(decoded) || value.byteLength > 4096) {
+    throw new HubClientError("credential_invalid", "Connect credential is invalid");
+  }
+  return decoded;
+}
+
+function safeTimeout(timeoutMs: number | undefined): number {
+  return typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.min(Math.floor(timeoutMs), 120_000)
+    : DEFAULT_TIMEOUT_MS;
+}
+
+async function fetchBounded(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  timeoutMs: number | undefined,
+): Promise<Response> {
+  try {
+    const response = await fetchImpl(url, {
+      ...init,
+      redirect: "manual",
+      signal: AbortSignal.timeout(safeTimeout(timeoutMs)),
+    });
+    if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+      throw new HubClientError("redirect_refused", "Hub request redirect was refused", response.status);
+    }
+    return response;
+  } catch (error) {
+    if (error instanceof HubClientError) throw error;
+    throw new HubClientError("unreachable", "Hub request did not complete", undefined, { cause: error });
+  }
+}
+
+async function boundedText(response: Response, maxBytes: number): Promise<string> {
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new HubClientError("body_too_large", "Hub response exceeded the allowed size", response.status);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > maxBytes) {
+    throw new HubClientError("body_too_large", "Hub response exceeded the allowed size", response.status);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw new HubClientError("body_invalid", "Hub response was not valid UTF-8", response.status, { cause: error });
+  }
+}
+
+function parseJson(text: string, code: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new HubClientError(code, "Hub returned malformed JSON", undefined, { cause: error });
+  }
+}
+
+export function normalizeHubOrigin(input: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(input);
+  } catch {
+    throw new HubClientError("url_invalid", "Hub URL must be an absolute HTTP(S) URL");
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+    || (parsed.pathname !== "/" && parsed.pathname !== "/v1" && parsed.pathname !== "/v1/")
+  ) {
+    throw new HubClientError(
+      "url_invalid",
+      "Hub URL must be an HTTP(S) origin without credentials, query, fragment, or non-/v1 path",
+    );
+  }
+  return parsed.origin;
+}
+
+export async function fetchHubReady(
+  serverUrl: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<{ status: "ready" | "pending" | "failed"; metadata: RemoteReadyMetadata }> {
+  const origin = normalizeHubOrigin(serverUrl);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/readyz`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  }, options.timeoutMs);
+  const body = parseJson(await boundedText(response, READY_BODY_LIMIT), "ready_invalid");
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HubClientError("ready_invalid", "Hub readiness response was invalid", response.status);
+  }
+  const raw = body as Record<string, unknown>;
+  const status = raw.status;
+  if (status !== "ready" && status !== "pending" && status !== "failed") {
+    throw new HubClientError("ready_invalid", "Hub readiness status was invalid", response.status);
+  }
+  const metadata = parseRemoteReadyMetadata(raw);
+  const compatibility = checkRemoteProtocolCompatibility(raw);
+  if (!metadata || !compatibility.ok) {
+    throw new HubClientError(
+      compatibility.ok ? "ready_invalid" : compatibility.reason,
+      compatibility.ok ? "Hub readiness metadata was invalid" : compatibility.message,
+      response.status,
+    );
+  }
+  if ((status === "ready" && response.status !== 200) || (status !== "ready" && response.status !== 503)) {
+    throw new HubClientError("ready_invalid", "Hub readiness HTTP status did not match its state", response.status);
+  }
+  return { status, metadata };
+}
+
+function htmlMeta(html: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`<meta\\s+name=["']${escaped}["']\\s+content=["']([^"']*)["']`, "i").exec(html);
+  return match?.[1]
+    ?.replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&") ?? null;
+}
+
+export async function exchangeConnectPairingGrant(
+  managementUrl: string,
+  browserOrigin: string,
+  grant: Uint8Array,
+  options: { allowInsecureHttp?: boolean; timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<ConnectGuiSession> {
+  const origin = normalizeHubOrigin(managementUrl);
+  const browser = normalizeHubOrigin(browserOrigin);
+  if (new URL(origin).protocol !== "https:" && options.allowInsecureHttp !== true) {
+    throw new HubClientError("insecure_http_refused", "Pairing over HTTP requires --allow-insecure-http");
+  }
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/opencodex-session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: browser, Accept: "text/html" },
+    body: JSON.stringify({ grant: credentialString(grant) }),
+  }, options.timeoutMs);
+  if (!response.ok) throw new HubClientError("pairing_refused", "Hub pairing grant was refused", response.status);
+  const html = await boundedText(response, MANAGEMENT_BODY_LIMIT);
+  const session: ConnectGuiSession = {
+    token: htmlMeta(html, "opencodex-session-token") ?? "",
+    csrfToken: htmlMeta(html, "opencodex-session-csrf") ?? "",
+    browserOrigin: htmlMeta(html, "opencodex-session-origin") ?? "",
+    serverOrigin: htmlMeta(html, "opencodex-session-server-origin") ?? "",
+  };
+  if (!session.token || !session.csrfToken || session.browserOrigin !== browser || session.serverOrigin !== origin) {
+    throw new HubClientError("pairing_invalid", "Hub pairing session response was invalid", response.status);
+  }
+  return session;
+}
+
+function parseIssuedClientKey(value: unknown): IssuedClientKey | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.id !== "string" || !raw.id || raw.id.length > 256
+    || typeof raw.name !== "string" || !raw.name || raw.name.length > 80
+    || typeof raw.key !== "string" || !/^ocx_data_[0-9a-f]{40}$/.test(raw.key)
+    || typeof raw.createdAt !== "string" || Number.isNaN(Date.parse(raw.createdAt))
+  ) return null;
+  return { id: raw.id, name: raw.name, key: raw.key, createdAt: raw.createdAt };
+}
+
+export async function issueClientKey(
+  managementUrl: string,
+  credential:
+    | { kind: "admin"; value: Uint8Array }
+    | { kind: "gui-session"; value: ConnectGuiSession },
+  name: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<IssuedClientKey> {
+  const origin = normalizeHubOrigin(managementUrl);
+  if (!name.trim() || name.length > 80 || /[\x00-\x1f\x7f]/.test(name)) {
+    throw new HubClientError("key_name_invalid", "Client key name is invalid");
+  }
+  if (credential.kind === "admin" && new URL(origin).protocol !== "https:") {
+    throw new HubClientError("admin_http_refused", "Admin credentials may be sent only over HTTPS");
+  }
+  const headers = new Headers({ "Content-Type": "application/json", Accept: "application/json" });
+  if (credential.kind === "admin") {
+    headers.set("x-opencodex-api-key", credentialString(credential.value));
+  } else {
+    headers.set("x-opencodex-api-key", credential.value.token);
+    headers.set("Origin", credential.value.browserOrigin);
+    headers.set("X-OpenCodex-GUI-Origin", credential.value.browserOrigin);
+    headers.set("X-OpenCodex-CSRF-Token", credential.value.csrfToken);
+  }
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/api/keys`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name: name.trim() }),
+  }, options.timeoutMs);
+  if (!response.ok) {
+    throw new HubClientError(`key_issue_http_${response.status}`, `Hub refused client key issuance (${response.status})`, response.status);
+  }
+  const issued = parseIssuedClientKey(parseJson(
+    await boundedText(response, MANAGEMENT_BODY_LIMIT),
+    "key_issue_invalid",
+  ));
+  if (!issued) throw new HubClientError("key_issue_invalid", "Hub returned an invalid client key response", response.status);
+  return issued;
+}
+
+export async function revokeClientKey(
+  managementUrl: string,
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+  id: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<void> {
+  const origin = normalizeHubOrigin(managementUrl);
+  if (!id || id.length > 256) throw new HubClientError("key_id_invalid", "Client key id is invalid");
+  if (credential.kind === "admin" && new URL(origin).protocol !== "https:") {
+    throw new HubClientError("admin_http_refused", "Admin credentials may be sent only over HTTPS");
+  }
+  const headers = new Headers({ "Content-Type": "application/json", Accept: "application/json" });
+  if (credential.kind === "admin") headers.set("x-opencodex-api-key", credentialString(credential.value));
+  else {
+    headers.set("x-opencodex-api-key", credential.value.token);
+    headers.set("Origin", credential.value.browserOrigin);
+    headers.set("X-OpenCodex-GUI-Origin", credential.value.browserOrigin);
+    headers.set("X-OpenCodex-CSRF-Token", credential.value.csrfToken);
+  }
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/api/keys`, {
+    method: "DELETE",
+    headers,
+    body: JSON.stringify({ id }),
+  }, options.timeoutMs);
+  if (!response.ok) throw new HubClientError("key_revoke_failed", `Hub refused key revocation (${response.status})`, response.status);
+}
+
+export async function downloadClientCatalog(
+  serverUrl: string,
+  admissionToken: string,
+  options: { etag?: string; timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch } = {},
+): Promise<{ kind: "fresh"; body: string; etag?: string } | { kind: "not-modified" }> {
+  const origin = normalizeHubOrigin(serverUrl);
+  const headers = new Headers({ Accept: "application/json", "x-opencodex-api-key": admissionToken });
+  if (options.etag) headers.set("If-None-Match", options.etag);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/v1/catalog`, {
+    method: "GET",
+    headers,
+  }, options.timeoutMs);
+  if (response.status === 304) return { kind: "not-modified" };
+  if (!response.ok) {
+    const code = response.status === 401 ? "catalog_unauthorized" : `catalog_http_${response.status}`;
+    throw new HubClientError(code, `Hub catalog request failed (${response.status})`, response.status);
+  }
+  const body = await boundedText(response, options.maxBytes ?? MAX_REMOTE_CATALOG_BYTES);
+  const parsed = parseJson(body, "catalog_invalid");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new HubClientError("catalog_invalid", "Hub catalog response was invalid", response.status);
+  }
+  const etag = response.headers.get("etag")?.trim() || undefined;
+  return { kind: "fresh", body, ...(etag ? { etag } : {}) };
+}

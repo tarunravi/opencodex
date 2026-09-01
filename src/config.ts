@@ -911,6 +911,48 @@ const remoteGuiConfigSchema = z.object({
   allowInsecureHttp: z.boolean().optional(),
 }).strict();
 
+const connectedClientIdSchema = z.enum(["codex", "claude"]);
+const clientTimestampSchema = z.string().datetime({ offset: true });
+const clientOriginSchema = z.string().transform((value, ctx) => {
+  const origin = canonicalHttpOrigin(value);
+  if (!origin) {
+    ctx.addIssue({ code: "custom", message: "must be a canonical http(s) origin without credentials, path, query, or fragment" });
+    return z.NEVER;
+  }
+  return origin;
+});
+const clientConnectionSchema = z.object({
+  serverUrl: clientOriginSchema,
+  managementUrl: clientOriginSchema,
+  managementTransport: z.enum(["direct", "relay"]),
+  selectedClients: z.array(connectedClientIdSchema).min(1).max(2).superRefine((clients, ctx) => {
+    if (new Set(clients).size !== clients.length) {
+      ctx.addIssue({ code: "custom", message: "must contain unique client ids" });
+    }
+  }),
+  tokenEnv: z.literal("OPENCODEX_API_AUTH_TOKEN"),
+  apiKeyId: z.string().trim().min(1).max(256),
+  tokenFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  protocolVersion: z.literal(1),
+  connectedAt: clientTimestampSchema,
+  catalogEtag: z.string().min(1).max(512).optional(),
+  // base64 of the pre-connect catalog, or "" for "there was none". Bounded above the
+  // catalog size cap so a legitimate snapshot round-trips.
+  priorCatalog: z.string().max(64 * 1024 * 1024).optional(),
+  catalogSyncedAt: clientTimestampSchema.optional(),
+  pendingOperation: z.object({
+    kind: z.literal("rotate"),
+    rotationId: z.string().trim().min(1).max(256),
+    newKeyIssuedAt: clientTimestampSchema,
+    oldKeyBackupPath: z.string().min(1),
+  }).strict().superRefine((operation, ctx) => {
+    const expected = join(getConfigDir(), "service-api-token.prev");
+    if (operation.oldKeyBackupPath !== expected) {
+      ctx.addIssue({ code: "custom", path: ["oldKeyBackupPath"], message: `must equal ${expected}` });
+    }
+  }).optional(),
+}).strict();
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   // A malformed hand edit must disable only remote-role behavior, not discard
@@ -920,6 +962,9 @@ const configSchema = z.object({
   // candidates are rejected explicitly by remoteGuiConfigError below.
   hub: hubConfigSchema.optional().catch(undefined),
   remoteGui: remoteGuiConfigSchema.optional().catch(undefined),
+  // A malformed present client block must remain diagnosable from raw config and
+  // fail closed through src/client/state.ts; unrelated provider state still loads.
+  client: clientConnectionSchema.optional().catch(undefined),
   managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
   // Invalid hand edits disable only this opt-in circuit. Live writes remain strict.
   upstreamHostCircuitThreshold: z.number().int()
@@ -1788,6 +1833,15 @@ function malformedOptionalRemoteBlockWarning(
   return `${key}${field ? `.${field}` : ""} ignored: invalid remote GUI configuration`;
 }
 
+function malformedClientConnectionWarning(rawParsed: unknown): string | null {
+  const raw = rawConfigRecord(rawParsed);
+  if (!raw || !Object.hasOwn(raw, "client") || raw.client === undefined) return null;
+  const result = clientConnectionSchema.safeParse(raw.client);
+  if (result.success) return null;
+  const field = result.error.issues[0]?.path.join(".");
+  return `client${field ? `.${field}` : ""} invalid: remote client mode is disabled until config.json is repaired`;
+}
+
 function warnDegradedOptionalRemoteBlocks(rawParsed: unknown): void {
   for (const key of ["hub", "remoteGui"] as const) {
     const warning = malformedOptionalRemoteBlockWarning(rawParsed, key);
@@ -2104,6 +2158,8 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   if (hubWarning) warnings.push(hubWarning);
   const remoteGuiWarning = malformedOptionalRemoteBlockWarning(rawParsed, "remoteGui");
   if (remoteGuiWarning) warnings.push(remoteGuiWarning);
+  const clientWarning = malformedClientConnectionWarning(rawParsed);
+  if (clientWarning) warnings.push(clientWarning);
   if (syncDisabledReason) {
     warnings.push(`syncCodexSubagentDefaults ignored: ${syncDisabledReason}`);
   }
@@ -2215,6 +2271,29 @@ function remoteGuiConfigError(value: unknown): string | null {
     const issue = result.error.issues[0];
     const field = issue?.path.join(".");
     return `schema_invalid: ${key}${field ? `.${field}` : ""}: ${issue?.message ?? "invalid configuration"}`;
+  }
+  return null;
+}
+
+function clientConnectionConfigError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "client") || raw.client === undefined) return null;
+  const result = clientConnectionSchema.safeParse(raw.client);
+  if (result.success) return null;
+  const issue = result.error.issues[0];
+  const field = issue?.path.join(".");
+  return `schema_invalid: client${field ? `.${field}` : ""}: ${issue?.message ?? "invalid client connection"}`;
+}
+
+function clientRolePairError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw) return null;
+  const hasClient = Object.hasOwn(raw, "client") && raw.client !== undefined;
+  if (raw.runtimeRole === "client" && !hasClient) {
+    return "schema_invalid: runtimeRole client requires a complete client connection";
+  }
+  if (hasClient && raw.runtimeRole !== "client") {
+    return "schema_invalid: client connection requires runtimeRole client";
   }
   return null;
 }
@@ -2338,6 +2417,8 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
     ?? oauthOpenBrowserError(value)
     ?? runtimeRoleError(value)
     ?? remoteGuiConfigError(value)
+    ?? clientConnectionConfigError(value)
+    ?? clientRolePairError(value)
     ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
@@ -2690,6 +2771,9 @@ export const withExpectedConfigGenerationSync: WithExpectedConfigGenerationSync 
  */
 function persistConfigUnlocked(config: OcxConfig): boolean {
   const configPath = getConfigPath();
+  const rawBeforeWrite = readRawConfigJson();
+  const clientPersistenceError = failClosedClientPersistenceError(rawBeforeWrite, config);
+  if (clientPersistenceError) throw new Error(clientPersistenceError);
   // External editors can add provider rows the live config deliberately does
   // not route with yet; merge them at the serialization boundary so an
   // unrelated in-process save cannot erase the provider or its overlay.
@@ -2817,13 +2901,38 @@ export function mutatePersistedConfig<T>(
 
       const projected = projectCustomModelCatalogMigration(
         commitBase.diagnostics.config,
-        confirmedConfig,
+        projectConfigRebaseProvenance(confirmedConfig),
       );
       if (persistConfigUnlocked(projected)) bumpGenerationForCooperatingConfigWrite();
       return { status: "committed", value: confirmed.value };
     }
     return { status: "unavailable", reason: "conflict" };
   });
+}
+
+function failClosedClientPersistenceError(
+  raw: Record<string, unknown> | undefined,
+  candidate: OcxConfig,
+): string | null {
+  if (!raw) return null;
+  const rawHasClient = Object.hasOwn(raw, "client") && raw.client !== undefined;
+  const rawRole = raw.runtimeRole;
+  const rawRoleValid = rawRole === undefined
+    || rawRole === "standalone"
+    || rawRole === "hub"
+    || rawRole === "client";
+  const rawClientValid = !rawHasClient || clientConnectionSchema.safeParse(raw.client).success;
+  const rawPairValid = rawRoleValid
+    && ((rawRole === "client" && rawHasClient && rawClientValid)
+      || (rawRole !== "client" && !rawHasClient));
+  if (rawPairValid) return null;
+
+  const candidateValid = candidate.runtimeRole === "client"
+    && clientConnectionSchema.safeParse(candidate.client).success;
+  const deletions = configRebaseDeletionKeys(candidate);
+  const explicitClear = deletions.has("client") && deletions.has("runtimeRole");
+  if (candidateValid || explicitClear) return null;
+  return "config write refused: malformed or mismatched remote client state must be repaired or explicitly cleared";
 }
 
 export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolean {

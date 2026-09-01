@@ -138,6 +138,20 @@ describe("CLI subcommand help", () => {
     expect(result.stdout).toContain("must not be persisted");
   });
 
+  test("connect help exposes stdin-only credentials and offline disconnect", () => {
+    const connect = runCli(["help", "connect"]);
+    expectSpawnFinished(connect, "ocx help connect");
+    expect(connect.status).toBe(0);
+    expect(connect.stdout).toContain("--pairing-code-stdin");
+    expect(connect.stdout).toContain("--admin-token-stdin");
+    expect(connect.stdout).not.toContain("--admin-token <");
+
+    const disconnect = runCli(["help", "disconnect"]);
+    expectSpawnFinished(disconnect, "ocx help disconnect");
+    expect(disconnect.status).toBe(0);
+    expect(disconnect.stdout).toContain("--keep-catalog");
+  });
+
   test("unknown command with help flag remains an error", () => {
     const result = runCli(["foobar", "--help"]);
     expectSpawnFinished(result, "ocx foobar --help");

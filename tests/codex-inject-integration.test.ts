@@ -61,6 +61,55 @@ describe("injectCodexConfig integration (Design B)", () => {
     rmSync(ocxHome, { recursive: true, force: true });
   });
 
+  test("remote target validate-only writes nothing; commit journals client ownership and restores exact preimage", () => {
+    const original = '# remote baseline\nmodel_provider = "openai"\n';
+    writeFileSync(join(codexHome, "config.toml"), original, "utf8");
+    const script = `
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const { injectCodexConfig } = require("./src/codex/inject");
+      const { journalOwner, restoreJournalState } = require("./src/codex/journal");
+      const target = { baseUrl: "https://hub.example.test/v1", requiresAdmissionToken: true, tokenEnv: "OPENCODEX_API_AUTH_TOKEN" };
+      (async () => {
+        const configPath = path.join(process.env.CODEX_HOME, "config.toml");
+        const journalPath = path.join(process.env.CODEX_HOME, "opencodex-journal.json");
+        const before = fs.readFileSync(configPath, "utf8");
+        const preflight = await injectCodexConfig(10100, { syncResumeHistory: false }, {
+          validateOnly: true, routingTarget: target, catalogPath: null,
+          journalOwner: { kind: "client", apiKeyId: "client-key-1" },
+        });
+        const afterPreflight = fs.readFileSync(configPath, "utf8");
+        const journalAfterPreflight = fs.existsSync(journalPath);
+        const committed = await injectCodexConfig(10100, { syncResumeHistory: false }, {
+          routingTarget: target, catalogPath: null,
+          journalOwner: { kind: "client", apiKeyId: "client-key-1" },
+        });
+        const injected = fs.readFileSync(configPath, "utf8");
+        const owner = journalOwner();
+        const restored = restoreJournalState();
+        console.log(JSON.stringify({ preflight, committed, before, afterPreflight, journalAfterPreflight, injected, owner, restored, final: fs.readFileSync(configPath, "utf8") }));
+      })();
+    `;
+    const result = spawnSync(process.execPath, ["--eval", script], {
+      cwd: repoRoot,
+      env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome },
+      encoding: "utf8",
+      timeout: SPAWN_BUDGET_MS - 5_000,
+    });
+    expect(result.status).toBe(0);
+    const value = JSON.parse(result.stdout.trim());
+    expect(value.preflight.success).toBe(true);
+    expect(value.before).toBe(original);
+    expect(value.afterPreflight).toBe(original);
+    expect(value.journalAfterPreflight).toBe(false);
+    expect(value.committed.success).toBe(true);
+    expect(value.injected).toContain('base_url = "https://hub.example.test/v1"');
+    expect(value.injected).toContain('env_key = "OPENCODEX_API_AUTH_TOKEN"');
+    expect(value.owner).toEqual({ kind: "client", apiKeyId: "client-key-1" });
+    expect(value.restored.complete).toBe(true);
+    expect(value.final).toBe(original);
+  });
+
   test("upgrade path: a legacy-injected config converts to the Design B form in one inject", () => {
     writeFileSync(join(codexHome, "config.toml"), [
       'model_provider = "opencodex"',

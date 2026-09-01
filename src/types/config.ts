@@ -268,6 +268,38 @@ export interface OcxRemoteGuiConfig {
   allowInsecureHttp?: boolean;
 }
 
+export type OcxConnectedClientId = "codex" | "claude";
+
+export interface OcxClientConnectionConfig {
+  serverUrl: string;
+  managementUrl: string;
+  managementTransport: "direct" | "relay";
+  selectedClients: OcxConnectedClientId[];
+  tokenEnv: "OPENCODEX_API_AUTH_TOKEN";
+  apiKeyId: string;
+  tokenFingerprint: string;
+  protocolVersion: 1;
+  connectedAt: string;
+  catalogEtag?: string;
+  /**
+   * The catalog that was on disk before connect overwrote it, base64-encoded, or the
+   * empty string when there was none.
+   *
+   * Durable because disconnect runs in a different process than connect: an in-memory
+   * snapshot only covers a connect that fails and rolls back on the spot. Without this,
+   * disconnect deletes the remote catalog and reports a restored native state while the
+   * user's own catalog is simply gone.
+   */
+  priorCatalog?: string;
+  catalogSyncedAt?: string;
+  pendingOperation?: {
+    kind: "rotate";
+    rotationId: string;
+    newKeyIssuedAt: string;
+    oldKeyBackupPath: string;
+  };
+}
+
 export interface OcxConfig {
   port: number;
   /** Runtime topology role. Absence preserves the historical standalone behavior. */
@@ -276,6 +308,8 @@ export interface OcxConfig {
   hub?: OcxHubConfig;
   /** Opt-in remote dashboard issuance policy. Presence is inert outside the hub role. */
   remoteGui?: OcxRemoteGuiConfig;
+  /** Remote-hub client state. The admission secret is stored only in service-api-token. */
+  client?: OcxClientConnectionConfig;
   /** Opt in to one identical-turn retry when a Responses completion has no text or tool call. */
   emptyCompletionRetry?: boolean;
   /**
