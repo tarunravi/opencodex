@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -7,14 +7,30 @@ import { pathToFileURL } from "node:url";
 import * as serviceModule from "../src/service";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsSchtasksCreateArgsForXml, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, deriveWindowsServiceDiagnosticForCurrentUser, installFreshWindowsSchedulerSafely, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceArgs, parseServiceInstallState, planServiceCommand, prepareServiceInstall, probeServiceInstallation, readWindowsSchedulerXmlState, registerFreshWindowsSchedulerTask, removeNativeWindowsServiceForScheduler, repairService, resolveServiceListenPort, runLaunchctl, selectServiceSubcommand, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, stableLauncherEntry, systemdNeedsDaemonReload, systemdServiceInstallCleanupOps, uninstallSystemd, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsSchtasksCreateArgsForXml, buildWindowsServiceScript, buildWindowsTaskXml as buildWindowsTaskXmlProduction, buildWindowsTaskXmlDocument, deriveWindowsServiceDiagnostic, deriveWindowsServiceDiagnosticForCurrentUser, installFreshWindowsSchedulerSafely, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceArgs, parseServiceInstallState, planServiceCommand, prepareServiceInstall, probeServiceInstallation, readWindowsSchedulerXmlState, registerFreshWindowsSchedulerTask, removeNativeWindowsServiceForScheduler, repairService, reportServiceServing, resolveServiceListenPort, runLaunchctl, selectServiceSubcommand, SERVICE_INSTALL_HEALTH_MS, SERVICE_INSTALL_HEALTH_WINDOWS_MS, serviceInstallHealthMs, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, stableLauncherEntry, systemdNeedsDaemonReload, systemdServiceInstallCleanupOps, uninstallSystemd, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy as windowsTaskRegistrationHealthyProduction } from "../src/service";
 import type { ServiceDiagnostic } from "../src/service";
 import { definitionCarriesCredential, resolvedProxyEnv, writeServiceDefinitionFile } from "../src/service";
 import { buildWinswXml } from "../src/lib/winsw";
 import { CONFIG_OWNER_FILE, CONFIG_UNINSTALL_MANIFEST, recordOwnedConfigPath, removeOwnedConfigState } from "../src/lib/config-ownership";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
 import { WindowsSchtasksError } from "../src/lib/windows-elevation";
+import { resolveCurrentWindowsPrincipal, setWindowsPrincipalRunnerForTests } from "../src/lib/windows-user-principal";
 import type { OcxConfig } from "../src/types";
+
+const TEST_WINDOWS_TASK_SID = "S-1-5-21-111-222-333-1001";
+setWindowsPrincipalRunnerForTests(() => ({
+  success: true,
+  exitCode: 0,
+  timedOut: false,
+  stdout: `${TEST_WINDOWS_TASK_SID}\nMACHINE\\tester\n`,
+}));
+resolveCurrentWindowsPrincipal(1_000);
+afterAll(() => { setWindowsPrincipalRunnerForTests(null); });
+
+const buildWindowsTaskXml = (...args: Parameters<typeof buildWindowsTaskXmlProduction>) =>
+  buildWindowsTaskXmlProduction(args[0], args[1], args[2], args[3] ?? TEST_WINDOWS_TASK_SID);
+const windowsTaskRegistrationHealthy = (...args: Parameters<typeof windowsTaskRegistrationHealthyProduction>) =>
+  windowsTaskRegistrationHealthyProduction(args[0], args[1], args[2], args[3] === undefined ? TEST_WINDOWS_TASK_SID : args[3]);
 
 const TEST_DIR = join(import.meta.dir, ".tmp-service-test");
 const previousOpenCodexHome = process.env.OPENCODEX_HOME;
@@ -489,6 +505,52 @@ describe("Windows service task", () => {
   });
 
   /**
+   * #3064: `schtasks /query /xml` converts the document through the console code
+   * page before the bytes exist, so a profile named outside that page comes back
+   * with substitution characters. An exact comparison rejected a registration this
+   * process had just created correctly, and `ocx service install` rolled it back.
+   *
+   * The tolerance has to stay narrow enough that a MANGLED path still cannot match
+   * a DIFFERENT account's path. A wildcard as wide as `[^\\/]*` leaves a fully
+   * non-ASCII segment with no anchors at all, so `...\\김병준\\...` would match
+   * `...\\Admin\\...` and this process would adopt another account's task.
+   */
+  describe("a scheduler path the console code page could not carry", () => {
+    const wscript = "C:\\Windows\\System32\\wscript.exe";
+    const launcher = "C:\\Users\\김병준\\.opencodex\\service-launcher.vbs";
+    const healthy = (reportedLauncher: string, expectedLauncher = launcher) =>
+      windowsTaskRegistrationHealthy(
+        buildWindowsTaskXml("ignored.cmd", reportedLauncher)
+          .replace(/<Command>.*?<\/Command>/, `<Command>${wscript}</Command>`),
+        wscript,
+        expectedLauncher,
+      );
+
+    test.each([
+      ["question marks, one per character", "C:\\Users\\???\\.opencodex\\service-launcher.vbs"],
+      ["a single replacement character", "C:\\Users\\\uFFFD\\.opencodex\\service-launcher.vbs"],
+    ])("accepts a registration whose profile came back as %s", (_label, reported) => {
+      expect(healthy(reported)).toBe(true);
+    });
+
+    // The reason the tolerance is a substitution class and not a wildcard.
+    test("rejects another account's path that is merely the same shape", () => {
+      expect(healthy("C:\\Users\\Admin\\.opencodex\\service-launcher.vbs")).toBe(false);
+    });
+
+    test("rejects a path whose ASCII structure differs", () => {
+      expect(healthy("C:\\Users\\???\\.opencodex\\other-launcher.vbs")).toBe(false);
+      expect(healthy("D:\\Users\\???\\.opencodex\\service-launcher.vbs")).toBe(false);
+    });
+
+    // An expectation with nothing unrepresentable in it has nothing to forgive.
+    test("does not forgive substitutions when the expected path is pure ASCII", () => {
+      const ascii = "C:\\Users\\Test\\.opencodex\\service-launcher.vbs";
+      expect(healthy("C:\\Users\\???\\.opencodex\\service-launcher.vbs", ascii)).toBe(false);
+    });
+  });
+
+  /**
    * `UserId` is optional in the schema, and omitting it makes a SessionStateChangeTrigger fire
    * for any account's session change. Scope it to the installing account when that account is
    * known. The builder is synchronous and cannot force an account lookup, so an unknown
@@ -539,7 +601,19 @@ describe("Windows service task", () => {
     expect(windowsTaskRegistrationHealthy(scoped, wscript, launcher, null)).toBe(false);
     expect(windowsTaskRegistrationHealthy(scoped, wscript, launcher, "MACHINE\\installer")).toBe(true);
     expect(windowsTaskRegistrationHealthy(foreign, wscript, launcher, "MACHINE\\installer")).toBe(false);
-    expect(windowsTaskRegistrationHealthy(unscoped, wscript, launcher, null)).toBe(true);
+    expect(windowsTaskRegistrationHealthy(unscoped, wscript, launcher, null)).toBe(false);
+  });
+
+  test("never code-page-folds an explicit session identity", () => {
+    const wscript = "C:\\Windows\\System32\\wscript.exe";
+    const launcher = "C:\\Users\\Test\\.opencodex\\service-launcher.vbs";
+    const expected = "MACHINE\\김병준";
+    const scoped = buildWindowsTaskXml("ignored.cmd", launcher, undefined, expected)
+      .replace(/<Command>.*?<\/Command>/, `<Command>${wscript}</Command>`);
+    const mangled = scoped.replaceAll(expected, "MACHINE\\???");
+
+    expect(windowsTaskRegistrationHealthy(scoped, wscript, launcher, expected)).toBe(true);
+    expect(windowsTaskRegistrationHealthy(mangled, wscript, launcher, expected)).toBe(false);
   });
 
   test("validates the registered scheduler action, trigger, principal, and settings", () => {
@@ -548,7 +622,7 @@ describe("Windows service task", () => {
     // healthy, and repair would then leave that foreign scope in place.
     const guardWscript = "C:\\Windows\\System32\\wscript.exe";
     const guardLauncher = "C:\\Users\\Test\\.opencodex\\service-launcher.vbs";
-    const guardXml = buildWindowsTaskXml("ignored.cmd", guardLauncher, undefined, "")
+    const guardXml = buildWindowsTaskXml("ignored.cmd", guardLauncher, undefined, TEST_WINDOWS_TASK_SID)
       .replace(/<Command>.*?<\/Command>/, `<Command>${guardWscript}</Command>`);
     expect(windowsTaskRegistrationHealthy(guardXml, guardWscript, guardLauncher)).toBe(true);
     const foreignPrefixed = guardXml.replace(
@@ -599,7 +673,7 @@ describe("Windows service task", () => {
     expect(canonical).not.toContain("RunLevel");
 
     expect(windowsTaskRegistrationHealthy(canonical, wscript, launcher)).toBe(true);
-    expect(readWindowsSchedulerXmlState(canonical, wscript, launcher)).toMatchObject({
+    expect(readWindowsSchedulerXmlState(canonical, wscript, launcher, TEST_WINDOWS_TASK_SID)).toMatchObject({
       installed: true,
       enabled: true,
       registrationHealthy: true,
@@ -788,10 +862,10 @@ describe("Windows service task", () => {
     expect(service).toContain("if (existsSync(windowsLauncherVbsPath())) unlinkSync(windowsLauncherVbsPath());");
   });
 
-  test("writes Task Scheduler XML with a UTF-16 BOM for schtasks", async () => {
-    const service = await Bun.file(new URL("../src/service.ts", import.meta.url)).text();
-
-    expect(service).toContain('writeServiceAssetWithRetry(windowsTaskXmlPath(), `\\uFEFF${buildWindowsTaskXml(script)}`, "utf16le")');
+  test("writes Task Scheduler XML with an exact SID and UTF-16 BOM", () => {
+    const document = buildWindowsTaskXmlDocument("service.cmd", "launcher.vbs");
+    expect(document.charCodeAt(0)).toBe(0xFEFF);
+    expect(document).toContain(`<UserId>${TEST_WINDOWS_TASK_SID}</UserId>`);
   });
 
   test("escapes environment values that would break out of set quotes", () => {
@@ -2019,7 +2093,7 @@ describe("service lifecycle cleanup ordering", () => {
     expect(assetsAt).toBeLessThan(createAt);
     expect(installWindows).not.toContain("writeFileSync(script");
     expect(assetsHelper).toContain("writeServiceAssetWithRetry(script");
-    expect(assetsHelper).toContain("writeServiceAssetWithRetry(windowsTaskXmlPath()");
+    expect(assetsHelper).toContain("windowsTaskXmlPath(),");
     // Retry helper tolerates transient Windows file locks from the just-ended task.
     expect(service).toContain('code !== "EBUSY" && code !== "EPERM" && code !== "EACCES"');
   });
@@ -2125,15 +2199,17 @@ describe("service diagnostics", () => {
     staleBakedPaths: false,
     nativeRepairAssetsOnly: false,
     diagnostics: "logs: test",
+    schedulerExpectedUserId: TEST_WINDOWS_TASK_SID,
   };
   const installedEnabled = { schedulerXml: healthyTaskXml() };
   const installedDisabled = { schedulerXml: disabledTaskXml() };
 
   test("resolves an explicit scheduler scope once at the Windows diagnostic boundary", () => {
-    const scoped = buildWindowsTaskXml(undefined, undefined, undefined, "MACHINE\\installer");
-    const foreign = scoped.replaceAll("MACHINE\\installer", "OTHER\\account");
+    const sid = "S-1-5-21-111-222-333-1001";
+    const scoped = buildWindowsTaskXml(undefined, undefined, undefined, sid);
+    const foreign = scoped.replaceAll(sid, "S-1-5-21-999-888-777-1002");
     const unscoped = buildWindowsTaskXml(undefined, undefined, undefined, "");
-    let identity: Readonly<{ name: string }> | null = null;
+    let identity: Readonly<{ sid: string; name: string }> | null = null;
     let resolutions = 0;
     const timeouts: number[] = [];
     const deps = {
@@ -2141,7 +2217,7 @@ describe("service diagnostics", () => {
       resolvePrincipal: (timeoutMs: number) => {
         timeouts.push(timeoutMs);
         resolutions += 1;
-        identity = { name: "MACHINE\\installer" };
+        identity = { sid, name: "MACHINE\\installer" };
         return "*S-1-5-21-111-222-333-1001";
       },
     };
@@ -2151,7 +2227,7 @@ describe("service diagnostics", () => {
       schedulerXml: scoped,
       recordedBackend: "scheduler",
     }, deps);
-    expect(identity).toEqual({ name: "MACHINE\\installer" });
+    expect(identity).toEqual({ sid, name: "MACHINE\\installer" });
     expect(resolutions).toBe(1);
     expect(matching).toMatchObject({ viable: true, stale: false });
     expect(deriveWindowsServiceDiagnosticForCurrentUser({
@@ -2174,7 +2250,7 @@ describe("service diagnostics", () => {
       ...base,
       schedulerXml: unscoped,
       recordedBackend: "scheduler",
-    }, deps)).toMatchObject({ viable: true, stale: false });
+    }, deps)).toMatchObject({ viable: false, stale: true });
     expect(resolutions).toBe(1);
     expect(timeouts).toEqual([30_000]);
   });
@@ -2201,7 +2277,7 @@ describe("service diagnostics", () => {
       ...base,
       schedulerXml: unscoped,
       recordedBackend: "scheduler",
-    }, deps)).toMatchObject({ viable: true, stale: false });
+    }, deps)).toMatchObject({ viable: false, stale: true });
     expect(resolutions).toBe(1);
   });
 
@@ -2424,6 +2500,57 @@ describe("service repair", () => {
     });
     // Re-registration happens after the assets exist and before the task is started.
     expect(calls).toEqual(["env", "auth", "stop", "assets", "reregister", "start", "state"]);
+  });
+
+  test("repair migrates an exact legacy account name to the preferred SID", async () => {
+    const calls: string[] = [];
+    const sid = "S-1-5-21-111-222-333-1001";
+    const name = "MACHINE\\installer";
+    const legacyNameXml = buildWindowsTaskXml(undefined, undefined, undefined, name);
+    let attemptNonce = "";
+
+    expect(windowsTaskRegistrationHealthy(legacyNameXml, undefined, undefined, [sid, name])).toBe(true);
+    await repairService({
+      platform: "win32",
+      diagnose: () => baseDiag,
+      assertEnv: () => {},
+      assertAuth: () => {},
+      resolveExpectedUserId: () => [sid, name],
+      stopScheduler: () => { calls.push("stop"); },
+      writeSchedulerAssets: () => { calls.push("assets"); },
+      readSchedulerXml: () => attemptNonce
+        ? buildWindowsTaskXml(undefined, undefined, attemptNonce, sid)
+        : legacyNameXml,
+      reregisterScheduler: async nonce => { calls.push("reregister"); attemptNonce = nonce; },
+      startScheduler: () => { calls.push("start"); },
+      writeSchedulerState: () => { calls.push("state"); },
+    });
+
+    expect(calls).toEqual(["stop", "assets", "reregister", "start", "state"]);
+  });
+
+  test("repair preserves a mangled legacy path instead of adopting it", async () => {
+    const calls: string[] = [];
+    const wscript = "C:\\Windows\\System32\\wscript.exe";
+    const expectedLauncher = "C:\\Users\\김병준\\.opencodex\\service-launcher.vbs";
+    const reportedLauncher = "C:\\Users\\???\\.opencodex\\service-launcher.vbs";
+    const legacy = buildWindowsTaskXml("ignored.cmd", reportedLauncher, undefined, TEST_WINDOWS_TASK_SID)
+      .replace(/<Command>.*?<\/Command>/, `<Command>${wscript}</Command>`)
+      .replace(/<SessionStateChangeTrigger>[\s\S]*?<\/SessionStateChangeTrigger>\s*/gi, "");
+
+    await expect(repairService({
+      platform: "win32",
+      diagnose: () => baseDiag,
+      assertEnv: () => {},
+      assertAuth: () => {},
+      schedulerWscript: wscript,
+      schedulerLauncher: expectedLauncher,
+      resolveExpectedUserId: () => TEST_WINDOWS_TASK_SID,
+      readSchedulerXml: () => legacy,
+      stopScheduler: () => { calls.push("stop"); },
+      reregisterScheduler: async () => { calls.push("reregister"); },
+    })).rejects.toThrow(/preserved for manual review/i);
+    expect(calls).toEqual([]);
   });
 
   test("repair leaves a healthy registration alone", async () => {
@@ -3142,7 +3269,77 @@ describe("service serving confirmation", () => {
         now: () => 0,
         timeoutMs: 0,
       });
+      // Exactly one. "At least one" would also pass against a version that
+      // sleeps and knocks again, which is the opposite of what a zero budget
+      // asks for — #3039 relaxed this to toBeGreaterThanOrEqual and that is
+      // precisely the assertion the grace probe must not be allowed to satisfy.
       expect(probes).toBe(1);
+    });
+
+    // #3009: a Windows cold start does NTFS ACL hardening and previous-session
+    // journal recovery before the listener exists, so the service can bind
+    // seconds after the deadline and then stay healthy. `ocx service repair`
+    // reported that as a terminal failure with exit 1, and the caller's fallback
+    // is to start a second proxy against a port that is about to be taken.
+    test("accepts a service that binds during the grace after the deadline", async () => {
+      let now = 0;
+      let probes = 0;
+      const out = await confirmServiceServing({
+        port: 10100,
+        // Answers only once the clock is past the deadline, which is the shape
+        // the report describes: healthy, just not within the budget.
+        probe: async () => { probes += 1; return now > 2_000; },
+        sleep: async ms => { now += ms; },
+        now: () => now,
+        timeoutMs: 2_000,
+      });
+      expect(out).toEqual({ ok: true, port: 10100 });
+      expect(probes).toBeGreaterThan(1);
+    });
+
+    test("still fails a service that never binds", async () => {
+      let now = 0;
+      const out = await confirmServiceServing({
+        port: 10100,
+        probe: async () => false,
+        sleep: async ms => { now += ms; },
+        now: () => now,
+        timeoutMs: 2_000,
+      });
+      expect(out).toEqual({ ok: false, port: 10100 });
+    });
+
+    // Windows is the platform the extra budget exists for; everything else keeps
+    // the original 20s so this cannot slow a healthy Linux install down. Pinned
+    // absolutely, not relatively: a relational assertion accepts 21s, and the
+    // reported service bound past 20s, so the number is the contract.
+    test("gives Windows a longer cold-start budget than the other platforms", () => {
+      expect(serviceInstallHealthMs("win32")).toBe(SERVICE_INSTALL_HEALTH_WINDOWS_MS);
+      expect(SERVICE_INSTALL_HEALTH_WINDOWS_MS).toBe(45_000);
+      expect(serviceInstallHealthMs("linux")).toBe(SERVICE_INSTALL_HEALTH_MS);
+      expect(serviceInstallHealthMs("darwin")).toBe(SERVICE_INSTALL_HEALTH_MS);
+    });
+
+    test("reports the effective Windows failure budget", async () => {
+      const errors: string[] = [];
+      const previousError = console.error;
+      const previousExitCode = process.exitCode;
+      let now = 0;
+      console.error = (...values: unknown[]) => { errors.push(values.join(" ")); };
+      try {
+        await reportServiceServing("repaired", {
+          port: 10100,
+          probe: async () => false,
+          sleep: async ms => { now += ms; },
+          now: () => now,
+          timeoutMs: SERVICE_INSTALL_HEALTH_WINDOWS_MS,
+        });
+        expect(errors.join("\n")).toContain("within 45s");
+        expect(errors.join("\n")).not.toContain("within 20s");
+      } finally {
+        console.error = previousError;
+        process.exitCode = previousExitCode ?? 0;
+      }
     });
 
     // A service reinstall invalidates the pidfile, so resolving the target through
