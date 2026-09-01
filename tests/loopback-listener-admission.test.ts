@@ -190,11 +190,41 @@ describe("hub management ingress configuration", () => {
   });
 
   test("enabled ingress requires the hub role", () => {
-    for (const runtimeRole of [undefined, "standalone", "client"] as const) {
+    // Every non-hub role is rejected. Only the two roles that are otherwise complete can be
+    // asserted on THIS message, though: `client` is refused earlier, by the rule that a
+    // client role needs a full client connection block. Asserting the ingress wording for it
+    // would be asserting an order these two independent rules do not promise, so the
+    // requirement checked for `client` is that it is refused at all.
+    for (const runtimeRole of [undefined, "standalone"] as const) {
       const result = validateConfigCandidate(candidate({ runtimeRole }));
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error).toContain("requires runtimeRole hub");
     }
+
+    const asClient = validateConfigCandidate(candidate({ runtimeRole: "client" }));
+    expect(asClient.ok).toBe(false);
+  });
+
+  test("a complete client connection still cannot enable hub ingress", () => {
+    // Proves the row above is not hiding a gap: once the client role IS complete, so the
+    // earlier rule no longer fires, the ingress rule is what refuses it.
+    const result = validateConfigCandidate(candidate({
+      runtimeRole: "client",
+      client: {
+        serverUrl: "https://hub.example.test",
+        managementUrl: "https://hub.example.test",
+        managementTransport: "direct",
+        selectedClients: ["codex"],
+        tokenEnv: "OPENCODEX_API_AUTH_TOKEN",
+        apiKeyId: "client-key-1",
+        tokenFingerprint: "a".repeat(64),
+        protocolVersion: 1,
+        connectedAt: "2026-08-28T00:00:00.000Z",
+        catalogSyncedAt: "2026-08-28T00:00:00.000Z",
+      },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("requires runtimeRole hub");
   });
 
   test("enabled ingress rejects public and unauthenticated-loopback port collisions", () => {
