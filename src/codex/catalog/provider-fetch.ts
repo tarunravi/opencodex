@@ -571,6 +571,7 @@ function providerCatalogFingerprint(name: string, prov: OcxProviderConfig): Reco
     base: prov.baseUrl ?? "",
     adapter: prov.adapter ?? "",
     models: [...(prov.models ?? [])].sort(),
+    retain: [...(prov.retainModels ?? [])].sort(),
     selected: [...(prov.selectedModels ?? [])].sort(),
     defaultModel: prov.defaultModel ?? null,
     ctx: prov.contextWindow ?? null,
@@ -1304,7 +1305,14 @@ async function fetchProviderModelsWithAuth(
     && prov.googleMode === "vertex"
     && (prov.models?.length ?? 0) === 0
     && Boolean(prov.defaultModel);
-  const configuredIds = seedVertexDefault && prov.defaultModel ? [prov.defaultModel] : (prov.models ?? []);
+  // Ordered dedupe union: Vertex seed, then `models`, then `retainModels`. `configured` is the
+  // single seed for the static path, the degraded fallback, drop diagnostics, and provider hints,
+  // so a retain-only id must enter here or it never exists to be retained (#1690).
+  const configuredIds = [...new Set([
+    ...(seedVertexDefault && prov.defaultModel ? [prov.defaultModel] : []),
+    ...(prov.models ?? []),
+    ...(prov.retainModels ?? []),
+  ])];
   const configured: CatalogModel[] = configuredIds.map(id => ({
     id,
     provider: name,
@@ -1700,9 +1708,14 @@ export function shouldExposeProviderModel(providerName: string, modelId: string)
   return true;
 }
 
-export function shouldRetainConfiguredProviderModel(providerName: string, modelId: string): boolean {
+export function shouldRetainConfiguredProviderModel(
+  providerName: string,
+  modelId: string,
+  prov?: OcxProviderConfig,
+): boolean {
   if (CALLABLE_CONFIGURED_COMPATIBILITY_MODELS[providerName]?.has(modelId)) return true;
   if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
+  if (modelInList(prov?.retainModels, modelId)) return true;
   return false;
 }
 
@@ -1748,7 +1761,7 @@ export function mergeConfiguredModelsIntoLiveCatalog(opts: {
     }
     if (
       seedVertexDefault === true
-      || shouldRetainConfiguredProviderModel(name, candidate.id)
+      || shouldRetainConfiguredProviderModel(name, candidate.id, prov)
       || (retainComboTargets && retainConfiguredModelIds?.has(candidate.id) === true)
     ) {
       out.push(candidate);
