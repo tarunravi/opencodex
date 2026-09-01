@@ -11,7 +11,22 @@ import {
 
 let win: Window;
 let previousWindow: unknown;
+let previousDocument: unknown;
 let previousFetch: typeof fetch;
+
+/**
+ * Stand in for the runtime-role meta tag the server injects into the served document.
+ * `null` means the server said nothing, which every reader must treat as standalone.
+ */
+function setRuntimeRole(role: string | null): void {
+  const existing = win.document.querySelector('meta[name="opencodex-runtime-role"]');
+  existing?.remove();
+  if (role === null) return;
+  const meta = win.document.createElement("meta");
+  meta.setAttribute("name", "opencodex-runtime-role");
+  meta.setAttribute("content", role);
+  win.document.head.append(meta);
+}
 
 const status = (transport: "direct" | "relay"): MachineStatusV1 => ({
   mode: "client",
@@ -28,14 +43,19 @@ const status = (transport: "direct" | "relay"): MachineStatusV1 => ({
 
 beforeEach(() => {
   previousWindow = Reflect.get(globalThis, "window");
+  previousDocument = Reflect.get(globalThis, "document");
   previousFetch = globalThis.fetch;
   win = new Window({ url: "http://localhost/" });
   Object.defineProperty(globalThis, "window", { configurable: true, value: win });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: win.document });
+  // Most rows here exercise the connected path; the standalone rows set their own role.
+  setRuntimeRole("client");
 });
 
 afterEach(() => {
   globalThis.fetch = previousFetch;
   Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
   win.close();
 });
 
@@ -60,7 +80,35 @@ describe("two-plane API targets", () => {
   });
 
   test("a machine-status network failure is not treated as standalone", async () => {
+    setRuntimeRole("client");
     globalThis.fetch = (async () => { throw new TypeError("offline"); }) as typeof fetch;
     await expect(discoverApiTargets("")).rejects.toThrow("local machine plane unavailable");
+  });
+
+  test("standalone discovers nothing and sends no request", async () => {
+    // The whole point of the runtime-role meta tag: a user who never enabled remote hub
+    // must not have their browser probe a remote-hub endpoint. Discovery previously ran
+    // unconditionally and inferred standalone from the resulting 404 — a request that
+    // announced the feature's existence on every dashboard load.
+    let calls = 0;
+    globalThis.fetch = (async () => { calls += 1; return new Response(null, { status: 404 }); }) as typeof fetch;
+
+    for (const role of [null, "standalone", "hub"] as const) {
+      calls = 0;
+      setRuntimeRole(role);
+      const targets = await discoverApiTargets("");
+      expect(targets.connected).toBe(false);
+      expect(targets).toEqual(standaloneApiTargets(""));
+      expect(calls).toBe(0);
+    }
+  });
+
+  test("a connected runtime still discovers", async () => {
+    // The tag narrows who asks; it does not remove discovery for the role that needs it.
+    setRuntimeRole("client");
+    let calls = 0;
+    globalThis.fetch = (async () => { calls += 1; return new Response(null, { status: 404 }); }) as typeof fetch;
+    await discoverApiTargets("");
+    expect(calls).toBe(1);
   });
 });

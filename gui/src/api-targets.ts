@@ -1,6 +1,29 @@
 export type ApiPlane = "machine" | "shared";
 export type SharedTransport = "same-origin" | "direct" | "relay";
 
+/**
+ * The runtime role the server stated in the served document, or null when it said nothing.
+ *
+ * Read without removing the tag: unlike the session meta, which is consumed once so a
+ * credential does not linger in the DOM, the role is non-secret and may be read again.
+ */
+function runtimeRoleFromDocument(): string | null {
+  if (typeof document === "undefined") return null;
+  const meta = document.querySelector('meta[name="opencodex-runtime-role"]');
+  return meta?.getAttribute("content")?.trim() || null;
+}
+
+/**
+ * Did the server say this proxy is running as a connected client?
+ *
+ * Anything else — standalone, hub, an older server that sends no tag, a separately hosted
+ * GUI, the Vite dev server — is treated as "not connected", which is the state that needs
+ * no remote-hub work and makes no remote-hub requests.
+ */
+export function isConnectedRuntime(): boolean {
+  return runtimeRoleFromDocument() === "client";
+}
+
 export interface ApiTarget {
   id: ApiPlane;
   baseUrl: string;
@@ -117,6 +140,16 @@ export function apiBaseForPlane(plane: ApiPlane, targets: ApiTargets): string {
 
 export async function discoverApiTargets(initialBase: string, signal?: AbortSignal): Promise<ApiTargets> {
   const standalone = standaloneApiTargets(initialBase);
+  // Standalone asks nothing.
+  //
+  // The server states the role in the served document, so a user who never enabled remote
+  // hub makes no request to a remote-hub endpoint — not even one that 404s. Discovery used
+  // to run unconditionally and infer standalone FROM that 404, which meant every dashboard
+  // load probed a feature the operator had not turned on.
+  //
+  // A missing tag means standalone too: an older server, a separately hosted GUI, or the
+  // Vite dev server all read as "no remote topology", which is the safe default.
+  if (runtimeRoleFromDocument() !== "client") return standalone;
   let response: Response;
   try {
     response = await fetch(`${standalone.machine.baseUrl}/api/machine/status`, { signal, cache: "no-store" });

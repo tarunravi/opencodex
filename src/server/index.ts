@@ -1894,7 +1894,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       const guiSessionCandidate = req.method === "GET" && (url.pathname === "/" || !url.pathname.includes("."))
         ? issueGuiSession(req, config, managementAuth, { trustedTailscaleIngress: false })
         : null;
-      const guiFile = serveGuiFile(url.pathname, undefined, guiSessionCandidate ?? undefined);
+      const guiFile = serveGuiFile(
+        url.pathname,
+        undefined,
+        guiSessionCandidate ?? undefined,
+        config.runtimeRole ?? "standalone",
+      );
       if (guiFile) return guiFile;
       if (url.pathname === "/" && req.method === "GET") {
         return jsonResponse(rootFallbackPayload());

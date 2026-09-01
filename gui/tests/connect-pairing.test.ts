@@ -22,6 +22,10 @@ test("App mounts the relay pairing form and installs only the returned shared se
     ["opencodex-session-csrf", "machine-csrf"],
     ["opencodex-session-origin", "http://localhost"],
     ["opencodex-session-server-origin", "http://localhost"],
+    // The server states the role in the served document. Without it this reads as
+    // standalone, discovery never runs, and the relay pairing form never mounts — which
+    // is exactly the behavior a plain install should get.
+    ["opencodex-runtime-role", "client"],
   ]) {
     const meta = document.createElement("meta");
     meta.name = name;

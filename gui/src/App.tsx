@@ -16,7 +16,7 @@ import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconH
 import { useI18n, useT, LOCALES, localeDisplayName, type Locale, type TKey } from "./i18n/shared";
 import { Select } from "./ui";
 import { configureApiTargets, hasApiSession, installApiAuthFetch, installApiSessionFromHtml } from "./api";
-import { apiBaseForPlane, discoverApiTargets, standaloneApiTargets, type ApiTargets } from "./api-targets";
+import { apiBaseForPlane, discoverApiTargets, isConnectedRuntime, standaloneApiTargets, type ApiTargets } from "./api-targets";
 import { ConnectPairingForm } from "./connect-pairing";
 import { type Page } from "./app-routing";
 import { readModelsTab, type ModelsTab } from "./pages/models-tab";
@@ -105,7 +105,10 @@ export default function App() {
   const { locale, setLocale } = useI18n();
   const t = useT();
   const [targets, setTargets] = useState<ApiTargets>(INITIAL_TARGETS);
-  const [targetsSettled, setTargetsSettled] = useState(false);
+  // Standalone starts settled: there is nothing to discover, so nothing to wait for.
+  // Gating the page on discovery made a plain install show remote-hub loading copy before
+  // its own dashboard, for a feature the operator never enabled.
+  const [targetsSettled, setTargetsSettled] = useState(() => !isConnectedRuntime());
   const [targetError, setTargetError] = useState(false);
   const [sharedSessionReady, setSharedSessionReady] = useState(() => hasApiSession("shared"));
 
@@ -366,10 +369,17 @@ export default function App() {
           >
             {!targetsSettled ? (
               <div className="alert">{t("connection.discovering")}</div>
-            ) : targetError ? (
-              <div className="alert alert-err" role="alert">{t("connection.machineUnavailable")}</div>
             ) : (
               <>
+                {/*
+                  A failed discovery is a banner, not a replacement. It used to take over the
+                  whole body, so a slow or restarting proxy cost a standalone user their
+                  dashboard over a plane they never turned on. The requests that actually
+                  need the machine plane report their own errors.
+                */}
+                {targetError && (
+                  <div className="alert alert-err" role="alert">{t("connection.machineUnavailable")}</div>
+                )}
                 {targets.connected && !sharedSessionReady && (
                   <ConnectPairingForm target={targets.shared} onConnected={() => setSharedSessionReady(true)} />
                 )}
