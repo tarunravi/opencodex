@@ -280,7 +280,14 @@ export interface OcxClientConnectionConfig {
   tokenFingerprint: string;
   protocolVersion: 1;
   connectedAt: string;
-  catalogEtag?: string;
+  /**
+   * sha256/base64url of the catalog bytes this connection wrote, used to tell "still ours"
+   * from "edited or replaced" before removing the file on disconnect.
+   *
+   * Our own hash rather than the hub's ETag: /v1/catalog emits no validator, and this was
+   * always an ownership check on local bytes rather than a cache concern.
+   */
+  catalogFingerprint?: string;
   /**
    * The catalog that was on disk before connect overwrote it, base64-encoded, or the
    * empty string when there was none.

@@ -63,10 +63,6 @@ const commandRunners: Record<string, CommandRunner> = {
     const { readClientConnectionState } = await import("../client/state");
     const clientState = readClientConnectionState();
     await reconcileClientJournalBeforeLifecycle(clientState);
-    if (clientState.kind === "connected") {
-      console.error("Client mode does not start a local provider proxy in Remote Hub Phase 3; use 'ocx sync'.");
-      return 1;
-    }
     if (clientState.kind === "invalid" || clientState.kind === "mismatched") {
       console.error(`Client state is ${clientState.kind}: ${clientState.reason}`);
       return 1;

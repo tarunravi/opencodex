@@ -1,4 +1,24 @@
 import { MAX_REMOTE_CATALOG_BYTES } from "../server/catalog-download";
+
+/**
+ * A pairing grant may cross loopback or authenticated HTTPS, and nothing else.
+ *
+ * Mirrors the hub-side rule in src/server/gui-session.ts. Checking here too is not
+ * redundant: it keeps the client from spending a single-use code on a request the hub is
+ * certain to refuse.
+ */
+function isPairingTransportPermitted(origin: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:") return true;
+  if (url.protocol !== "http:") return false;
+  const host = url.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+}
 import {
   checkRemoteProtocolCompatibility,
   parseRemoteReadyMetadata,
@@ -169,12 +189,17 @@ export async function exchangeConnectPairingGrant(
   managementUrl: string,
   browserOrigin: string,
   grant: Uint8Array,
-  options: { allowInsecureHttp?: boolean; timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
 ): Promise<ConnectGuiSession> {
   const origin = normalizeHubOrigin(managementUrl);
   const browser = normalizeHubOrigin(browserOrigin);
-  if (new URL(origin).protocol !== "https:" && options.allowInsecureHttp !== true) {
-    throw new HubClientError("insecure_http_refused", "Pairing over HTTP requires --allow-insecure-http");
+  // No opt-in. An earlier revision let `--allow-insecure-http` carry a grant over plaintext
+  // when the hub also opted in, on the theory that requiring both sides made it deliberate.
+  // Deliberateness is not the control that matters: the grant is readable by anything on the
+  // path and the session it mints is reusable. The hub refuses this exchange outright now, so
+  // sending it would only burn a single-use code against a certain rejection.
+  if (!isPairingTransportPermitted(origin)) {
+    throw new HubClientError("insecure_http_refused", "Pairing requires loopback or HTTPS; plaintext HTTP cannot carry a grant");
   }
   const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/opencodex-session`, {
     method: "POST",
@@ -277,16 +302,20 @@ export async function revokeClientKey(
 export async function downloadClientCatalog(
   serverUrl: string,
   admissionToken: string,
-  options: { etag?: string; timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch } = {},
-): Promise<{ kind: "fresh"; body: string; etag?: string } | { kind: "not-modified" }> {
+  options: { timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch } = {},
+): Promise<{ kind: "fresh"; body: string }> {
   const origin = normalizeHubOrigin(serverUrl);
   const headers = new Headers({ Accept: "application/json", "x-opencodex-api-key": admissionToken });
-  if (options.etag) headers.set("If-None-Match", options.etag);
+  // Unconditional by contract: /v1/catalog emits no validator (Phase 1, D2) because its
+  // body varies by key identity, so there is nothing to revalidate against and a 304 could
+  // only come from a hub that is misconfigured or being impersonated.
   const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/v1/catalog`, {
     method: "GET",
     headers,
   }, options.timeoutMs);
-  if (response.status === 304) return { kind: "not-modified" };
+  if (response.status === 304) {
+    throw new HubClientError("catalog_unexpected_304", "Hub answered 304 to an unconditional catalog request", 304);
+  }
   if (!response.ok) {
     const code = response.status === 401 ? "catalog_unauthorized" : `catalog_http_${response.status}`;
     throw new HubClientError(code, `Hub catalog request failed (${response.status})`, response.status);
@@ -296,6 +325,5 @@ export async function downloadClientCatalog(
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new HubClientError("catalog_invalid", "Hub catalog response was invalid", response.status);
   }
-  const etag = response.headers.get("etag")?.trim() || undefined;
-  return { kind: "fresh", body, ...(etag ? { etag } : {}) };
+  return { kind: "fresh", body };
 }

@@ -935,7 +935,7 @@ const clientConnectionSchema = z.object({
   tokenFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   protocolVersion: z.literal(1),
   connectedAt: clientTimestampSchema,
-  catalogEtag: z.string().min(1).max(512).optional(),
+  catalogFingerprint: z.string().min(1).max(512).optional(),
   // base64 of the pre-connect catalog, or "" for "there was none". Bounded above the
   // catalog size cap so a legitimate snapshot round-trips.
   priorCatalog: z.string().max(64 * 1024 * 1024).optional(),

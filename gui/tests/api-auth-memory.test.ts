@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
-import { installApiAuthFetch, resetApiAuthFetchForTests } from "../src/api";
+import { configureApiTargets, installApiAuthFetch, installApiSessionFromHtml, resetApiAuthFetchForTests } from "../src/api";
+import { targetsFromMachineStatus, type MachineStatusV1 } from "../src/api-targets";
 
 const LEGACY_TOKEN_KEY = "opencodex-api-token";
 const globals = ["document", "window", "navigator", "sessionStorage", "fetch"] as const;
@@ -28,7 +29,9 @@ beforeEach(() => {
     Object.defineProperty(testWindow, "prompt", { configurable: true, writable: true, value: () => null });
   }
   resetApiAuthFetchForTests(async () => {
-    return window.prompt("OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)")?.trim() || null;
+    return typeof window.prompt === "function"
+      ? window.prompt("OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)")?.trim() || null
+      : null;
   });
   sessionStorage.clear();
 });
@@ -465,6 +468,13 @@ test("a session minted for another origin is rejected and the prompt fallback st
 
 test("a renewed two-origin session attaches only to its bound server and carries browser origin plus CSRF", async () => {
   injectSessionMeta("ocx_session_stale", "stale-csrf", "http://localhost");
+  const status: MachineStatusV1 = {
+    mode: "client", connected: true, machineBase: "http://localhost",
+    sharedBase: "https://hub.example.test", sharedServerOrigin: "https://hub.example.test",
+    managementTransport: "direct", apiKeyId: "client-key-a", protocolVersion: 1,
+    connectedAt: "2026-08-28T00:00:00.000Z", hubReachability: "unknown",
+  };
+  configureApiTargets(targetsFromMachineStatus("", status));
   const seen = new Map<string, Headers[]>();
   let localApiCalls = 0;
   const record = (origin: string, headers: Headers) => {
@@ -475,14 +485,14 @@ test("a renewed two-origin session attaches only to its bound server and carries
   const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost/");
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-    if (url.pathname === "/opencodex-session") {
+    if (url.origin === "https://hub.example.test" && url.pathname === "/opencodex-session") {
       return htmlResponseAt(
         sessionDocumentHtml("ocx_session_remote", "remote-csrf", "http://localhost", "https://hub.example.test"),
         "https://hub.example.test/opencodex-session",
       );
     }
     record(url.origin, headers);
-    if (url.origin === "http://localhost") {
+    if (url.origin === "https://hub.example.test") {
       localApiCalls += 1;
       return new Response("{}", { status: localApiCalls === 1 ? 401 : 200 });
     }
@@ -490,17 +500,54 @@ test("a renewed two-origin session attaches only to its bound server and carries
   }) as typeof fetch;
   await installMockAuthFetch(mockFetch);
 
-  expect((await fetch("/api/config")).status).toBe(200);
   expect((await fetch("https://hub.example.test/api/config", { method: "POST" })).status).toBe(200);
+  expect((await fetch("/api/machine/status")).status).toBe(200);
   expect((await fetch("https://evil.example.test/api/config")).status).toBe(200);
 
-  const hubHeaders = seen.get("https://hub.example.test")?.[0];
+  const hubHeaders = seen.get("https://hub.example.test")?.at(-1);
   expect(hubHeaders?.get("X-OpenCodex-API-Key")).toBe("ocx_session_remote");
   expect(hubHeaders?.get("X-OpenCodex-GUI-Origin")).toBe("http://localhost");
   expect(hubHeaders?.get("X-OpenCodex-CSRF-Token")).toBe("remote-csrf");
   const evilHeaders = seen.get("https://evil.example.test")?.[0];
   expect(evilHeaders?.get("X-OpenCodex-API-Key")).toBeNull();
   expect(evilHeaders?.get("X-OpenCodex-GUI-Origin")).toBeNull();
+});
+
+test("relay requests carry independent shared and machine sessions without cross-target leakage", async () => {
+  injectSessionMeta("ocx_session_machine", "machine-csrf", "http://localhost");
+  const seen = new Map<string, Headers>();
+  const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost/");
+    seen.set(url.pathname, new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)));
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  await installMockAuthFetch(mockFetch);
+  const relayStatus: MachineStatusV1 = {
+    mode: "client", connected: true, machineBase: "http://localhost",
+    sharedBase: "http://localhost/api/machine/hub-relay", sharedServerOrigin: "https://hub.example.test",
+    managementTransport: "relay", apiKeyId: "client-key-a", protocolVersion: 1,
+    connectedAt: "2026-08-28T00:00:00.000Z", hubReachability: "unknown",
+  };
+  configureApiTargets(targetsFromMachineStatus("", relayStatus));
+  expect(installApiSessionFromHtml("shared", sessionDocumentHtml(
+    "ocx_session_hub", "hub-csrf", "http://localhost", "https://hub.example.test",
+  ))).toBe(true);
+
+  await fetch("/api/machine/status");
+  await fetch("/api/machine/hub-relay/api/config", { method: "POST" });
+  await fetch("https://evil.example/api/config");
+
+  const machine = seen.get("/api/machine/status")!;
+  expect(machine.get("x-opencodex-api-key")).toBe("ocx_session_machine");
+  expect(machine.get("x-opencodex-machine-session")).toBeNull();
+  const relay = seen.get("/api/machine/hub-relay/api/config")!;
+  expect(relay.get("x-opencodex-api-key")).toBe("ocx_session_hub");
+  expect(relay.get("x-opencodex-csrf-token")).toBe("hub-csrf");
+  expect(relay.get("x-opencodex-machine-session")).toBe("ocx_session_machine");
+  expect(relay.get("x-opencodex-machine-csrf-token")).toBe("machine-csrf");
+  const unknown = seen.get("/api/config")!;
+  expect(unknown.get("x-opencodex-api-key")).toBeNull();
+  expect(unknown.get("x-opencodex-machine-session")).toBeNull();
 });
 
 test("a mismatched bootstrap response/server origin clears every in-memory session field", async () => {

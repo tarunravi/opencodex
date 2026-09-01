@@ -260,6 +260,13 @@ describe("headless GUI parity CLI", () => {
       ["/api/logs", "ocx observe"],
       ["/api/lab", "ocx lab"],
       ["/api/config", "ocx config"],
+      // The client machine plane. These are served by the connected client's own loopback
+      // listener rather than the hub, and each one mirrors a connect-family command:
+      // status/clients -> `ocx connect status`, sync -> `ocx sync`, shim -> the client
+      // integration commands, disconnect -> `ocx disconnect`. hub-relay is the fixed-target
+      // relay those same commands use to reach the hub, so it has no separate CLI verb of
+      // its own — it is the transport selected by `--management-transport relay`.
+      ["/api/machine", "ocx connect/disconnect/sync"],
       // The prompt composer is a GUI-first surface: it reads Codex's own layer
       // inventory and writes one config key. There is no headless equivalent
       // today, and claiming one would be worse than saying so here.
