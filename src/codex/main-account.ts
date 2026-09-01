@@ -19,6 +19,8 @@ import { resolveCodexHomeDir } from "./home";
 import { assertNotRealCodexHomeUnderTest } from "../lib/test-home-guard";
 import { clearAccountNeedsReauth } from "./account-runtime-state";
 import { advanceCodexCredentialMutationEpoch } from "./credential-mutation-epoch";
+import { withNativeMainExclusiveClaim } from "./native-main-claim";
+import { resolveNativeProfileContext } from "./native-profile-store";
 
 export { MAIN_CODEX_ACCOUNT_ID } from "./account-id";
 
@@ -187,41 +189,66 @@ async function resolveMainAccountToken(
       : null;
   }
 
+  const refreshTimeout = AbortSignal.timeout(30_000);
   const signal = dependencies.signal
-    ? AbortSignal.any([dependencies.signal, AbortSignal.timeout(30_000)])
-    : AbortSignal.timeout(30_000);
+    ? AbortSignal.any([dependencies.signal, refreshTimeout])
+    : refreshTimeout;
   const lockKey = refreshGrantFingerprintForToken(initial.refreshToken);
-  return withCodexRefreshFileLock(lockKey, signal, async () => {
-    const locked = readMainAuthJsonCredential();
-    if (!locked) throw new MainAuthJsonChangedDuringRefreshError();
-    if (!locked.refreshToken
-      || refreshGrantFingerprintForToken(locked.refreshToken) !== lockKey) {
-      if (locked.accessToken !== rejectedAccessToken
-        && mainAccessTokenFresh(locked.accessToken, Date.now(), 0)) {
-        return { accessToken: locked.accessToken!, chatgptAccountId: locked.chatgptAccountId };
-      }
-      throw new MainAuthJsonChangedDuringRefreshError();
+  // Two locks, because they guard two different things that live in two different
+  // homes. `withCodexRefreshFileLock` is keyed on the grant fingerprint and lives
+  // under OPENCODEX_HOME; it serializes refreshes of the SAME grant within one
+  // install. The file being rewritten is `auth.json` under CODEX_HOME, which every
+  // OpenCodex install on the machine shares no matter what its own home is -- so two
+  // proxies with distinct OPENCODEX_HOMEs took two unrelated fingerprint locks and
+  // refreshed the one credential concurrently (#2999).
+  //
+  // The outer claim is the CODEX_HOME coordination the other native-main paths
+  // already use (`.opencodex-native-main.claim.sqlite`), so this needs no new
+  // primitive and no FFI. Order is claim (machine-wide) then fingerprint lock
+  // (per-grant), never the reverse: two processes holding different fingerprint
+  // locks and then reaching for the same claim would deadlock.
+  try {
+    return await withNativeMainExclusiveClaim(
+      resolveNativeProfileContext(),
+      () => withCodexRefreshFileLock(lockKey, signal, async () => {
+        const locked = readMainAuthJsonCredential();
+        if (!locked) throw new MainAuthJsonChangedDuringRefreshError();
+        if (!locked.refreshToken
+          || refreshGrantFingerprintForToken(locked.refreshToken) !== lockKey) {
+          if (locked.accessToken !== rejectedAccessToken
+            && mainAccessTokenFresh(locked.accessToken, Date.now(), 0)) {
+            return { accessToken: locked.accessToken!, chatgptAccountId: locked.chatgptAccountId };
+          }
+          throw new MainAuthJsonChangedDuringRefreshError();
+        }
+        if (locked.accessToken !== rejectedAccessToken
+          && mainAccessTokenFresh(locked.accessToken, Date.now(), MAIN_TOKEN_REFRESH_SKEW_MS)) {
+          return { accessToken: locked.accessToken!, chatgptAccountId: locked.chatgptAccountId };
+        }
+        const refresh = dependencies.refreshToken
+          ?? ((refreshToken: string, options: { signal: AbortSignal }) => refreshChatGPTToken(refreshToken, options));
+        let refreshed: OAuthCredentials;
+        try {
+          refreshed = await refresh(locked.refreshToken, { signal });
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message.toLowerCase() : "";
+          const reason = /invalid_grant|invalidated|revoked|expired/.test(message)
+            ? "reauth" as const
+            : "transient" as const;
+          throw new MainAccountTokenRefreshError(reason, { cause });
+        }
+        const result = persistRefreshedMainAuthJson(locked, refreshed);
+        clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+        return result;
+      }),
+      { waitMs: 30_000, signal },
+    );
+  } catch (cause) {
+    if (refreshTimeout.aborted && !dependencies.signal?.aborted) {
+      throw new MainAccountTokenRefreshError("transient", { cause });
     }
-    if (locked.accessToken !== rejectedAccessToken
-      && mainAccessTokenFresh(locked.accessToken, Date.now(), MAIN_TOKEN_REFRESH_SKEW_MS)) {
-      return { accessToken: locked.accessToken!, chatgptAccountId: locked.chatgptAccountId };
-    }
-    const refresh = dependencies.refreshToken
-      ?? ((refreshToken: string, options: { signal: AbortSignal }) => refreshChatGPTToken(refreshToken, options));
-    let refreshed: OAuthCredentials;
-    try {
-      refreshed = await refresh(locked.refreshToken, { signal });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message.toLowerCase() : "";
-      const reason = /invalid_grant|invalidated|revoked|expired/.test(message)
-        ? "reauth" as const
-        : "transient" as const;
-      throw new MainAccountTokenRefreshError(reason, { cause });
-    }
-    const result = persistRefreshedMainAuthJson(locked, refreshed);
-    clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
-    return result;
-  });
+    throw cause;
+  }
 }
 
 /** Refresh the CLI-owned native credential before upstream I/O and publish it atomically. */

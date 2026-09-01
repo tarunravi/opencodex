@@ -10,6 +10,7 @@ import {
 import { isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
 import { isCodexAccountPaused } from "./account-pause";
 import { ConfigMutationLockError } from "../config";
+import { NativeProfileError } from "./native-profile-types";
 import { isCodexAccountUsable } from "./account-usability";
 import { reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
 import {
@@ -345,6 +346,8 @@ export function shouldMarkAccountNeedsReauthForCodexAuthFailure(cause: unknown):
     && !(cause instanceof CodexCredentialRefreshStaleError)
     && !(cause instanceof MainAuthJsonChangedDuringRefreshError)
     && !(cause instanceof MainAccountTokenRefreshError && cause.reason === "transient")
+    && !(cause instanceof NativeProfileError && cause.retryable)
+    && !(cause instanceof DOMException && cause.name === "AbortError")
     && !(cause instanceof ConfigMutationLockError);
 }
 
@@ -667,7 +670,7 @@ export async function resolveCodexAuthContext(
     } catch (cause) {
       if (probeLeaseId && probeQuotaScope) releaseCodexQuotaScopeProbeLease(accountId, probeQuotaScope, probeLeaseId);
       else if (probeLeaseId) releaseCodexQuotaProbeLease(accountId, probeLeaseId);
-      if (shouldMarkAccountNeedsReauthForCodexAuthFailure(cause)) {
+      if (!options.signal?.aborted && shouldMarkAccountNeedsReauthForCodexAuthFailure(cause)) {
         markAccountNeedsReauth(accountId, writerGeneration);
       }
       throw new CodexAuthContextError(accountId, cause);
@@ -712,7 +715,7 @@ export async function resolveCodexAuthContext(
   } catch (cause) {
     if (probeLeaseId && probeQuotaScope) releaseCodexQuotaScopeProbeLease(accountId, probeQuotaScope, probeLeaseId);
     else if (probeLeaseId) releaseCodexQuotaProbeLease(accountId, probeLeaseId);
-    if (shouldMarkAccountNeedsReauthForCodexAuthFailure(cause)) {
+    if (!options.signal?.aborted && shouldMarkAccountNeedsReauthForCodexAuthFailure(cause)) {
       markAccountNeedsReauth(accountId, writerGeneration);
     }
     throw new CodexAuthContextError(accountId, cause);
