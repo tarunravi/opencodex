@@ -634,6 +634,50 @@ describe("Codex auth context", () => {
     });
   });
 
+  test("account-gated routing distinguishes an unavailable grant from no grant", async () => {
+    const cfg = config();
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-token",
+      refreshToken: "pool-refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "pool-account",
+    });
+    const snapshot = (models: string[]): CodexModelEntitlementSnapshot => ({
+      modelsByAccount: new Map([["pool-a", new Set(models)]]),
+      confirmedAccountIds: new Set(["pool-a"]),
+      credentialIdentities: new Map(),
+    });
+    const resolve = (models: string[]) => resolveCodexAuthContext(new Headers(), cfg, "pool", {
+      excludeAccountId: "pool-a",
+      modelId: "gpt-daybreak-blue-latest",
+      resolveCodexModelEntitlements: async () => snapshot(models),
+    });
+
+    await expect(resolve(["gpt-daybreak-blue-latest"]))
+      .rejects.toThrow("Codex accounts that support this model are currently unavailable");
+    await expect(resolve(["gpt-5.6-sol"]))
+      .rejects.toThrow("No eligible Codex account supports this model");
+
+    const mainExcludedSnapshot: CodexModelEntitlementSnapshot = {
+      modelsByAccount: new Map(),
+      confirmedAccountIds: new Set(),
+      credentialIdentities: new Map(),
+    };
+    await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", {
+      excludeAccountId: "pool-a",
+      modelId: "gpt-daybreak-blue-latest",
+      beginCodexAccountSelection: () => ({
+        mainProfileDraining: true,
+        claimMainProfile: () => false,
+        release: () => {},
+      }),
+      resolveCodexModelEntitlements: async (_config, options) => {
+        expect(options?.excludeAccountIds?.has(MAIN_CODEX_ACCOUNT_ID)).toBeTrue();
+        return mainExcludedSnapshot;
+      },
+    })).rejects.toThrow("Codex accounts that support this model are currently unavailable");
+  });
+
   test("auth resolution preserves per-model detours without replacing ordinary affinity", async () => {
     const cfg = config();
     cfg.accountPoolStrategy = "round-robin";
@@ -1172,6 +1216,45 @@ describe("Codex auth context", () => {
     expect(directEntitlementChecks).toBe(1);
     expect(cfg.activeCodexAccountId).toBe(MAIN_CODEX_ACCOUNT_ID);
     expect(cfg.activeCodexAccountPinned).toBe(MAIN_CODEX_ACCOUNT_ID);
+  });
+
+  test("a failed Pool account may fall back once to the validated caller-owned main credential", async () => {
+    const cfg = config();
+    cfg.codexAccounts = [
+      { id: "pool-a", email: "pool-a@example.test", isMain: false, chatgptAccountId: "pool-account" },
+    ];
+    const inbound = new Headers({
+      authorization: "Bearer caller-keyring-token",
+      "chatgpt-account-id": "caller-keyring-account",
+    });
+    const emptyEntitlements: CodexModelEntitlementSnapshot = {
+      modelsByAccount: new Map(),
+      confirmedAccountIds: new Set(),
+      credentialIdentities: new Map(),
+    };
+    let directEntitlementChecks = 0;
+    const options = {
+      requestScopedMainCredential: true,
+      modelId: "gpt-daybreak-blue-latest",
+      resolveCodexModelEntitlements: async () => emptyEntitlements,
+      isDirectCallerEntitledToCodexModel: async () => {
+        directEntitlementChecks += 1;
+        return true;
+      },
+    };
+
+    await expect(resolveCodexAuthContext(inbound, cfg, "pool", {
+      ...options,
+      excludeAccountId: "pool-a",
+    })).resolves.toMatchObject({ kind: "main", accountId: null });
+    expect(directEntitlementChecks).toBe(1);
+
+    // If main itself was the failed credential, the retry must not loop back to it.
+    await expect(resolveCodexAuthContext(inbound, { ...cfg, codexAccounts: [] }, "pool", {
+      ...options,
+      excludeAccountId: MAIN_CODEX_ACCOUNT_ID,
+    })).rejects.toThrow("Codex accounts that support this model are currently unavailable");
+    expect(directEntitlementChecks).toBe(1);
   });
 
   test("selects pool auth independently of the routed provider", async () => {
