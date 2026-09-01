@@ -753,6 +753,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // Unauthenticated loopback listener (#1102). Off unless explicitly enabled.
   const loopbackListener = config.unauthenticatedLoopbackListener;
   const loopbackListenerPort = loopbackListener?.enabled ? loopbackListener.port : null;
+  // Hub management ingress is a third, management-only listener. Its address is intentionally
+  // fixed: the kernel loopback bind is the trust boundary that permits Tailscale identity headers.
+  const managementIngress = config.runtimeRole === "hub" ? config.hub?.managementIngress : undefined;
+  const managementIngressPort = managementIngress?.enabled ? managementIngress.port : null;
 
   /**
    * Which listener a request arrived on, expressed as the only thing that differs: the bind
@@ -798,6 +802,33 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       return req.headers.get("upgrade")?.toLowerCase() === "websocket";
     }
     return false;
+  }
+
+  /**
+   * Routes the loopback hub-management listener will serve. This is default-deny so adding a
+   * data-plane or health route to the public handler cannot silently expose it through Tailscale
+   * Serve. A dotted GUI path is admitted only when it resolves to a packaged file; extensionless
+   * GETs intentionally retain the existing SPA fallback.
+   */
+  function managementIngressRouteAllowed(url: URL, req: Request): boolean {
+    const rawPath = url.pathname;
+    if (req.headers.get("upgrade")?.toLowerCase() === "websocket") return false;
+    if (rawPath === "/opencodex-session") return req.method === "GET" || req.method === "POST";
+    if (rawPath.startsWith("/api/")) return true;
+    if (req.method !== "GET" && req.method !== "HEAD") return false;
+    let decodedPath: string;
+    try {
+      decodedPath = decodeURIComponent(rawPath);
+    } catch {
+      return false;
+    }
+    if (
+      decodedPath.startsWith("/v1/")
+      || decodedPath === "/healthz"
+      || decodedPath === "/readyz"
+    ) return false;
+    if (decodedPath === "/" || !decodedPath.includes(".")) return true;
+    return serveGuiFile(rawPath) !== null;
   }
 
   // Codex treats empty / non-JSON 503 bodies as "Unknown error" (#452). Keep Retry-After and
@@ -951,6 +982,14 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     };
   let server: Server<WsData>;
   let loopbackServer: Server<WsData> | null = null;
+  let managementIngressServer: Server<WsData> | null = null;
+
+  type ServerIngress = "public" | "unauthenticated-loopback" | "hub-management";
+  function ingressForServer(requestServer: Server<WsData>): ServerIngress {
+    if (requestServer === loopbackServer) return "unauthenticated-loopback";
+    if (requestServer === managementIngressServer) return "hub-management";
+    return "public";
+  }
   let backgroundLifecycle: ReturnType<typeof acquireServerBackgroundLifecycle> | null = null;
   try {
     backgroundLifecycle = acquireServerBackgroundLifecycle(applyPolicy);
@@ -963,14 +1002,24 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       idleTimeout: 255,
       maxRequestBodySize: MAX_DECOMPRESSED_BODY_BYTES,
       async fetch(req: Request, requestServer: Server<WsData>): Promise<Response> {
+      const ingress = ingressForServer(requestServer);
       // The unauthenticated loopback listener (#1102) serves a fixed allowlist and nothing
       // else. Rejecting here, before any handler runs, is what keeps the surface from growing
       // silently when a route is added below.
-      if (requestServer === loopbackServer && !loopbackRouteAllowed(new URL(req.url), req)) {
+      if (ingress === "unauthenticated-loopback" && !loopbackRouteAllowed(new URL(req.url), req)) {
         return withCors(
           formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${new URL(req.url).pathname}`),
           req,
           loopbackPolicy(),
+        );
+      }
+      // Tailscale Serve terminates only on this separately bound loopback socket. Reject before
+      // dispatch so no data, readiness, health, WebSocket, or unknown-static handler can run.
+      if (ingress === "hub-management" && !managementIngressRouteAllowed(new URL(req.url), req)) {
+        return withCors(
+          formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${new URL(req.url).pathname}`),
+          req,
+          config,
         );
       }
       // Auth and CORS decisions below read `policy`, not `config`. For the public listener the
@@ -978,7 +1027,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       // view substitutes 127.0.0.1 as the bind address, which is what routes it through the
       // same code path a plain loopback bind has always taken — Host-header check included.
       // Routing, provider selection and response bodies keep using `config`.
-      const policy: RequestPolicyView = requestServer === loopbackServer ? loopbackPolicy() : config;
+      const policy: RequestPolicyView = ingress === "unauthenticated-loopback" ? loopbackPolicy() : config;
       const url = new URL(req.url);
       markActivity(`${req.method} ${url.pathname}`);
 
@@ -1846,7 +1895,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
 
       if (url.pathname === "/opencodex-session") {
         if (req.method === "GET") {
-          const session = issueGuiSession(req, config, managementAuth, { trustedTailscaleIngress: false });
+          const session = issueGuiSession(req, config, managementAuth, {
+            trustedTailscaleIngress: ingress === "hub-management",
+          });
           return session
             ? withManagementCors(serveSessionBootstrap(session), req, config)
             : withManagementCors(new Response(null, { status: 401, headers: { "Cache-Control": "no-store" } }), req, config);
@@ -1892,7 +1943,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, policy);
       }
       const guiSessionCandidate = req.method === "GET" && (url.pathname === "/" || !url.pathname.includes("."))
-        ? issueGuiSession(req, config, managementAuth, { trustedTailscaleIngress: false })
+        ? issueGuiSession(req, config, managementAuth, {
+          trustedTailscaleIngress: ingress === "hub-management",
+        })
         : null;
       const guiFile = serveGuiFile(
         url.pathname,
@@ -2147,6 +2200,23 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         throw error;
       }
     }
+    if (managementIngressPort !== null) {
+      try {
+        managementIngressServer = Bun.serve<WsData>({
+          ...serveOptions,
+          port: managementIngressPort,
+          hostname: "127.0.0.1",
+        });
+      } catch (error) {
+        // Preserve the management bind failure while synchronously initiating rollback of every
+        // listener already opened in this startup transaction. startServer must not become async.
+        for (const bound of [loopbackServer, server]) {
+          if (!bound) continue;
+          try { void bound.stop(true); } catch { /* report the original bind error */ }
+        }
+        throw error;
+      }
+    }
   } catch (error) {
     userCostOverlayReconciler?.stop();
     backgroundLifecycle?.releaseAfterFailedStart();
@@ -2157,6 +2227,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   bindNativeMainStartupLifecycle(server, nativeMainLifecycle);
   const nativeStop = server.stop.bind(server);
   const loopbackListenerRef = loopbackServer;
+  const managementIngressRef = managementIngressServer;
   Object.defineProperty(server, "stop", {
     configurable: true,
     value: async (closeActiveConnections?: boolean): Promise<void> => {
@@ -2167,6 +2238,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           () => nativeStop(closeActiveConnections),
           ...(loopbackListenerRef
             ? [() => loopbackListenerRef.stop(closeActiveConnections)]
+            : []),
+          ...(managementIngressRef
+            ? [() => managementIngressRef.stop(closeActiveConnections)]
             : []),
           async () => {
             userCostOverlayReconciler?.stop();
@@ -2200,6 +2274,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     console.warn(`   Any local process can use it without a credential — it spends account`);
     console.warn(`   quota and paid provider credentials, and can starve authenticated`);
     console.warn(`   remote clients. Not for shared or multi-tenant hosts.`);
+  }
+
+  if (managementIngressServer) {
+    const managementPort = managementIngressServer.port ?? managementIngressPort;
+    console.log(`🔒 Hub management ingress active on http://127.0.0.1:${managementPort}`);
+    console.log(`   GUI and /api/* only; data, health, readiness, and WebSockets are disabled.`);
   }
 
   // Prime pool-account quota in the background so the rotation engine has real

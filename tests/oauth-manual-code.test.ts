@@ -13,6 +13,7 @@ import {
 import { parseCallbackInput } from "../src/oauth/callback-server";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
+import { findAvailablePort } from "../src/server/ports";
 import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-oauth-manual-code-test");
@@ -322,6 +323,43 @@ describe("OAuth manual login code fallback", () => {
       expect(((await noLogin.json()) as { error?: string }).error).toContain("no login in progress");
     } finally {
       await server.stop(true);
+    }
+  });
+
+  test("headless manual-code route is available through hub management ingress", async () => {
+    const managementPort = await findAvailablePort(0, "127.0.0.1");
+    const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: managementPort });
+    const previousDataToken = process.env.OPENCODEX_API_AUTH_TOKEN;
+    process.env.OPENCODEX_API_AUTH_TOKEN = "hub-data-secret";
+    saveConfig({
+      port: 0,
+      hostname: "0.0.0.0",
+      runtimeRole: "hub",
+      hub: {
+        managementPublicOrigin: "https://hub.example.test",
+        managementIngress: { enabled: true, port: managementPort },
+      },
+      oauthOpenBrowser: false,
+      defaultProvider: "xai",
+      providers: { xai: { adapter: "openai-chat", baseUrl: "https://api.x.ai/v1", authMode: "oauth" } },
+    } as OcxConfig);
+    const server = startServer(publicPort);
+    try {
+      const response = await fetch(`http://127.0.0.1:${managementPort}/api/oauth/login/code`, {
+        method: "POST",
+        headers: {
+          Host: "hub.example.test",
+          Origin: "https://hub.example.test",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ provider: "xai", input: "some-code" }),
+      });
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as { error?: string }).error).toContain("no login in progress");
+    } finally {
+      await server.stop(true);
+      if (previousDataToken === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
+      else process.env.OPENCODEX_API_AUTH_TOKEN = previousDataToken;
     }
   });
 });

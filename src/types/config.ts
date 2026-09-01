@@ -249,6 +249,14 @@ export type OcxRuntimeRole = "standalone" | "hub" | "client";
 export interface OcxHubConfig {
   /** Canonical browser-reachable management origin advertised by a hub. */
   managementPublicOrigin?: string;
+  /**
+   * Optional management-only listener for a local HTTPS frontend such as Tailscale Serve.
+   * The hostname is deliberately not configurable: when enabled the socket is always bound
+   * to 127.0.0.1, and only GUI, session-bootstrap, and management API routes are admitted.
+   */
+  managementIngress?:
+    | { enabled: false }
+    | { enabled: true; port: number };
 }
 
 export interface OcxRemoteGuiConfig {

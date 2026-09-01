@@ -884,6 +884,12 @@ const hubConfigSchema = z.object({
     }
     return origin;
   }).optional(),
+  // A malformed hand edit disables only the optional ingress. Live writes are rejected by
+  // managementIngressConfigError before this load-time degradation can hide the mistake.
+  managementIngress: z.union([
+    z.object({ enabled: z.literal(false) }).strict(),
+    z.object({ enabled: z.literal(true), port: z.number().int().min(1).max(65535) }).strict(),
+  ]).optional().catch(undefined),
 }).strict();
 
 const tailscaleUserSchema = z.string().trim().min(1).superRefine((value, ctx) => {
@@ -2404,6 +2410,52 @@ function loopbackListenerPortError(value: unknown): string | null {
   return null;
 }
 
+/**
+ * Validate the hub management ingress at the live-write boundary.
+ *
+ * The persisted schema intentionally degrades a malformed hand edit to disabled so a typo in
+ * this opt-in listener cannot discard providers or credentials. A live config mutation must not
+ * get that leniency: it receives an exact field error before the degrading schema is applied.
+ */
+function managementIngressConfigError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw) return null;
+  const hub = rawConfigRecord(raw.hub);
+  if (!hub || !Object.hasOwn(hub, "managementIngress") || hub.managementIngress === undefined) return null;
+  const ingress = rawConfigRecord(hub.managementIngress);
+  if (!ingress) {
+    return "schema_invalid: hub.managementIngress: must be an object or omitted";
+  }
+  if (typeof ingress.enabled !== "boolean") {
+    return "schema_invalid: hub.managementIngress.enabled: must be a boolean";
+  }
+  const keys = Object.keys(ingress);
+  if (ingress.enabled === false) {
+    return keys.length === 1
+      ? null
+      : "schema_invalid: hub.managementIngress: disabled ingress accepts only enabled";
+  }
+  if (keys.some(key => key !== "enabled" && key !== "port")) {
+    return "schema_invalid: hub.managementIngress: contains an unsupported field";
+  }
+  const ingressPort = ingress.port;
+  if (typeof ingressPort !== "number" || !Number.isInteger(ingressPort) || ingressPort < 1 || ingressPort > 65535) {
+    return "schema_invalid: hub.managementIngress.port: must be an integer port when enabled";
+  }
+  if (raw.runtimeRole !== "hub") {
+    return "schema_invalid: hub.managementIngress: enabled ingress requires runtimeRole hub";
+  }
+  const proxyPort = typeof raw.port === "number" ? raw.port : 10100;
+  if (proxyPort === ingressPort) {
+    return "schema_invalid: hub.managementIngress.port: must differ from the proxy port";
+  }
+  const loopback = rawConfigRecord(raw.unauthenticatedLoopbackListener);
+  if (loopback?.enabled === true && loopback.port === ingressPort) {
+    return "schema_invalid: hub.managementIngress.port: must differ from unauthenticatedLoopbackListener.port";
+  }
+  return null;
+}
+
 export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
   const boundaryError = blankHostnameError(value)
     ?? claudeSubagentEffortError(value)
@@ -2419,7 +2471,8 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
     ?? remoteGuiConfigError(value)
     ?? clientConnectionConfigError(value)
     ?? clientRolePairError(value)
-    ?? loopbackListenerPortError(value);
+    ?? loopbackListenerPortError(value)
+    ?? managementIngressConfigError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
   if (result.success) {

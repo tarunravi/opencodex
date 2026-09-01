@@ -169,6 +169,85 @@ describe("loopback listener configuration", () => {
   });
 });
 
+describe("hub management ingress configuration", () => {
+  const candidate = (overrides: Record<string, unknown> = {}) => ({
+    port: 10100,
+    runtimeRole: "hub",
+    hub: { managementIngress: { enabled: true, port: 10101 } },
+    providers: { openai: { adapter: "openai", baseUrl: "https://chatgpt.com/backend-api/codex" } },
+    defaultProvider: "openai",
+    ...overrides,
+  });
+
+  test("missing and disabled ingress preserve the no-listener default", () => {
+    const missing = validateConfigCandidate(candidate({ hub: {} }));
+    expect(missing.ok).toBe(true);
+    if (missing.ok) expect(missing.config.hub?.managementIngress).toBeUndefined();
+
+    const disabled = validateConfigCandidate(candidate({ hub: { managementIngress: { enabled: false } } }));
+    expect(disabled.ok).toBe(true);
+    if (disabled.ok) expect(disabled.config.hub?.managementIngress).toEqual({ enabled: false });
+  });
+
+  test("enabled ingress requires the hub role", () => {
+    // Every non-hub role is rejected. Only the two roles that are otherwise complete can be
+    // asserted on THIS message, though: `client` is refused earlier, by the rule that a
+    // client role needs a full client connection block. Asserting the ingress wording for it
+    // would be asserting an order these two independent rules do not promise, so the
+    // requirement checked for `client` is that it is refused at all.
+    for (const runtimeRole of [undefined, "standalone"] as const) {
+      const result = validateConfigCandidate(candidate({ runtimeRole }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("requires runtimeRole hub");
+    }
+
+    const asClient = validateConfigCandidate(candidate({ runtimeRole: "client" }));
+    expect(asClient.ok).toBe(false);
+  });
+
+  test("a complete client connection still cannot enable hub ingress", () => {
+    // Proves the row above is not hiding a gap: once the client role IS complete, so the
+    // earlier rule no longer fires, the ingress rule is what refuses it.
+    const result = validateConfigCandidate(candidate({
+      runtimeRole: "client",
+      client: {
+        serverUrl: "https://hub.example.test",
+        managementUrl: "https://hub.example.test",
+        managementTransport: "direct",
+        selectedClients: ["codex"],
+        tokenEnv: "OPENCODEX_API_AUTH_TOKEN",
+        apiKeyId: "client-key-1",
+        tokenFingerprint: "a".repeat(64),
+        protocolVersion: 1,
+        connectedAt: "2026-08-28T00:00:00.000Z",
+        catalogSyncedAt: "2026-08-28T00:00:00.000Z",
+      },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("requires runtimeRole hub");
+  });
+
+  test("enabled ingress rejects public and unauthenticated-loopback port collisions", () => {
+    const publicCollision = validateConfigCandidate(candidate({
+      hub: { managementIngress: { enabled: true, port: 10100 } },
+    }));
+    expect(publicCollision.ok).toBe(false);
+    if (!publicCollision.ok) expect(publicCollision.error).toContain("must differ from the proxy port");
+
+    const loopbackCollision = validateConfigCandidate(candidate({
+      unauthenticatedLoopbackListener: { enabled: true, port: 10101 },
+    }));
+    expect(loopbackCollision.ok).toBe(false);
+    if (!loopbackCollision.ok) expect(loopbackCollision.error).toContain("unauthenticatedLoopbackListener.port");
+  });
+
+  test("a valid hub ingress survives strict parsing", () => {
+    const result = validateConfigCandidate(candidate());
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.config.hub?.managementIngress).toEqual({ enabled: true, port: 10101 });
+  });
+});
+
 describe("injected Codex provider block", () => {
   test("a wildcard bind alone still emits the env auth header", () => {
     expect(shouldInjectApiAuthHeader({ hostname: "0.0.0.0" })).toBe(true);

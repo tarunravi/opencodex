@@ -192,6 +192,17 @@ describe("the startup gate", () => {
     expect(shouldSyncCodexOnStart({ ...baseConfig(), clientIntegrations: { codex: false } })).toBe(false);
   });
 
+  test("the hub role never syncs its host's client configs on start", () => {
+    // First clisu-oracle dogfood boot: runtimeRole=hub ran the full local client
+    // sync, marked /readyz failed on provider-discovery noise, and rewrote
+    // ~/.grok/config.toml on a machine that is a SERVER for other machines.
+    expect(shouldSyncCodexOnStart({ ...baseConfig(), runtimeRole: "hub" })).toBe(false);
+    expect(shouldSyncGrokOnStart({ ...baseConfig(), runtimeRole: "hub" })).toBe(false);
+    // client/standalone roles keep today's behavior.
+    expect(shouldSyncCodexOnStart({ ...baseConfig(), runtimeRole: "standalone" })).toBe(true);
+    expect(shouldSyncGrokOnStart({ ...baseConfig(), runtimeRole: "standalone" })).toBe(true);
+  });
+
   test("absence, an empty object, and an explicit true all still sync", async () => {
     for (const clientIntegrations of [undefined, {}, { codex: true }]) {
       let calls = 0;

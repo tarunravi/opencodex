@@ -31,6 +31,30 @@ function readyBody(protocol = 1, minimumClientProtocol = 1) {
 }
 
 describe("remote hub client boundary", () => {
+  test("runtimeRole=hub without client state reads as disconnected so the hub can start", () => {
+    // First clisu-oracle dogfood boot: the hub role refused 'ocx start' because the
+    // client-state reader classified role=hub (no client block) as mismatched. A hub
+    // is a server; without client state it is simply not a connected client.
+    const readScript = `
+      const { readClientConnectionState } = require("./src/client/state");
+      console.log(JSON.stringify(readClientConnectionState()));
+    `;
+    const home = mkdtempSync(join(tmpdir(), "ocx-hub-role-"));
+    const readState = () => {
+      const child = spawnSync(process.execPath, ["--eval", readScript], {
+        cwd: repoRoot,
+        env: { ...process.env, OPENCODEX_HOME: home },
+        encoding: "utf8",
+      });
+      return JSON.parse(child.stdout.trim().split("\n").at(-1) ?? "{}");
+    };
+    writeFileSync(join(home, "config.json"), JSON.stringify({ port: 10190, runtimeRole: "hub" }));
+    expect(readState().kind).toBe("disconnected");
+    // Hub role WITH a client block stays mismatched (the honest conflict).
+    writeFileSync(join(home, "config.json"), JSON.stringify({ port: 10190, runtimeRole: "hub", client: { serverUrl: "https://hub.example.test" } }));
+    expect(readState().kind).toBe("mismatched");
+    rmSync(home, { recursive: true, force: true });
+  });
   test("canonicalizes origin and terminal /v1 only", () => {
     expect(normalizeHubOrigin("https://hub.example.test/v1")).toBe("https://hub.example.test");
     expect(normalizeHubOrigin("https://hub.example.test/v1/")).toBe("https://hub.example.test");

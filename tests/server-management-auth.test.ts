@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigPath, saveConfig } from "../src/config";
 import { startServer } from "../src/server";
+import { findAvailablePort } from "../src/server/ports";
 import type { OcxConfig } from "../src/types";
 import { serveGuiFile, serveSessionBootstrap } from "../src/server/gui-static";
 import { isProxyAdmissionSecret } from "../src/server/auth-cors";
@@ -975,6 +976,57 @@ describe("management and data-plane credential separation", () => {
     }), httpConfig, state, { trustedTailscaleIngress: true, now })).toBeNull();
   });
 
+  test("the live listener trusts Tailscale identity only on hub management ingress", async () => {
+    const managementPort = await findAvailablePort(0, "127.0.0.1");
+    const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: managementPort });
+    const config = hubConfig();
+    config.hub = {
+      ...config.hub,
+      managementIngress: { enabled: true, port: managementPort },
+    };
+    saveConfig(config);
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const server = startServer(publicPort, { managementAuthState: state });
+    const headers = { Host: "hub.example.test", "Tailscale-User-Login": "alice@example.test" };
+    try {
+      const spoofedPublic = await fetch(new URL("/opencodex-session", server.url), { headers });
+      expect(spoofedPublic.status).toBe(401);
+
+      const wrongUser = await fetch(`http://127.0.0.1:${managementPort}/opencodex-session`, {
+        headers: { ...headers, "Tailscale-User-Login": "mallory@example.test" },
+      });
+      expect(wrongUser.status).toBe(401);
+
+      const issued = await fetch(`http://127.0.0.1:${managementPort}/opencodex-session`, { headers });
+      expect(issued.status).toBe(200);
+      const html = await issued.text();
+      const token = /name="opencodex-session-token" content="([^"]+)"/.exec(html)?.[1];
+      expect(token).toBeDefined();
+      const management = await fetch(`http://127.0.0.1:${managementPort}/api/config`, {
+        headers: {
+          Host: "hub.example.test",
+          Origin: "https://hub.example.test",
+          "x-opencodex-api-key": token!,
+          "x-opencodex-gui-origin": "https://hub.example.test",
+        },
+      });
+      expect(management.status).toBe(200);
+
+      const adminConsent = await fetch(`http://127.0.0.1:${managementPort}/api/github/star`, {
+        method: "POST",
+        headers: {
+          Host: "hub.example.test",
+          Origin: "https://hub.example.test",
+          "x-opencodex-api-key": "admin-secret",
+        },
+      });
+      expect(adminConsent.status).toBe(403);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("pairing grants are digest-only, origin-bound, single-use, and never accept alternate credentials", () => {
     const config = hubConfig();
     const state = initializeManagementAuthState(config);
@@ -1020,6 +1072,50 @@ describe("management and data-plane credential separation", () => {
     expect(consumeGuiPairingGrant(
       exchange("https://dashboard.example.test"), { grant: expired.grant }, config, state, expired.expiresAt,
     )).toBeNull();
+  });
+
+  test("the management ingress preserves the one-use pairing exchange contract", async () => {
+    const managementPort = await findAvailablePort(0, "127.0.0.1");
+    const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: managementPort });
+    const config = hubConfig();
+    config.hub = { ...config.hub, managementIngress: { enabled: true, port: managementPort } };
+    saveConfig(config);
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const created = createGuiPairingGrant("https://dashboard.example.test", config, state);
+    const server = startServer(publicPort, { managementAuthState: state });
+    const url = `http://127.0.0.1:${managementPort}/opencodex-session`;
+    const headers = {
+      Host: "hub.example.test",
+      Origin: "https://dashboard.example.test",
+      "content-type": "application/json",
+    };
+    try {
+      const adminAttempt = await fetch(url, {
+        method: "POST",
+        headers: { ...headers, "x-opencodex-api-key": "admin-secret" },
+        body: JSON.stringify({ grant: created.grant }),
+      });
+      expect(adminAttempt.status).toBe(401);
+      expect(state.pairingGrants.size).toBe(1);
+
+      const exchanged = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ grant: created.grant }),
+      });
+      expect(exchanged.status).toBe(200);
+      expect(state.pairingGrants.size).toBe(0);
+
+      const replay = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ grant: created.grant }),
+      });
+      expect(replay.status).toBe(401);
+    } finally {
+      await server.stop(true);
+    }
   });
 
   test("non-loopback plaintext HTTP cannot carry a pairing grant, and no opt-in re-opens it", () => {
