@@ -365,9 +365,27 @@ export async function disconnectClient(
   let restored = true;
   if (state.value.selectedClients.includes("codex")) {
     const owner = journalOwner();
-    if (owner?.kind === "client" && owner.apiKeyId === state.value.apiKeyId) {
-      restored = restoreJournalState().complete;
-    } else if (owner !== null || isCodexRoutingInjected()) {
+    // A journal owned by this client key is ours, obviously. A journal owned by a PROCESS is
+    // also ours to unwind: it is what `ocx start` leaves behind, and connecting on top of it
+    // never transfers ownership — writeJournal() declines to overwrite a journal whose
+    // config is already injected, so the process owner survives into the connected state.
+    //
+    // Treating that as a conflict stranded the normal "start, then connect" path: disconnect
+    // refused, and nothing the operator could do would satisfy the check. The genuine
+    // conflict is a journal owned by a DIFFERENT client key, which is the one case where
+    // restoring would unwind somebody else's routing.
+    if (
+      owner === null
+      || owner.kind === "process"
+      || owner.apiKeyId === state.value.apiKeyId
+    ) {
+      if (owner !== null) restored = restoreJournalState().complete;
+      else if (isCodexRoutingInjected()) {
+        // Injected routing with no journal at all: there is no recorded baseline to restore,
+        // so unwinding would be a guess about what the config looked like before.
+        throw new Error("disconnect refused: Codex routing is injected but no journal records the original state");
+      }
+    } else {
       throw new Error("disconnect refused: Codex journal ownership conflicts with the connected key");
     }
     if (!restored) throw new Error("disconnect refused: Codex journal restore was partial");

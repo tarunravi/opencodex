@@ -263,14 +263,15 @@ describe("connect transaction and offline disconnect", () => {
   }
 });
 
-function runConnectedStateScenario(mode: "sync-401" | "sync-503" | "disconnect-conflict") {
+function runConnectedStateScenario(mode: "sync-401" | "sync-503" | "disconnect-conflict" | "disconnect-process-journal") {
   const opencodexHome = mkdtempSync(join(tmpdir(), "ocx-client-state-home-"));
   const codexHome = mkdtempSync(join(tmpdir(), "ocx-client-state-codex-"));
   const token = `ocx_data_${"e".repeat(40)}`;
   const fingerprint = createHash("sha256").update(token).digest("hex");
   const catalog = '{"models":[]}';
   const etag = `"sha256-${createHash("sha256").update(catalog).digest("base64url")}"`;
-  const selectedClients = mode === "disconnect-conflict" ? ["codex"] : ["claude"];
+  const isDisconnect = mode === "disconnect-conflict" || mode === "disconnect-process-journal";
+  const selectedClients = isDisconnect ? ["codex"] : ["claude"];
   writeFileSync(join(opencodexHome, "config.json"), JSON.stringify({
     port: 10100,
     providers: {},
@@ -292,7 +293,7 @@ function runConnectedStateScenario(mode: "sync-401" | "sync-503" | "disconnect-c
   }), "utf8");
   writeFileSync(join(opencodexHome, "service-api-token"), `${token}\n`, { mode: 0o600 });
   writeFileSync(join(codexHome, "opencodex-catalog.json"), catalog, "utf8");
-  writeFileSync(join(codexHome, "config.toml"), mode === "disconnect-conflict"
+  writeFileSync(join(codexHome, "config.toml"), isDisconnect
     ? 'model_provider = "opencodex"\n'
     : 'model_provider = "openai"\n', "utf8");
   if (mode === "disconnect-conflict") {
@@ -301,6 +302,20 @@ function runConnectedStateScenario(mode: "sync-401" | "sync-503" | "disconnect-c
       originalConfig: Buffer.from('model_provider = "openai"\n').toString("base64"),
       originalProfile: null,
       owner: { kind: "client", apiKeyId: "different-key" },
+      pid: 999_999,
+      timestamp: "2026-08-28T00:00:00.000Z",
+    }));
+  }
+  if (mode === "disconnect-process-journal") {
+    // The state `ocx start` leaves behind: routing is injected and the journal is owned by
+    // the proxy PROCESS, not by any client key. Connecting on top of this does not take
+    // ownership — writeJournal() refuses to overwrite a journal whose config is already
+    // injected — so the process owner survives into the connected state.
+    writeFileSync(join(codexHome, "opencodex-journal.json"), JSON.stringify({
+      version: 1,
+      originalConfig: Buffer.from('model_provider = "openai"\n').toString("base64"),
+      originalProfile: null,
+      owner: { kind: "process", pid: 999_999 },
       pid: 999_999,
       timestamp: "2026-08-28T00:00:00.000Z",
     }));
@@ -315,7 +330,7 @@ function runConnectedStateScenario(mode: "sync-401" | "sync-503" | "disconnect-c
       let result = null;
       let error = null;
       try {
-        if (mode === "disconnect-conflict") result = await disconnectClient();
+        if (mode === "disconnect-conflict" || mode === "disconnect-process-journal") result = await disconnectClient();
         else result = await syncConnectedClient({}, {
           fetchImpl: async () => Response.json({ error: "fixture" }, { status: mode === "sync-401" ? 401 : 503 }),
         });
@@ -376,6 +391,23 @@ describe("connected sync and disconnect conflicts", () => {
       expect(run.parsed.state.kind).toBe("connected");
       expect(run.parsed.tokenExists).toBe(true);
       expect(run.parsed.journalExists).toBe(true);
+    } finally { run.cleanup(); }
+  });
+
+  test("a journal left owned by the proxy process does not strand the connection", () => {
+    // Connecting after `ocx start` is the normal path, not an edge case: routing is already
+    // injected and the journal is owned by the proxy process. Ownership never transfers,
+    // because writeJournal() will not overwrite a journal whose config is already injected.
+    //
+    // Disconnect then read that surviving process owner as a conflict and refused, so the
+    // operator could neither disconnect nor make the check pass — the connection was stuck.
+    // A process-owned journal is ours to re-own on connect, so disconnect must complete.
+    const run = runConnectedStateScenario("disconnect-process-journal");
+    try {
+      expect(run.status).toBe(0);
+      expect(run.parsed.error).toBeNull();
+      expect(run.parsed.state.kind).toBe("disconnected");
+      expect(run.parsed.journalExists).toBe(false);
     } finally { run.cleanup(); }
   });
 });
