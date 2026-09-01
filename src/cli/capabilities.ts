@@ -108,6 +108,29 @@ export const CAPABILITIES: readonly Capability[] = [
     details: ["Reads /healthz plus local config; drives no management API route."],
   },
   {
+    command: ["connect", "rotate"],
+    summary: "Rotate the connected client's data key against the hub, with commit and abort.",
+    // One command drives all three: start returns the new secret once, commit promotes it,
+    // and abort unwinds a rotation that could not be confirmed. They are not separate verbs
+    // because a half-rotation is not a state an operator should be able to leave behind.
+    routes: [
+      { method: "POST", path: "/api/keys/rotate" },
+      { method: "POST", path: "/api/keys/rotate/commit" },
+      { method: "DELETE", path: "/api/keys/rotate" },
+    ],
+    flags: [
+      { name: "--pairing-code-stdin", value: "boolean", summary: "Read a one-time pairing code from stdin as the rotation authority." },
+      { name: "--admin-token-stdin", value: "boolean", summary: "Read the hub admin token from stdin as the rotation authority." },
+      { name: "--json", value: "boolean", summary: "Emit the rotation result as JSON." },
+    ],
+    mutates: true,
+    json: "payload",
+    details: [
+      "Requires transient authority on stdin; the credential is never persisted or echoed.",
+      "A rotation left pending by a crash is resumed here — startup and status stop rather than guess which key generation is live.",
+    ],
+  },
+  {
     command: ["capabilities"],
     summary: "List the declared CLI capabilities and the management routes they drive.",
     routes: [],
