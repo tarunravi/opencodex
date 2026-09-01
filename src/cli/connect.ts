@@ -28,7 +28,7 @@ export const CONNECT_USAGE = `Usage:
       [--no-sync]
   ocx connect status [--json]
   ocx connect rotate (--pairing-code-stdin | --admin-token-stdin)
-      [--allow-insecure-http] [--json]
+      [--json]
   ocx connect revoke --admin-token-stdin [--json]`;
 
 export const DISCONNECT_USAGE = `Usage:
@@ -128,7 +128,6 @@ async function runRotate(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const wantsJson = takeFlag(args, "--json");
   const pairing = takeFlag(args, "--pairing-code-stdin");
   const admin = takeFlag(args, "--admin-token-stdin");
-  const allowInsecureHttp = takeFlag(args, "--allow-insecure-http");
   if (Number(pairing) + Number(admin) !== 1) {
     throw new CliUsageError("choose exactly one of --pairing-code-stdin or --admin-token-stdin", CONNECT_USAGE);
   }
@@ -136,7 +135,6 @@ async function runRotate(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const value = new TextEncoder().encode(await readSecretLine(deps, pairing ? "pairing code" : "admin token"));
   const connection = await rotateConnectedClientKey({
     credential: { kind: pairing ? "pairing-grant" : "admin", value },
-    allowInsecureHttp,
   }, { fetchImpl: deps.fetchImpl });
   printData({ apiKeyId: connection.apiKeyId, rotation: "committed" }, wantsJson, [
     `Rotated connected API key ${connection.apiKeyId}; the previous key is no longer admitted.`,

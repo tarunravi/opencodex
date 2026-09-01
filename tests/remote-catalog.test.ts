@@ -13,7 +13,10 @@ describe("remote catalog adversarial consumer", () => {
     const result = await downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       fetchImpl: async () => response(body, { ...JSON_HEADERS, "X-OpenCodex-Key-Id": "client-key-1" }),
     });
-    expect(result).toEqual({ kind: "fresh", body, etag: '"catalog-v1"', keyId: "client-key-1" });
+    // No etag in the result: /v1/catalog emits no validator (Phase 1, D2), and the fixture's
+    // ETag header is deliberately left in place to prove the client ignores one even when a
+    // hub sends it.
+    expect(result).toEqual({ kind: "fresh", body, keyId: "client-key-1" });
   });
 
   test.each([
@@ -56,24 +59,28 @@ describe("remote catalog adversarial consumer", () => {
     })).rejects.toMatchObject({ code: "body_too_large" });
   });
 
-  test("allows the exact byte cap and retries one unconditional request after 304 without LKG", async () => {
+  test("allows the exact byte cap", async () => {
     const body = '{"models":[]}';
     const exact = await downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       maxBytes: new TextEncoder().encode(body).byteLength,
       fetchImpl: async () => response(body),
     });
     expect(exact.kind).toBe("fresh");
+  });
 
-    let calls = 0;
-    const refreshed = await downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
+  test("no request carries a conditional header", async () => {
+    // The retry-after-304 branch this replaces existed to recover from a conditional request
+    // the client no longer makes. With no validator to send, a 304 is a protocol error
+    // (asserted below) rather than something to retry past.
+    let sentConditional: boolean | null = null;
+    const result = await downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       fetchImpl: async (_input, init) => {
-        calls += 1;
-        expect(new Headers(init?.headers).has("if-none-match")).toBe(false);
-        return calls === 1 ? new Response(null, { status: 304 }) : response(body);
+        sentConditional = new Headers(init?.headers).has("if-none-match");
+        return response('{"models":[]}');
       },
     });
-    expect(calls).toBe(2);
-    expect(refreshed.kind).toBe("fresh");
+    expect(sentConditional).toBe(false);
+    expect(result.kind).toBe("fresh");
   });
 
   test("any 304 is a protocol error and non-JSON content is refused", async () => {

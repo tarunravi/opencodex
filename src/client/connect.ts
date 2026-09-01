@@ -80,7 +80,6 @@ export interface ClientConnectDeps {
 
 export interface RotateClientOptions {
   credential: OneTimeConnectCredential;
-  allowInsecureHttp?: boolean;
 }
 
 type CatalogSnapshot =
@@ -173,7 +172,7 @@ async function rotationAuthority(
     connection.managementUrl,
     localGuiOrigin(),
     options.credential.value,
-    { allowInsecureHttp: options.allowInsecureHttp, fetchImpl: deps.fetchImpl },
+    { fetchImpl: deps.fetchImpl },
   );
   return { kind: "gui-session", value: session };
 }
@@ -306,11 +305,22 @@ export async function rotateConnectedClientKey(
     if (connection && authority && started) {
       if (markerPersisted && connection.pendingOperation) {
         try {
-          const restored = restoreTokenBackup(connection.pendingOperation.oldKeyBackupPath);
+          // Abort FIRST, restore second.
+          //
+          // The old order restored the local token and then asked the hub to abort. If that
+          // abort failed transiently the process was left holding the old key locally while
+          // the hub still had a pending rotation for the new one — two sides disagreeing
+          // about which generation is current, with the failure surfaced only as "rollback
+          // was incomplete". Confirming the hub's state first means the local file is only
+          // rewound once the authority that decides it has agreed.
           await abortClientKeyRotation(connection.managementUrl, authority, connection.apiKeyId, started.rotationId, { fetchImpl: deps.fetchImpl });
+          const restored = restoreTokenBackup(connection.pendingOperation.oldKeyBackupPath);
           clearRotationState(connection, restored.fingerprint);
           removeOrphanTokenBackup();
         } catch (recoveryError) {
+          // Both candidates and the pending marker stay on disk. Recovery cannot tell which
+          // generation is authoritative without the hub, so it preserves the evidence and
+          // names the command that carries the authority to ask.
           throw new RotationRecoveryRequiredError(
             "rotation rollback was incomplete; preserve service-api-token and .prev and rerun ocx connect rotate with transient authority",
             { cause: recoveryError },

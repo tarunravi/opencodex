@@ -149,7 +149,7 @@ describe("remote hub client boundary", () => {
     const fresh = await downloadClientCatalog("https://hub.example.test", "ocx_data_test", {
       fetchImpl: async (_input, init) => {
         sentConditional = new Headers(init?.headers).get("if-none-match");
-        return new Response('{"models":[]}');
+        return new Response('{"models":[]}', { headers: { "Content-Type": "application/json" } });
       },
     });
     expect(sentConditional).toBeNull();
