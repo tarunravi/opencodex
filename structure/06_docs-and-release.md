@@ -272,3 +272,7 @@ The Release workflow remains manual and publish-focused. Before any dry-run or p
 checks that the exact release commit (`GITHUB_SHA`) already has a successful Cross-platform CI run.
 This keeps release runs short and makes release a deployment of a verified commit rather than a
 second CI pipeline.
+
+## Remote Hub locale and release gate
+
+The Remote Hub guide and affected CLI, server-config, management-API, and dashboard references have eight sources: root English plus `fr`, `ko`, `zh-cn`, `zh-tw`, `ru`, `ja`, and `tr`. English is canonical; commands, defaults, endpoint auth, and warnings remain exact in translations. A release requires the remote-only focused/full gates, privacy scan, GUI/docs builds, protocol compatibility receipts, and the MAINTAINERS security review for the exact head.

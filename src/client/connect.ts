@@ -21,7 +21,13 @@ import {
 import { DEFAULT_CATALOG_PATH } from "../codex/paths";
 import {
   readServiceApiTokenState,
+  readTokenBackupState,
   removeServiceApiTokenFileIfOwned,
+  removeOrphanTokenBackup,
+  replaceServiceApiTokenFile,
+  restoreTokenBackup,
+  serviceApiTokenBackupPath,
+  writeTokenBackup,
   writeServiceApiTokenFile,
 } from "../lib/service-secrets";
 import { MAX_REMOTE_CATALOG_BYTES } from "../server/catalog-download";
@@ -31,12 +37,16 @@ import type {
 } from "../types";
 import {
   downloadClientCatalog,
+  abortClientKeyRotation,
+  commitClientKeyRotation,
   exchangeConnectPairingGrant,
   fetchHubReady,
   HubClientError,
   issueClientKey,
   normalizeHubOrigin,
+  probeClientKeyId,
   revokeClientKey,
+  startClientKeyRotation,
   type ConnectGuiSession,
   type IssuedClientKey,
   type OneTimeConnectCredential,
@@ -46,6 +56,13 @@ import {
   commitClientConnection,
   readClientConnectionState,
 } from "./state";
+
+class RotationRecoveryRequiredError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RotationRecoveryRequiredError";
+  }
+}
 
 export interface ConnectOptions {
   serverUrl: string;
@@ -59,6 +76,10 @@ export interface ConnectOptions {
 export interface ClientConnectDeps {
   fetchImpl?: typeof fetch;
   now?: () => Date;
+}
+
+export interface RotateClientOptions {
+  credential: OneTimeConnectCredential;
 }
 
 type CatalogSnapshot =
@@ -139,6 +160,186 @@ function clientKeyName(): string {
 
 function releaseCredential(credential: OneTimeConnectCredential): void {
   credential.value.fill(0);
+}
+
+async function rotationAuthority(
+  connection: OcxClientConnectionConfig,
+  options: RotateClientOptions,
+  deps: ClientConnectDeps,
+): Promise<{ kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession }> {
+  if (options.credential.kind === "admin") return { kind: "admin", value: options.credential.value };
+  const session = await exchangeConnectPairingGrant(
+    connection.managementUrl,
+    localGuiOrigin(),
+    options.credential.value,
+    { fetchImpl: deps.fetchImpl },
+  );
+  return { kind: "gui-session", value: session };
+}
+
+function clearRotationState(
+  connection: OcxClientConnectionConfig,
+  tokenFingerprint: string,
+): OcxClientConnectionConfig {
+  const next = { ...connection, tokenFingerprint };
+  delete next.pendingOperation;
+  commitClientConnection(next);
+  return next;
+}
+
+async function recoverRotationWithAuthority(
+  connection: OcxClientConnectionConfig,
+  authority: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+  deps: ClientConnectDeps,
+): Promise<OcxClientConnectionConfig> {
+  const pending = connection.pendingOperation;
+  if (!pending || pending.oldKeyBackupPath !== serviceApiTokenBackupPath()) {
+    throw new RotationRecoveryRequiredError("rotation recovery state is missing or invalid");
+  }
+  const current = readServiceApiTokenState();
+  const backup = readTokenBackupState();
+  if (current.kind !== "present" || backup.kind !== "present") {
+    throw new RotationRecoveryRequiredError(
+      "rotation recovery requires owner-only current and .prev token files; preserve both and rerun ocx connect rotate with transient authority",
+    );
+  }
+  let currentAccepted: boolean;
+  let backupAccepted: boolean;
+  try {
+    [currentAccepted, backupAccepted] = await Promise.all([
+      probeClientKeyId(connection.serverUrl, current.token, connection.apiKeyId, { fetchImpl: deps.fetchImpl }),
+      probeClientKeyId(connection.serverUrl, backup.token, connection.apiKeyId, { fetchImpl: deps.fetchImpl }),
+    ]);
+  } catch (error) {
+    throw new RotationRecoveryRequiredError(
+      "rotation recovery could not establish both key admissions; preserve service-api-token and .prev",
+      { cause: error },
+    );
+  }
+  if (currentAccepted && backupAccepted) {
+    await commitClientKeyRotation(connection.managementUrl, authority, connection.apiKeyId, pending.rotationId, { fetchImpl: deps.fetchImpl });
+    const next = clearRotationState(connection, current.fingerprint);
+    removeOrphanTokenBackup();
+    return next;
+  }
+  if (currentAccepted && !backupAccepted) {
+    const next = clearRotationState(connection, current.fingerprint);
+    removeOrphanTokenBackup();
+    return next;
+  }
+  if (!currentAccepted && backupAccepted) {
+    const restored = restoreTokenBackup(pending.oldKeyBackupPath);
+    await abortClientKeyRotation(connection.managementUrl, authority, connection.apiKeyId, pending.rotationId, { fetchImpl: deps.fetchImpl });
+    const next = clearRotationState(connection, restored.fingerprint);
+    removeOrphanTokenBackup();
+    return next;
+  }
+  throw new RotationRecoveryRequiredError(
+    "both rotation candidates were rejected; preserve service-api-token and .prev and repair admission from the hub",
+  );
+}
+
+export async function recoverPendingClientRotation(
+  options: RotateClientOptions,
+  deps: ClientConnectDeps = {},
+): Promise<OcxClientConnectionConfig> {
+  try {
+    const state = readClientConnectionState();
+    if (state.kind !== "connected" || !state.value.pendingOperation) {
+      throw new Error("no pending client key rotation to recover");
+    }
+    const authority = await rotationAuthority(state.value, options, deps);
+    return await recoverRotationWithAuthority(state.value, authority, deps);
+  } finally {
+    releaseCredential(options.credential);
+  }
+}
+
+export async function rotateConnectedClientKey(
+  options: RotateClientOptions,
+  deps: ClientConnectDeps = {},
+): Promise<OcxClientConnectionConfig> {
+  let connection: OcxClientConnectionConfig | null = null;
+  let authority: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession } | null = null;
+  let started: { rotationId: string; key: string; createdAt: string } | null = null;
+  let markerPersisted = false;
+  try {
+    const state = readClientConnectionState();
+    if (state.kind !== "connected") throw new Error(`connect rotate is available only while connected (${state.kind})`);
+    connection = state.value;
+    authority = await rotationAuthority(connection, options, deps);
+    if (connection.pendingOperation) return await recoverRotationWithAuthority(connection, authority, deps);
+    const current = readServiceApiTokenState();
+    if (current.kind !== "present" || current.fingerprint !== connection.tokenFingerprint) {
+      throw new Error(current.kind === "unsafe" ? current.reason : "connected service token ownership changed");
+    }
+    writeTokenBackup(current.fingerprint);
+    const rotation = await startClientKeyRotation(connection.managementUrl, authority, connection.apiKeyId, { fetchImpl: deps.fetchImpl });
+    started = { rotationId: rotation.rotationId, key: rotation.key, createdAt: rotation.createdAt };
+    const marked: OcxClientConnectionConfig = {
+      ...connection,
+      pendingOperation: {
+        kind: "rotate",
+        rotationId: rotation.rotationId,
+        newKeyIssuedAt: rotation.createdAt,
+        oldKeyBackupPath: serviceApiTokenBackupPath(),
+      },
+    };
+    commitClientConnection(marked);
+    connection = marked;
+    markerPersisted = true;
+    const replacement = replaceServiceApiTokenFile(rotation.key);
+    if (!await probeClientKeyId(connection.serverUrl, rotation.key, connection.apiKeyId, { fetchImpl: deps.fetchImpl })) {
+      throw new Error("new client key admission probe was refused");
+    }
+    try {
+      await commitClientKeyRotation(connection.managementUrl, authority, connection.apiKeyId, rotation.rotationId, { fetchImpl: deps.fetchImpl });
+    } catch {
+      return await recoverRotationWithAuthority(connection, authority, deps);
+    }
+    const next = clearRotationState(connection, replacement.fingerprint);
+    removeOrphanTokenBackup();
+    return next;
+  } catch (error) {
+    if (error instanceof RotationRecoveryRequiredError) throw error;
+    if (connection && authority && started) {
+      if (markerPersisted && connection.pendingOperation) {
+        try {
+          // Abort FIRST, restore second.
+          //
+          // The old order restored the local token and then asked the hub to abort. If that
+          // abort failed transiently the process was left holding the old key locally while
+          // the hub still had a pending rotation for the new one — two sides disagreeing
+          // about which generation is current, with the failure surfaced only as "rollback
+          // was incomplete". Confirming the hub's state first means the local file is only
+          // rewound once the authority that decides it has agreed.
+          await abortClientKeyRotation(connection.managementUrl, authority, connection.apiKeyId, started.rotationId, { fetchImpl: deps.fetchImpl });
+          const restored = restoreTokenBackup(connection.pendingOperation.oldKeyBackupPath);
+          clearRotationState(connection, restored.fingerprint);
+          removeOrphanTokenBackup();
+        } catch (recoveryError) {
+          // Both candidates and the pending marker stay on disk. Recovery cannot tell which
+          // generation is authoritative without the hub, so it preserves the evidence and
+          // names the command that carries the authority to ask.
+          throw new RotationRecoveryRequiredError(
+            "rotation rollback was incomplete; preserve service-api-token and .prev and rerun ocx connect rotate with transient authority",
+            { cause: recoveryError },
+          );
+        }
+      } else {
+        try { await abortClientKeyRotation(connection.managementUrl, authority, connection.apiKeyId, started.rotationId, { fetchImpl: deps.fetchImpl }); }
+        finally { removeOrphanTokenBackup(); }
+      }
+    } else {
+      const backup = readTokenBackupState();
+      if (backup.kind === "present") removeOrphanTokenBackup();
+    }
+    throw error;
+  } finally {
+    if (started) started.key = "";
+    authority = null;
+    releaseCredential(options.credential);
+  }
 }
 
 async function cleanupIssuedKey(

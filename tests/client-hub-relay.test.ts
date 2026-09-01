@@ -3,6 +3,7 @@ import {
   HUB_RELAY_REQUEST_BODY_MAX_BYTES,
   HUB_RELAY_RESPONSE_BODY_MAX_BYTES,
   relayHubManagementRequest,
+  validateHubRelayRequestHeaders,
 } from "../src/client/hub-relay";
 
 const target = { managementUrl: "https://hub.example.test", browserOrigin: "http://127.0.0.1:10100" };
@@ -27,6 +28,19 @@ function relayRequest(path: string, init: RequestInit = {}): Request {
 }
 
 describe("fixed-target hub management relay", () => {
+  test("raw header validation rejects CL/TE ambiguity, duplicate lengths, upgrade, and CRLF", () => {
+    for (const headers of [
+      [["Content-Length", "1"], ["Transfer-Encoding", "chunked"]],
+      [["Content-Length", "1"], ["Content-Length", "2"]],
+      [["Content-Length", "1, 2"]],
+      [["Upgrade", "websocket"]],
+      [["X-Test", "ok\r\ninjected: yes"]],
+    ] as const) expect(validateHubRelayRequestHeaders(headers).ok).toBe(false);
+    const valid = validateHubRelayRequestHeaders([["Connection", "X-OpenCodex-API-Key"], ["X-OpenCodex-API-Key", "session"]]);
+    expect(valid.ok).toBe(true);
+    if (valid.ok) expect(valid.connectionNamed.has("x-opencodex-api-key")).toBe(true);
+  });
+
   test("forwards only to the configured hub and strips machine, cookie, forwarding, and hop headers", async () => {
     let captured: { url: string; headers: Headers } | null = null;
     const response = await relayHubManagementRequest(relayRequest("/api/usage?range=all"), "/api/usage?range=all", target, {
@@ -111,5 +125,23 @@ describe("fixed-target hub management relay", () => {
       })) as typeof fetch,
     });
     expect(timedOut.status).toBe(502);
+  });
+
+  test("strips response headers nominated by Connection and propagates browser cancellation", async () => {
+    let cancelled = false;
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("first")); },
+      cancel() { cancelled = true; },
+    });
+    const response = await relayHubManagementRequest(relayRequest("/api/config"), "/api/config", target, {
+      fetchImpl: (async () => new Response(upstreamBody, {
+        headers: { "Content-Type": "application/json", Connection: "ETag", ETag: "secret-validator" },
+      })) as typeof fetch,
+    });
+    expect(response.headers.get("etag")).toBeNull();
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await reader.cancel();
+    expect(cancelled).toBe(true);
   });
 });

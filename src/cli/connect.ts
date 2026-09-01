@@ -3,9 +3,10 @@ import { DEFAULT_CATALOG_PATH } from "../codex/paths";
 import {
   disconnectClient,
   revokeConnectedClientKey,
+  rotateConnectedClientKey,
   connectClient,
 } from "../client/connect";
-import { readClientConnectionState } from "../client/state";
+import { inspectClientRotationRecoveryGate, readClientConnectionState } from "../client/state";
 import { readServiceApiTokenState } from "../lib/service-secrets";
 import type { OcxConnectedClientId } from "../types";
 import {
@@ -26,6 +27,8 @@ export const CONNECT_USAGE = `Usage:
       [--clients codex,claude] [--management-transport direct|relay]
       [--no-sync]
   ocx connect status [--json]
+  ocx connect rotate (--pairing-code-stdin | --admin-token-stdin)
+      [--json]
   ocx connect revoke --admin-token-stdin [--json]`;
 
 export const DISCONNECT_USAGE = `Usage:
@@ -45,11 +48,13 @@ export type ClientConnectionStatus = {
   catalogAgeSeconds?: number;
   catalog: "present" | "missing" | "unsafe";
   token: "owned" | "missing" | "changed" | "unsafe";
+  rotation: "clean" | "orphan-cleaned" | "recovery-required" | "unsafe";
 };
 
 export function collectClientConnectionStatus(now = Date.now()): ClientConnectionStatus {
   const state = readClientConnectionState();
   const tokenState = readServiceApiTokenState();
+  const rotation = inspectClientRotationRecoveryGate(state).kind;
   let catalog: ClientConnectionStatus["catalog"] = "missing";
   if (existsSync(DEFAULT_CATALOG_PATH)) {
     try {
@@ -65,6 +70,7 @@ export function collectClientConnectionStatus(now = Date.now()): ClientConnectio
       ...(state.kind === "invalid" || state.kind === "mismatched" ? { reason: state.reason } : {}),
       catalog,
       token: tokenState.kind === "absent" ? "missing" : tokenState.kind === "unsafe" ? "unsafe" : "changed",
+      rotation,
     };
   }
   const catalogAgeSeconds = state.value.catalogSyncedAt
@@ -88,6 +94,7 @@ export function collectClientConnectionStatus(now = Date.now()): ClientConnectio
     ...(catalogAgeSeconds !== undefined ? { catalogAgeSeconds } : {}),
     catalog,
     token,
+    rotation,
   };
 }
 
@@ -111,8 +118,27 @@ function statusLines(status: ClientConnectionStatus): string[] {
     `API key id: ${status.apiKeyId}`,
     `Clients: ${status.selectedClients?.join(", ")}`,
     `Token file: ${status.token}`,
+    `Key rotation: ${status.rotation}`,
     `Catalog: ${status.catalog}${status.catalogAgeSeconds !== undefined ? ` (${status.catalogAgeSeconds}s old)` : ""}`,
   ];
+}
+
+async function runRotate(argv: string[], deps: RuntimeApiDeps): Promise<void> {
+  const args = [...argv];
+  const wantsJson = takeFlag(args, "--json");
+  const pairing = takeFlag(args, "--pairing-code-stdin");
+  const admin = takeFlag(args, "--admin-token-stdin");
+  if (Number(pairing) + Number(admin) !== 1) {
+    throw new CliUsageError("choose exactly one of --pairing-code-stdin or --admin-token-stdin", CONNECT_USAGE);
+  }
+  rejectArgs(args, CONNECT_USAGE, { redactValues: true });
+  const value = new TextEncoder().encode(await readSecretLine(deps, pairing ? "pairing code" : "admin token"));
+  const connection = await rotateConnectedClientKey({
+    credential: { kind: pairing ? "pairing-grant" : "admin", value },
+  }, { fetchImpl: deps.fetchImpl });
+  printData({ apiKeyId: connection.apiKeyId, rotation: "committed" }, wantsJson, [
+    `Rotated connected API key ${connection.apiKeyId}; the previous key is no longer admitted.`,
+  ]);
 }
 
 async function runConnect(argv: string[], deps: RuntimeApiDeps): Promise<void> {
@@ -168,6 +194,10 @@ export async function handleConnectCommand(argv: string[], deps: RuntimeApiDeps 
     }
     if (argv[0] === "revoke") {
       await runRevoke(argv.slice(1), deps);
+      return;
+    }
+    if (argv[0] === "rotate") {
+      await runRotate(argv.slice(1), deps);
       return;
     }
     await runConnect(argv, deps);

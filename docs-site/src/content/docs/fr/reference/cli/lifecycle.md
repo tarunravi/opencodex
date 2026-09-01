@@ -278,3 +278,7 @@ ocx update --tag preview
 ```
 
 Les nouvelles versions deviennent disponibles lorsque le [workflow de publication](https://github.com/lidge-jun/opencodex/actions/workflows/release.yml) les publie sur npm.
+
+## Cycle de vie du client Remote Hub
+
+Utilisez `ocx connect <url> --pairing-code-stdin`, `ocx connect status`, `ocx sync` et `ocx connect rotate --pairing-code-stdin`. `ocx disconnect` restaure l'état local hors ligne sans révoquer la clé du hub. Tant que le client est connecté, `ocx connect revoke --admin-token-stdin` révoque l'`apiKeyId` enregistré; après déconnexion, utilisez **Integrations → API Keys** sur le hub. Les secrets passent uniquement par stdin, jamais par argv.

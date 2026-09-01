@@ -25,6 +25,47 @@ public-internet surface and is outside this deployment model.
   on the public listener is ignored. `remoteGui.allowedTailscaleUsers` controls session issuance; it
   does not create a new general-purpose principal.
 
+## Roles and direct data flow
+
+`standalone` keeps data and management on one machine. A `hub` owns provider credentials, the
+catalog, and usage records. A `client` stores only its connection metadata and one per-client data
+key. Codex and Claude traffic goes directly from the client to the hub data listener; it is not
+tunneled through the dashboard or the loopback management relay.
+
+Connect with exactly one transient authority source. The authority is read from stdin and is never
+written to config or the token file:
+
+```bash
+ocx connect https://hub-name.tailnet-name.ts.net --pairing-code-stdin
+ocx connect status
+ocx sync
+```
+
+The hub automatically issues a per-client key. The client writes it to the existing owner-only
+`service-api-token` file, never `config.json`. While connected, usage comes from the hub usage store
+filtered to that client's stable `apiKeyId`. After disconnect, usage comes from the local store.
+OpenCodex does not mirror usage between the two stores.
+
+Rotate a connected client with a fresh transient authority:
+
+```bash
+ocx connect rotate --pairing-code-stdin
+# or, only over HTTPS:
+ocx connect rotate --admin-token-stdin
+```
+
+Rotation keeps the old and new data keys valid for at most ten minutes under the same `apiKeyId`.
+The client backs up the old token as `service-api-token.prev`, atomically installs and probes the new
+key, then commits. If a commit response is uncertain, rerun the rotate command with transient
+authority; recovery probes both files before committing or restoring. Never delete either file when
+recovery reports that both candidates were rejected.
+
+`ocx disconnect` is local and works while the hub is offline. It restores local client state and
+does not revoke the hub key. After disconnect, revoke that key from **Integrations → API Keys** on
+the hub. `ocx connect revoke --admin-token-stdin` is available only while still connected and uses
+the persisted `apiKeyId`; it accepts no id override. Browser session logout/expiry is separate from
+data-key rotation, revocation, and disconnect.
+
 ## Linux systemd or macOS launchd
 
 Choose the hub's Tailscale address for the data listener and the exact browser-visible HTTPS origin
@@ -227,3 +268,23 @@ ocx service repair
 For a container rollback, remove or replace the container while retaining the named state volume.
 For a service rollback, stop the branch service and repair the prior release against the same
 `OPENCODEX_HOME`. Disabling management ingress or Serve does not require changing the data listener.
+
+## Troubleshooting
+
+- **Hub down:** `ocx connect status` still shows the saved connection. `ocx disconnect` can restore
+  local state offline; it cannot revoke the remote key.
+- **Stale catalog:** `ocx sync` keeps a validated last-known-good catalog only for transient hub
+  failures. Authentication, schema, size, and protocol failures are hard errors and never fall back
+  to local providers.
+- **Rotated token or `.prev` recovery:** rerun `ocx connect rotate` with a pairing code or admin token.
+  Do not edit or remove either token candidate before the recovery probe finishes.
+- **Protocol mismatch:** upgrade the older side named by the `hub-too-new` or `hub-too-old` message.
+  Negotiation fails before token, catalog, journal, or client-state writes.
+- **Lost or burned pairing code:** create a new short-lived code. Grants are one-use and repeated
+  failures are rate-limited without revealing whether a code exists.
+- **Plain HTTP warning:** pairing over non-loopback HTTP requires the explicit
+  `--allow-insecure-http` opt-in. Admin tokens are never sent over HTTP.
+- **Remote session ended:** sign in or pair again. Logout and expiry invalidate only the browser
+  session, not a client data key.
+- **Outstanding revocation after disconnect:** use the hub dashboard's **Integrations → API Keys**
+  page. It is the sole post-disconnect revocation path.

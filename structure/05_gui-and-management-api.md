@@ -381,3 +381,7 @@ the next start (legacy `OCX_DEBUG_FRAMES` still enables the same path). Lines
 use the `[ocx:<adapter>:<event>]` prefix, go to the proxy terminal, and are buffered for
 `ocx debug provider logs` / `ocx debug provider logs -f`. Usage JSONL tails with
 `ocx debug usage logs [-f]`. Separate from provider buffered logs above.
+
+## Remote credentials and bounded sessions
+
+Data keys authorize only the data matrix and authenticated catalog. Admin credentials authorize ordinary management and key rotation but cannot mint, exchange, or refresh a `gui-session`. Pairing grants are digest-only, origin-bound, one-use, capped at 128 live grants, burned after five grant failures, and source-limited after ten failures in ten minutes with at most 1,024 source buckets. `POST /api/session/logout` invalidates only the current origin/CSRF-authorized browser session.

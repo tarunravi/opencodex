@@ -43,6 +43,34 @@ describe("isOpencodexHealthz", () => {
   });
 });
 
+describe("remote protocol feature negotiation", () => {
+  test("intersects additive features and rejects incompatible floors", () => {
+    const compatible = checkRemoteProtocolCompatibility({
+      protocol: 2,
+      minimumClientProtocol: 1,
+      managementUrl: "https://hub.example.test",
+      features: ["rotation", "future"],
+    }, { protocol: 1, minimumHubProtocol: 1, features: ["rotation"] });
+    expect(compatible.ok).toBe(true);
+    if (compatible.ok) expect([...compatible.features]).toEqual(["rotation"]);
+    expect(checkRemoteProtocolCompatibility({
+      protocol: 2, minimumClientProtocol: 2, managementUrl: "https://hub.example.test",
+    }, { protocol: 1, minimumHubProtocol: 1 }).ok).toBe(false);
+    expect(checkRemoteProtocolCompatibility({
+      protocol: 1, minimumClientProtocol: 1, managementUrl: "https://hub.example.test",
+    }, { protocol: 2, minimumHubProtocol: 2 }).ok).toBe(false);
+  });
+
+  test.each([undefined, 0, Number.NaN, 1.5, -1])("rejects malformed protocol %p as invalid", protocol => {
+    const result = checkRemoteProtocolCompatibility({
+      protocol,
+      minimumClientProtocol: 1,
+      managementUrl: "https://hub.example.test",
+    });
+    expect(result).toMatchObject({ ok: false, reason: "invalid" });
+  });
+});
+
 describe("probeHostname", () => {
   test("wildcards and empty answer on IPv4 loopback; concrete hosts pass through", () => {
     expect(probeHostname(undefined)).toBe("127.0.0.1");
@@ -732,6 +760,7 @@ describe("remote readiness protocol metadata", () => {
     expect(checkRemoteProtocolCompatibility({ ...metadata, protocol: 2 })).toEqual({
       ok: true,
       metadata: { ...metadata, protocol: 2 },
+      features: new Set(),
     });
   });
 });

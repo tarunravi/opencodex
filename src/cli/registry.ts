@@ -101,7 +101,10 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     summary: "Connect this machine to a remote OpenCodex hub without persisting the one-time authority.",
     details: [
       "Status: ocx connect status [--json]",
+      "Rotate or recover: ocx connect rotate (--pairing-code-stdin | --admin-token-stdin) [--json]",
       "Revoke while connected: ocx connect revoke --admin-token-stdin [--json]",
+      "Machine resources: /api/machine/status, /api/machine/shim, /api/machine/clients, /api/machine/sync, /api/machine/disconnect, and the fixed /api/machine/hub-relay namespace.",
+      "Remote browser self-logout uses /api/session/logout from the GUI; it is distinct from client disconnect and key revocation.",
       "Credentials are accepted only through stdin; argv and environment credential forms are not supported.",
     ],
   },
@@ -272,8 +275,12 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     name: "access",
     usage: "ocx access <key|endpoints|models|test> ...",
     summary: "Manage OpenCodex admission API keys and inspect external endpoints.",
+    details: [
+      "Key rotation start uses POST /api/keys/rotate and returns the replacement secret once.",
+      "Commit uses POST /api/keys/rotate/commit; abort uses DELETE /api/keys/rotate with the returned rotation id.",
+    ],
   },
-  { name: "api-key", usage: "ocx api-key <list|create|remove> ...", summary: "Alias of ocx access key." },
+  { name: "api-key", usage: "ocx api-key <list|create|rotate|remove> ...", summary: "Alias of ocx access key." },
   {
     name: "export",
     usage: "ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh|mcode|zcode|prime|aside> [--json] [--out <path>] [--force]",

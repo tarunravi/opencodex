@@ -69,6 +69,73 @@ function writeRuntimePort(opencodexHome: string, port: number, pid: number): voi
 }
 
 describe("ocx ready real subprocess", () => {
+  test("released-process protocol skew matrix rejects before any local write", async () => {
+    const homes = isolatedHomes("ocx-protocol-skew-subprocess-");
+    const script = `
+      const fs = require("node:fs");
+      const { checkRemoteProtocolCompatibility } = require("./src/remote/protocol");
+      const base = { protocol: 1, minimumClientProtocol: 1, managementUrl: "https://hub.example.test" };
+      const rows = {
+        baseline: checkRemoteProtocolCompatibility(base),
+        featureIntersection: checkRemoteProtocolCompatibility({ ...base, protocol: 2, features: ["rotation", "future"] }, { protocol: 1, minimumHubProtocol: 1, features: ["rotation"] }),
+        hubTooNew: checkRemoteProtocolCompatibility({ ...base, protocol: 2, minimumClientProtocol: 2 }),
+        hubTooOld: checkRemoteProtocolCompatibility(base, { protocol: 2, minimumHubProtocol: 2 }),
+        unknownFeature: checkRemoteProtocolCompatibility({ ...base, features: ["unknown-x"] }),
+        malformed: [undefined, 0, NaN, 1.5, -1].map(protocol => checkRemoteProtocolCompatibility({ ...base, protocol })),
+      };
+      console.log(JSON.stringify({
+        rows: {
+          baseline: rows.baseline.ok,
+          featureIntersection: rows.featureIntersection.ok ? [...rows.featureIntersection.features] : [],
+          hubTooNew: rows.hubTooNew,
+          hubTooOld: rows.hubTooOld,
+          unknownFeature: rows.unknownFeature.ok ? [...rows.unknownFeature.features] : [],
+          malformed: rows.malformed.map(row => row.ok ? "accepted" : row.reason),
+        },
+        opencodexFiles: fs.readdirSync(process.env.OPENCODEX_HOME),
+        codexFiles: fs.readdirSync(process.env.CODEX_HOME),
+      }));
+    `;
+    const child = Bun.spawn([process.execPath, "--eval", script], {
+      cwd: repoRoot,
+      env: { ...process.env, OPENCODEX_HOME: homes.opencodexHome, CODEX_HOME: homes.codexHome },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    try {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(JSON.parse(stdout.trim())).toEqual({
+        rows: {
+          baseline: true,
+          featureIntersection: ["rotation"],
+          hubTooNew: {
+            ok: false,
+            reason: "hub-too-new",
+            message: "OpenCodex hub requires remote protocol 2; this client supports protocol 1. Upgrade ocx on this client.",
+          },
+          hubTooOld: {
+            ok: false,
+            reason: "hub-too-old",
+            message: "OpenCodex hub provides remote protocol 1; this client requires at least 2. Upgrade ocx on the hub.",
+          },
+          unknownFeature: [],
+          malformed: ["invalid", "invalid", "invalid", "invalid", "invalid"],
+        },
+        opencodexFiles: [],
+        codexFiles: [],
+      });
+    } finally {
+      child.kill();
+      rmSync(homes.root, { recursive: true, force: true });
+    }
+  });
+
   test("ready --wait exits immediately on terminal failed readiness", async () => {
     const homes = isolatedHomes("ocx-ready-subprocess-failed-");
     const fixturePid = process.pid;

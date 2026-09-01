@@ -15,7 +15,7 @@ import { SidebarGithubRow } from "./components/sidebar-github-row";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconX, IconRefresh} from "./icons";
 import { useI18n, useT, LOCALES, localeDisplayName, type Locale, type TKey } from "./i18n/shared";
 import { Select } from "./ui";
-import { configureApiTargets, hasApiSession, installApiAuthFetch, installApiSessionFromHtml } from "./api";
+import { configureApiTargets, hasApiSession, installApiAuthFetch, installApiSessionFromHtml, logoutApiSession } from "./api";
 import { apiBaseForPlane, discoverApiTargets, isConnectedRuntime, standaloneApiTargets, type ApiTargets } from "./api-targets";
 import { ConnectPairingForm } from "./connect-pairing";
 import { type Page } from "./app-routing";
@@ -111,6 +111,7 @@ export default function App() {
   const [targetsSettled, setTargetsSettled] = useState(() => !isConnectedRuntime());
   const [targetError, setTargetError] = useState(false);
   const [sharedSessionReady, setSharedSessionReady] = useState(() => hasApiSession("shared"));
+  const [sessionLoggingOut, setSessionLoggingOut] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -233,6 +234,15 @@ export default function App() {
     }
   };
 
+  const handleSessionLogout = async () => {
+    if (sessionLoggingOut) return;
+    setSessionLoggingOut(true);
+    const loggedOut = await logoutApiSession("shared");
+    setSessionLoggingOut(false);
+    if (loggedOut) setSharedSessionReady(false);
+    else alert(t("connection.sessionLogoutFailed"));
+  };
+
   const brand = (
     <div className="brand">
       <span className="brand-logo" role="img" aria-label={t("app.logoAria")} />
@@ -252,6 +262,12 @@ export default function App() {
         </button>
         {brand}
         <div className="mobile-topbar-actions">
+          {targets.connected && sharedSessionReady && (
+            <button type="button" className="sidebar-orb" onClick={() => { void handleSessionLogout(); }} disabled={sessionLoggingOut}
+              aria-label={t(sessionLoggingOut ? "connection.sessionLoggingOut" : "connection.sessionLogout")} title={t("connection.sessionLogout")}>
+              <IconX />
+            </button>
+          )}
           <button type="button" className="sidebar-orb sidebar-orb--danger" onClick={handleStop} disabled={stopping}
             aria-label={t(targets.connected ? "connection.disconnect" : "dash.stop")} title={t(targets.connected ? "connection.disconnect" : "dash.stop")}>
             <IconPower />
@@ -323,6 +339,13 @@ export default function App() {
           <div className="sidebar-action-row">
             <span className="sidebar-action-label">{t("dash.actions")}</span>
             <div className="sidebar-action-orbs">
+              {targets.connected && sharedSessionReady && (
+                <button type="button" className="sidebar-orb" onClick={() => { void handleSessionLogout(); }} disabled={sessionLoggingOut}
+                  aria-label={t(sessionLoggingOut ? "connection.sessionLoggingOut" : "connection.sessionLogout")}
+                  title={t("connection.sessionLogout")}>
+                  <IconX />
+                </button>
+              )}
               <button type="button" className="sidebar-orb sidebar-orb--danger"
                 onClick={handleStop} disabled={stopping}
                 aria-label={stopping ? t("dash.stopping") : t(targets.connected ? "connection.disconnect" : "dash.stop")}

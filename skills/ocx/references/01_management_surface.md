@@ -337,6 +337,27 @@ JSON mode: `payload`.
 
 Each of these writes. Check the flags column before running one unattended.
 
+### `ocx connect rotate`
+
+Rotate the connected client's data key against the hub, with commit and abort.
+
+| Method | Route |
+|---|---|
+| POST | `/api/keys/rotate` |
+| POST | `/api/keys/rotate/commit` |
+| DELETE | `/api/keys/rotate` |
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--pairing-code-stdin` | boolean | Read a one-time pairing code from stdin as the rotation authority. |
+| `--admin-token-stdin` | boolean | Read the hub admin token from stdin as the rotation authority. |
+| `--json` | boolean | Emit the rotation result as JSON. |
+
+JSON mode: `payload`.
+
+- Requires transient authority on stdin; the credential is never persisted or echoed.
+- A rotation left pending by a crash is resumed here — startup and status stop rather than guess which key generation is live.
+
 ### `ocx account pause`
 
 Stop routing new requests to one account in the Codex pool.
@@ -547,6 +568,6 @@ JSON mode: `payload`.
 
 ## Counts
 
-- declared capabilities: 30
-- of those, state-changing: 11
+- declared capabilities: 31
+- of those, state-changing: 12
 - head-resolved invocations: 2

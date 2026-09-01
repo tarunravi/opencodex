@@ -1,4 +1,5 @@
 import { MAX_REMOTE_CATALOG_BYTES } from "../server/catalog-download";
+import { readBoundedResponseBytes } from "../lib/bounded-body";
 
 /**
  * A pairing grant may cross loopback or authenticated HTTPS, and nothing else.
@@ -45,6 +46,11 @@ export interface IssuedClientKey {
   key: string;
   createdAt: string;
   name: string;
+}
+
+export interface StartedClientKeyRotation extends IssuedClientKey {
+  rotationId: string;
+  expiresAt: string;
 }
 
 export class HubClientError extends Error {
@@ -100,14 +106,40 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
   if (Number.isFinite(declared) && declared > maxBytes) {
     throw new HubClientError("body_too_large", "Hub response exceeded the allowed size", response.status);
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > maxBytes) {
+  const result = await readBoundedResponseBytes(response, { maxBytes });
+  if (result.oversized) {
     throw new HubClientError("body_too_large", "Hub response exceeded the allowed size", response.status);
   }
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true }).decode(result.bytes);
   } catch (error) {
     throw new HubClientError("body_invalid", "Hub response was not valid UTF-8", response.status, { cause: error });
+  }
+}
+
+function jsonCompatibleContentType(response: Response): boolean {
+  const value = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  return value === "application/json" || value?.endsWith("+json") === true;
+}
+
+function validateRemoteCatalog(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HubClientError("catalog_schema_invalid", "Hub catalog response was invalid");
+  }
+  const models = (value as Record<string, unknown>).models;
+  if (!Array.isArray(models) || models.length > 2_000) {
+    throw new HubClientError("catalog_schema_invalid", "Hub catalog model list was invalid");
+  }
+  const slugs = new Set<string>();
+  for (const row of models) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      throw new HubClientError("catalog_schema_invalid", "Hub catalog model row was invalid");
+    }
+    const slug = (row as Record<string, unknown>).slug;
+    if (typeof slug !== "string" || !slug.trim() || /[\x00-\x1f\x7f]/.test(slug) || slugs.has(slug)) {
+      throw new HubClientError("catalog_schema_invalid", "Hub catalog model slug was invalid");
+    }
+    slugs.add(slug);
   }
 }
 
@@ -299,11 +331,89 @@ export async function revokeClientKey(
   if (!response.ok) throw new HubClientError("key_revoke_failed", `Hub refused key revocation (${response.status})`, response.status);
 }
 
+function rotationManagementHeaders(
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+): Headers {
+  const headers = new Headers({ "Content-Type": "application/json", Accept: "application/json" });
+  if (credential.kind === "admin") headers.set("x-opencodex-api-key", credentialString(credential.value));
+  else {
+    headers.set("x-opencodex-api-key", credential.value.token);
+    headers.set("Origin", credential.value.browserOrigin);
+    headers.set("X-OpenCodex-GUI-Origin", credential.value.browserOrigin);
+    headers.set("X-OpenCodex-CSRF-Token", credential.value.csrfToken);
+  }
+  return headers;
+}
+
+function assertRotationAuthorityOrigin(origin: string, credential: { kind: "admin" } | { kind: "gui-session" }): void {
+  if (credential.kind === "admin" && new URL(origin).protocol !== "https:") {
+    throw new HubClientError("admin_http_refused", "Admin credentials may be sent only over HTTPS");
+  }
+}
+
+export async function startClientKeyRotation(
+  managementUrl: string,
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+  id: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<StartedClientKeyRotation> {
+  const origin = normalizeHubOrigin(managementUrl);
+  assertRotationAuthorityOrigin(origin, credential);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/api/keys/rotate`, {
+    method: "POST",
+    headers: rotationManagementHeaders(credential),
+    body: JSON.stringify({ id }),
+  }, options.timeoutMs);
+  if (!response.ok) throw new HubClientError("key_rotation_start_failed", `Hub refused key rotation (${response.status})`, response.status);
+  const value = parseJson(await boundedText(response, MANAGEMENT_BODY_LIMIT), "key_rotation_invalid");
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const issued = parseIssuedClientKey(value);
+  if (!raw || !issued || typeof raw.rotationId !== "string" || !raw.rotationId
+    || typeof raw.expiresAt !== "string" || Number.isNaN(Date.parse(raw.expiresAt))) {
+    throw new HubClientError("key_rotation_invalid", "Hub returned an invalid key rotation response", response.status);
+  }
+  return { ...issued, rotationId: raw.rotationId, expiresAt: raw.expiresAt };
+}
+
+export async function commitClientKeyRotation(
+  managementUrl: string,
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+  id: string,
+  rotationId: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<void> {
+  const origin = normalizeHubOrigin(managementUrl);
+  assertRotationAuthorityOrigin(origin, credential);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/api/keys/rotate/commit`, {
+    method: "POST",
+    headers: rotationManagementHeaders(credential),
+    body: JSON.stringify({ id, rotationId }),
+  }, options.timeoutMs);
+  if (!response.ok) throw new HubClientError("key_rotation_commit_failed", `Hub refused rotation commit (${response.status})`, response.status);
+}
+
+export async function abortClientKeyRotation(
+  managementUrl: string,
+  credential: { kind: "admin"; value: Uint8Array } | { kind: "gui-session"; value: ConnectGuiSession },
+  id: string,
+  rotationId: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<void> {
+  const origin = normalizeHubOrigin(managementUrl);
+  assertRotationAuthorityOrigin(origin, credential);
+  const response = await fetchBounded(options.fetchImpl ?? fetch, `${origin}/api/keys/rotate`, {
+    method: "DELETE",
+    headers: rotationManagementHeaders(credential),
+    body: JSON.stringify({ id, rotationId }),
+  }, options.timeoutMs);
+  if (!response.ok) throw new HubClientError("key_rotation_abort_failed", `Hub refused rotation abort (${response.status})`, response.status);
+}
+
 export async function downloadClientCatalog(
   serverUrl: string,
   admissionToken: string,
   options: { timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch } = {},
-): Promise<{ kind: "fresh"; body: string }> {
+): Promise<{ kind: "fresh"; body: string; keyId?: string }> {
   const origin = normalizeHubOrigin(serverUrl);
   const headers = new Headers({ Accept: "application/json", "x-opencodex-api-key": admissionToken });
   // Unconditional by contract: /v1/catalog emits no validator (Phase 1, D2) because its
@@ -320,10 +430,28 @@ export async function downloadClientCatalog(
     const code = response.status === 401 ? "catalog_unauthorized" : `catalog_http_${response.status}`;
     throw new HubClientError(code, `Hub catalog request failed (${response.status})`, response.status);
   }
+  if (!jsonCompatibleContentType(response)) {
+    try { await response.body?.cancel(); } catch { /* best effort */ }
+    throw new HubClientError("catalog_content_type_invalid", "Hub catalog response was not JSON", response.status);
+  }
   const body = await boundedText(response, options.maxBytes ?? MAX_REMOTE_CATALOG_BYTES);
   const parsed = parseJson(body, "catalog_invalid");
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new HubClientError("catalog_invalid", "Hub catalog response was invalid", response.status);
+  validateRemoteCatalog(parsed);
+  const keyId = response.headers.get("x-opencodex-key-id")?.trim() || undefined;
+  return { kind: "fresh", body, ...(keyId ? { keyId } : {}) };
+}
+
+export async function probeClientKeyId(
+  serverUrl: string,
+  admissionToken: string,
+  expectedKeyId: string,
+  options: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<boolean> {
+  try {
+    const catalog = await downloadClientCatalog(serverUrl, admissionToken, options);
+    return catalog.kind === "fresh" && catalog.keyId === expectedKeyId;
+  } catch (error) {
+    if (error instanceof HubClientError && error.status === 401) return false;
+    throw error;
   }
-  return { kind: "fresh", body };
 }

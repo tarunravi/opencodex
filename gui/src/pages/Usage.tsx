@@ -978,15 +978,22 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
         <UsageFilters surface={surface} range={range} onSurface={setSurface} onRange={setRange} t={t} />
       </div>
       <p className="page-sub">{t("usage.subtitle")}</p>
-      <div className="usage-source-row">
-        <span>{t(connected ? "usage.source.connected" : "usage.source.local")}</span>
-        {connected && (
+      {/*
+        Only shown when connected. Naming the source is a two-plane concept: it answers
+        "which store served these numbers", and that question only exists once there are
+        two. A standalone install has exactly one, so the row says nothing the page does
+        not already imply — while still being a line about topology that a user who never
+        enabled remote hub has to read past.
+      */}
+      {connected && (
+        <div className="usage-source-row">
+          <span>{t("usage.source.connected")}</span>
           <div className="usage-scope-control" role="group" aria-label={t("usage.scope.label")}>
             <button type="button" className={`btn btn-sm${scope === "machine" ? " btn-primary" : " btn-ghost"}`} aria-pressed={scope === "machine"} onClick={() => setScope("machine")}>{t("usage.scope.machine")}</button>
             <button type="button" className={`btn btn-sm${scope === "hub" ? " btn-primary" : " btn-ghost"}`} aria-pressed={scope === "hub"} onClick={() => setScope("hub")}>{t("usage.scope.hub")}</button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {state.showSkeleton && !data ? (
         <DataSurfaceSkeleton label={t("usage.loading")} rows={5} />

@@ -65,6 +65,37 @@ afterEach(() => {
 });
 
 describe("attribution reaches usage.jsonl", () => {
+  test("traffic before, during, and after rotation stays in one apiKeyId bucket", async () => {
+    saveConfig(remoteConfig());
+    const server = startServer(0);
+    const send = (token: string) => fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-opencodex-api-key": token },
+      body: JSON.stringify({ model: "test/gpt-test", messages: [{ role: "user", content: "hi" }] }),
+    });
+    const manage = async (path: string, method: string, body: unknown) => {
+      const response = await fetch(new URL(path, server.url), {
+        method,
+        headers: { "content-type": "application/json", "x-opencodex-api-key": ADMIN_TOKEN },
+        body: JSON.stringify(body),
+      });
+      return { response, body: await response.json() as Record<string, unknown> };
+    };
+    try {
+      await send("ocx_data_attributionone");
+      const started = await manage("/api/keys/rotate", "POST", { id: "key-one" });
+      const pendingKey = started.body.key as string;
+      const rotationId = started.body.rotationId as string;
+      await send(pendingKey);
+      await manage("/api/keys/rotate/commit", "POST", { id: "key-one", rotationId });
+      await send(pendingKey);
+      expect((await send("ocx_data_attributionone")).status).toBe(401);
+      expect(usageRows().slice(-3).map(row => row.apiKeyId)).toEqual(["key-one", "key-one", "key-one"]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("an authed request is attributed to the key that opened it, all the way to disk", async () => {
     saveConfig(remoteConfig());
     const server = startServer(0);

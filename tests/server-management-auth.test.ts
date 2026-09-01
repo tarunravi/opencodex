@@ -1074,6 +1074,75 @@ describe("management and data-plane credential separation", () => {
     )).toBeNull();
   });
 
+  test("pairing burns a grant after five failures and rate-limits a source after ten guesses", () => {
+    const config = hubConfig();
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const now = 1_800_000_000_000;
+    const created = createGuiPairingGrant("https://dashboard.example.test", config, state, now);
+    const context = {
+      ingress: "public" as const,
+      peerAddress: "192.0.2.10",
+      tailscaleUser: null,
+      browserOrigin: "https://evil.example.test",
+    };
+    const wrongOrigin = new Request("https://hub.example.test/opencodex-session", {
+      method: "POST",
+      headers: { Host: "hub.example.test", Origin: "https://evil.example.test" },
+    });
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      expect(consumeGuiPairingGrant(wrongOrigin, { grant: created.grant }, config, state, now + attempt, context)).toBeNull();
+    }
+    expect(consumeGuiPairingGrant(wrongOrigin, { grant: created.grant }, config, state, now + 5, context))
+      .toMatchObject({ allowed: false, reason: "grant" });
+    expect(state.pairingGrants.size).toBe(0);
+
+    const guessContext = { ...context, peerAddress: "192.0.2.11" };
+    const validOrigin = new Request("https://hub.example.test/opencodex-session", {
+      method: "POST",
+      headers: { Host: "hub.example.test", Origin: "https://dashboard.example.test" },
+    });
+    for (let attempt = 1; attempt <= 9; attempt++) {
+      expect(consumeGuiPairingGrant(validOrigin, { grant: `ocx_pair_${String(attempt).padStart(43, "a")}` }, config, state, now + attempt, guessContext)).toBeNull();
+    }
+    expect(consumeGuiPairingGrant(validOrigin, { grant: `ocx_pair_${"z".repeat(43)}` }, config, state, now + 10, guessContext))
+      .toMatchObject({ allowed: false, reason: "source" });
+  });
+
+  test("self logout revokes only the current GUI session and admin credentials get 403", async () => {
+    const config = remoteConfig();
+    saveConfig(config);
+    const state = initializeManagementAuthState(config);
+    if (!state.available) throw new Error("expected management auth state");
+    const server = startServer(0, { managementAuthState: state });
+    const origin = server.url.origin;
+    const token = "ocx_session_logout_test";
+    state.sessions.set(token, {
+      serverOrigin: origin,
+      browserOrigin: origin,
+      csrfToken: "csrf-logout-test",
+      expiresAt: Date.now() + 60_000,
+      issuance: "loopback",
+    });
+    const sessionHeaders = {
+      Origin: origin,
+      "x-opencodex-api-key": token,
+      "x-opencodex-gui-origin": origin,
+      "x-opencodex-csrf-token": "csrf-logout-test",
+    };
+    try {
+      expect((await fetch(new URL("/api/session/logout", server.url), { method: "POST", headers: sessionHeaders })).status).toBe(200);
+      expect(state.sessions.has(token)).toBe(false);
+      expect((await fetch(new URL("/api/session/logout", server.url), { method: "POST", headers: sessionHeaders })).status).toBe(401);
+      expect((await fetch(new URL("/api/session/logout", server.url), {
+        method: "POST",
+        headers: { Origin: origin, "x-opencodex-api-key": "admin-secret" },
+      })).status).toBe(403);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("the management ingress preserves the one-use pairing exchange contract", async () => {
     const managementPort = await findAvailablePort(0, "127.0.0.1");
     const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: managementPort });

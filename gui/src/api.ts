@@ -90,6 +90,26 @@ export function hasApiSession(plane: ApiPlane): boolean {
   return Boolean(runtime(plane).session.token?.startsWith("ocx_session_"));
 }
 
+export async function logoutApiSession(plane: ApiPlane): Promise<boolean> {
+  const state = runtime(plane);
+  if (!state.session.token?.startsWith("ocx_session_")) return false;
+  const bounded = createBoundedFetch(SESSION_REBOOTSTRAP_TIMEOUT_MS);
+  try {
+    const response = await window.fetch(`${state.target.baseUrl}/api/session/logout`, {
+      method: "POST",
+      signal: bounded.signal,
+    });
+    if (!response.ok) return false;
+    state.session = blankSession();
+    state.promptCancelled = false;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    bounded.clear();
+  }
+}
+
 function takeMetaContent(name: string): string | null {
   const element = document.querySelector(`meta[name="${name}"]`) as HTMLMetaElement | null;
   const content = element?.content.trim() || null;

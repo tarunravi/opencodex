@@ -249,6 +249,24 @@ export function issueGuiSession(
   return issueGuiSessionFromState(req, config, state, context);
 }
 
+export interface ManagementSessionControl {
+  revokeCurrent(req: Request): boolean;
+}
+
+export function createManagementSessionControl(state: ManagementAuthState): ManagementSessionControl {
+  return {
+    revokeCurrent(req: Request): boolean {
+      if (!state.available) return false;
+      const credential = requestManagementCredential(req);
+      if (!credential) return false;
+      for (const token of state.sessions.keys()) {
+        if (equalSecret(credential, token)) return state.sessions.delete(token);
+      }
+      return false;
+    },
+  };
+}
+
 /**
  * Which credential actually authorized a management request.
  *

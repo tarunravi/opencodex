@@ -12,10 +12,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   readServiceApiTokenState,
+  readTokenBackupState,
+  removeOrphanTokenBackup,
+  replaceServiceApiTokenFile,
+  restoreTokenBackup,
+  serviceApiTokenBackupPath,
   removeServiceApiTokenFileIfOwned,
   serviceApiTokenFilePath,
   serviceApiTokenFingerprint,
   writeServiceApiTokenFile,
+  writeTokenBackup,
 } from "../src/lib/service-secrets";
 
 let home = "";
@@ -82,5 +88,50 @@ describe("service API token ownership", () => {
     expect(removeServiceApiTokenFileIfOwned(replacementFingerprint)).toBe("removed");
     expect(existsSync(first.path)).toBe(false);
     expect(removeServiceApiTokenFileIfOwned(replacementFingerprint)).toBe("absent");
+  });
+
+  test("writes, restores, and removes the exact owner-only .prev backup", () => {
+    const original = writeServiceApiTokenFile("ocx_data_original");
+    const backup = writeTokenBackup(original.fingerprint);
+    expect(backup.path).toBe(serviceApiTokenBackupPath());
+    expect(readTokenBackupState()).toMatchObject({ kind: "present", token: "ocx_data_original" });
+    if (process.platform !== "win32") expect(lstatSync(backup.path).mode & 0o777).toBe(0o600);
+
+    replaceServiceApiTokenFile("ocx_data_replacement");
+    expect(readServiceApiTokenState()).toMatchObject({ kind: "present", token: "ocx_data_replacement" });
+    const restored = restoreTokenBackup(backup.path);
+    expect(restored.fingerprint).toBe(original.fingerprint);
+    expect(readServiceApiTokenState()).toMatchObject({ kind: "present", token: "ocx_data_original" });
+    expect(removeOrphanTokenBackup()).toBe("removed");
+    expect(readTokenBackupState()).toEqual({ kind: "absent" });
+  });
+
+  test("crash before marker persistence removes an orphan but unsafe .prev is preserved", () => {
+    const original = writeServiceApiTokenFile("ocx_data_original");
+    writeTokenBackup(original.fingerprint);
+    expect(removeOrphanTokenBackup()).toBe("removed");
+    expect(readServiceApiTokenState()).toMatchObject({ kind: "present", token: "ocx_data_original" });
+
+    const target = join(home, "foreign-backup");
+    writeFileSync(target, "ocx_data_foreign\n", { mode: 0o600 });
+    let symlinkAvailable = true;
+    try { symlinkSync(target, serviceApiTokenBackupPath()); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") symlinkAvailable = false;
+      else throw error;
+    }
+    if (symlinkAvailable) {
+      expect(readTokenBackupState()).toMatchObject({ kind: "unsafe" });
+      expect(() => removeOrphanTokenBackup()).toThrow("owner-only bounded regular file");
+      expect(existsSync(serviceApiTokenBackupPath())).toBe(true);
+    }
+  });
+
+  test("refuses a mismatched backup path without exposing either candidate", () => {
+    const original = writeServiceApiTokenFile("ocx_data_original");
+    writeTokenBackup(original.fingerprint);
+    expect(() => restoreTokenBackup(join(home, "not-the-backup"))).toThrow("path mismatch");
+    expect(readServiceApiTokenState()).toMatchObject({ kind: "present", token: "ocx_data_original" });
+    expect(readTokenBackupState()).toMatchObject({ kind: "present", token: "ocx_data_original" });
   });
 });

@@ -831,6 +831,13 @@ const codexAccountPrioritiesSchema = z.custom<Record<string, unknown>>(
  * it: `system-env.ts` and `cli/claude.ts` hand `apiKeys[0].key` to launched
  * clients, so a junk first entry would mask a valid later one.
  */
+const pendingApiKeyRotationSchema = z.object({
+  id: z.string().trim().min(1).max(256),
+  key: z.string().refine(isUsableApiKeySecret),
+  createdAt: z.string().datetime({ offset: true }),
+  expiresAt: z.string().datetime({ offset: true }),
+}).strict();
+
 const apiKeyEntrySchema = z.object({
   key: z.string().refine(isUsableApiKeySecret),
   // Degrades to "" here; every schema consumer then runs `normalizeApiKeyIds`,
@@ -838,6 +845,8 @@ const apiKeyEntrySchema = z.object({
   id: z.string().catch(""),
   name: z.string().catch(""),
   createdAt: z.string().catch(""),
+  // A damaged overlap record must never discard the still-authoritative key.
+  pendingRotation: pendingApiKeyRotationSchema.optional().catch(undefined),
 }).passthrough();
 
 /**
