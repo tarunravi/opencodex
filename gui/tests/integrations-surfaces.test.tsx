@@ -673,6 +673,116 @@ test("a drifted restore asks a second time instead of failing", async () => {
   expect((posts[1] as { confirmDrift?: boolean }).confirmDrift).toBe(true);
 });
 
+/**
+ * #3059: a successful restore starts an asynchronous history refresh before closing
+ * the dialog. That means normal focus restoration first finds the trigger still in
+ * the tree, and only later does the refresh consume its snapshot and remove the
+ * trigger. The region must receive focus on the successful close, before that later
+ * removal can send focus to <body>.
+ */
+test("a successful restore keeps focus on the stable region after refresh removes its trigger", async () => {
+  const [{ createRoot }, { LanguageProvider }, { default: RestoreDialog }] = await Promise.all([
+    import("react-dom/client"),
+    import("../src/i18n/provider"),
+    import("../src/pages/integrations/RestoreDialog"),
+  ]);
+
+  // The shape RollbackHistory renders: a stable region holding the row trigger.
+  const region = testWindow.document.createElement("section");
+  const trigger = testWindow.document.createElement("button");
+  region.appendChild(trigger);
+  testWindow.document.body.appendChild(region);
+  trigger.focus();
+  expect(testWindow.document.activeElement).toBe(trigger);
+
+  const row = {
+    opId: "op-consumed",
+    clientId: "hermes" as const,
+    kind: "apply" as const,
+    at: "2026-08-02T09:00:00.000Z",
+    configPath: "/tmp/home/.hermes/config.yaml",
+    snapshot: "stored" as const,
+    undoable: false,
+  };
+  let resolveRestore: ((response: Response) => void) | undefined;
+  const restoreFetch = ((input: RequestInfo | URL) => {
+    if (String(input).includes("/restore")) {
+      return new Promise<Response>(resolve => { resolveRestore = resolve; });
+    }
+    return Promise.resolve(json({ operations: [] }));
+  }) as typeof fetch;
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: restoreFetch });
+  Object.defineProperty(testWindow, "fetch", { configurable: true, value: restoreFetch });
+
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <RestoreDialog
+          apiBase={apiBase}
+          row={row}
+          onRestored={() => {}}
+          onClose={() => {
+            root!.unmount();
+            root = null;
+          }}
+        />
+      </LanguageProvider>,
+    );
+  });
+
+  await act(async () => { buttonByText("Restore")!.click(); });
+  expect(resolveRestore).toBeDefined();
+
+  // Restore succeeds and closes while the trigger is still connected.
+  await act(async () => { resolveRestore!(json({ ok: true })); });
+  expect(trigger.isConnected).toBe(true);
+  expect(testWindow.document.activeElement).toBe(region);
+
+  // The asynchronous history refresh then consumes the snapshot and its trigger.
+  trigger.remove();
+  expect(testWindow.document.activeElement).toBe(region);
+  expect(testWindow.document.activeElement).not.toBe(testWindow.document.body);
+  region.remove();
+});
+
+test("focus returns to the trigger itself when it survived", async () => {
+  const [{ createRoot }, { LanguageProvider }, { default: RestoreDialog }] = await Promise.all([
+    import("react-dom/client"),
+    import("../src/i18n/provider"),
+    import("../src/pages/integrations/RestoreDialog"),
+  ]);
+
+  const region = testWindow.document.createElement("section");
+  const trigger = testWindow.document.createElement("button");
+  region.appendChild(trigger);
+  testWindow.document.body.appendChild(region);
+  trigger.focus();
+
+  const row = {
+    opId: "op-kept",
+    clientId: "hermes" as const,
+    kind: "apply" as const,
+    at: "2026-08-02T09:00:00.000Z",
+    configPath: "/tmp/home/.hermes/config.yaml",
+    snapshot: "stored" as const,
+    undoable: true,
+  };
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <RestoreDialog apiBase={apiBase} row={row} onClose={() => {}} onRestored={() => {}} />
+      </LanguageProvider>,
+    );
+  });
+  await act(async () => { root!.unmount(); root = null; });
+
+  // The fallback must not preempt a trigger that is still there.
+  expect(testWindow.document.activeElement).toBe(trigger);
+  region.remove();
+});
+
 test("a card toggles its own client without a trip to the sub-page", async () => {
   // Same rule as the client page: off means disable, for `stale` too.
   stateResponse = () => json({ clients: [status({ state: "stale" })] });
