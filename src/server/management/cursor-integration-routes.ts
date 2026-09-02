@@ -9,12 +9,13 @@
  * started — plus which active models will show Cursor's Reasoning and Context controls.
  */
 import { readRuntimePort } from "../../config/process-state";
-import { filterCatalogVisibleModels, nativeContextLimits, nativeOpenAiContextTier, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs } from "../../codex/catalog";
+import { filterCatalogVisibleModels, nativeContextLimits, nativeOpenAiContextTier, nativeReasoningEfforts, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs } from "../../codex/catalog";
 import { cursorLastSeen, type CursorSeen } from "../../integrations/cursor-seen";
 import { detectCursorInstalls, type CursorInstall } from "../../integrations/cursor-detect";
+import { loadCursorEffortTable } from "../../integrations/cursor-effort-table";
 import { configuredApiAuthToken, isApiAuthRequired, jsonResponse } from "../auth-cors";
 import { fetchAllModels } from "../management-api";
-import { cursorEffortFamily } from "../models-capabilities";
+import { predictCursorEffort } from "../models-capabilities";
 import type { ManagementContext } from "./context";
 
 export const CURSOR_GATEWAY_PLACEHOLDER_KEY = "opencodex-loopback";
@@ -25,9 +26,11 @@ export interface CursorIntegrationStatus {
   regularCursor: { installed: boolean; path: string | null };
   gateway: { baseUrl: string; apiKeyMode: "credential" | "placeholder"; placeholder: string };
   lastSeen: CursorSeen | null;
+  effortTable: { source: "bundle" | "static"; version: string | null; families: number | null };
   models: Array<{
     id: string;
     reasoning: string[] | null;
+    family: string | null;
     context: { defaultWindow: number; longWindow: number } | null;
   }>;
   guideUrl: string;
@@ -58,18 +61,29 @@ export async function buildCursorIntegrationStatus(
   // Same visibility rules as the raw /v1/models list Cursor will read: disabled models and
   // provider allowlists drop out here too, or the prediction shows rows Cursor never gets.
   const goModels = filterCatalogVisibleModels(await fetchAllModels(config), config);
-  const ids = [
-    ...visibleNativeSlugs(config),
-    ...uniqueCatalogModelsForRawPublicList(goModels).map(model => model.alias ?? `${model.provider}/${model.id}`),
+  // supportsReasoning mirrors what the /v1/models row advertises (a non-empty ladder); the
+  // gemini family withholds its control when it is false.
+  const ids: Array<{ id: string; supportsReasoning: boolean }> = [
+    ...visibleNativeSlugs(config).map(id => ({ id, supportsReasoning: nativeReasoningEfforts(id).length > 0 })),
+    ...uniqueCatalogModelsForRawPublicList(goModels).map(model => ({
+      id: model.alias ?? `${model.provider}/${model.id}`,
+      supportsReasoning: (model.reasoningEfforts ?? []).length > 0,
+    })),
   ];
-  const models = ids.map(id => {
+  const table = (deps.loadCursorEffortTable ?? loadCursorEffortTable)(privateInference);
+  const models = ids.map(({ id, supportsReasoning }) => {
     const tier = nativeOpenAiContextTier(id, limits);
+    const predicted = predictCursorEffort(id, table, supportsReasoning);
     return {
       id,
-      reasoning: cursorEffortFamily(id),
+      reasoning: predicted.ladder,
+      family: predicted.family,
       context: tier ? { defaultWindow: tier.defaultWindow, longWindow: tier.longWindow } : null,
     };
   });
+  const effortTable = table
+    ? { source: "bundle" as const, version: table.version, families: table.families.length }
+    : { source: "static" as const, version: null, families: null };
 
   return {
     privateInference: {
@@ -84,6 +98,7 @@ export async function buildCursorIntegrationStatus(
       placeholder: CURSOR_GATEWAY_PLACEHOLDER_KEY,
     },
     lastSeen: cursorLastSeen(),
+    effortTable,
     models,
     guideUrl: CURSOR_GUIDE_URL,
   };
