@@ -1432,7 +1432,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             : idsParam === "desktop"
               ? "desktop3p" as const
               : (/^claude-code\//i.test(req.headers.get("user-agent") ?? "") ? "readable" as const : "desktop3p" as const);
-          const data = buildAnthropicModelInfos(desktopNativeSlugs, goOrdered, resolveAutoContext(config.claudeCode), idStyle, activeDesktop3pAlias, nativeContextLimits(config));
+          const data = buildAnthropicModelInfos(desktopNativeSlugs, goOrdered, resolveAutoContext(config.claudeCode), idStyle, activeDesktop3pAlias, nativeContextLimits(config), config.fastMode);
           return jsonResponse({ data }, 200, req, policy);
         }
         if (url.searchParams.has("client_version")) {
@@ -1528,6 +1528,15 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
               inputModalities: nativeInputModalities(metadataId),
             }),
           });
+        // Resolved once per request, not per model: the global fast switch offers the fast
+        // identity to clients that have no Fast toggle of their own. Null when the switch is
+        // off, so the row mapper does no work and loads no adapter module.
+        const cursorFastIdForListing = config.fastMode === true
+          ? await (async () => {
+            const { cursorFastIdFor } = await import("../adapters/cursor/catalog");
+            return (modelId: string, provider = "cursor") => provider === "cursor" ? cursorFastIdFor(modelId) : undefined;
+          })()
+          : null;
         // Selector-active discovery follows the same complete supported set as the Codex catalog
         // for both bare and qualified rows. Without selectors, the live catalog continues to own
         // bare availability.
@@ -1552,7 +1561,11 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...visibleNatives.map(id => nativeModelRow(id)),
           ...visibleAccountNatives.map(({ id, metadataId }) => nativeModelRow(id, metadataId)),
           ...await Promise.all(uniqueCatalogModelsForRawPublicList(goOrdered).map(async m => {
-            const publicId = m.alias ?? `${m.provider}/${m.id}`;
+            // Same rule as the anthropic branch: with the global fast switch on, a client
+            // that has no Fast toggle is offered the fast identity directly. An operator
+            // alias is an explicit decision and still wins.
+            const fastModelId = cursorFastIdForListing?.(m.id, m.provider);
+            const publicId = m.alias ?? `${m.provider}/${fastModelId ?? m.id}`;
             const isCombo = m.provider === "combo" && exactComboSlugs.has(publicId);
             const provider = config.providers[m.provider];
             const effective = provider
