@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -34,6 +34,7 @@ import {
   resetCodexModelEntitlementCacheForTests,
   seedCodexModelEntitlementsForTests,
 } from "../src/codex/model-entitlements";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 
 afterEach(() => resetCodexModelEntitlementCacheForTests());
 
@@ -768,7 +769,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       else process.env.OPENCODEX_HOME = oldOcxHome;
       if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = oldCodexHome;
-      rmSync(root, { recursive: true, force: true });
+      removeTreeWithRetry(root);
     }
   });
 
@@ -824,7 +825,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       else process.env.OPENCODEX_HOME = oldOcxHome;
       if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = oldCodexHome;
-      rmSync(root, { recursive: true, force: true });
+      removeTreeWithRetry(root);
     }
   });
 });
