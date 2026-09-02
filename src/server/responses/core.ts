@@ -68,6 +68,7 @@ import { resolvePassiveRouteSubjectId } from "../passive-route-linker";
 import {
   advanceComboAfterFailure,
   comboDefaultEffort,
+  comboFailureCooldownScope,
   comboFailureDecision,
   comboIdFromRawBody,
   comboRequestHasImageInput,
@@ -2557,6 +2558,9 @@ export async function handleComboResponses(
     const nextPick = advanceComboAfterFailure(config, pick, {
       retryAfter: failure.retryAfter,
       now: Date.now(),
+      cooldownScope: comboFailureCooldownScope(failure.response.status, failure.classificationText, {
+        code: failure.upstreamCode,
+      }),
       eligible: payloadEligible,
       status: failure.response.status,
       code: failure.upstreamCode,

@@ -39,7 +39,9 @@ export {
   parseRetryAfterMs,
   remainingComboCooldownMs,
   comboFailureDecision,
+  comboFailureCooldownScope,
   type ComboFailureDecision,
+  type ComboFailureCooldownScope,
 } from "./failover";
 export {
   comboIdFromRawBody,

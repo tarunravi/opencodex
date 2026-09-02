@@ -156,6 +156,7 @@ export function isTransientRequestRateLimit(input: {
   code?: string | null;
   message?: string;
 }): boolean {
+  if (isProviderScopedQuotaCap(input.status, input.message ?? "", input.code)) return false;
   const code = (input.code ?? "").trim().toLowerCase().replaceAll("-", "_");
   if (QUOTA_LIMIT_CODES.has(code)) return false;
   if (TRANSIENT_REQUEST_RATE_CODES.has(code)) return true;
@@ -252,6 +253,37 @@ export function clearComboTargetCooldowns(comboId?: string): void {
 }
 
 export type ComboFailureDecision = "hop" | "stop";
+export type ComboFailureCooldownScope = "target" | "provider";
+
+function normalizedFailureCode(code?: string | null): string {
+  return code?.trim().toLowerCase().replaceAll("-", "_") ?? "";
+}
+
+function isProviderScopedQuotaCap(
+  status: number | undefined,
+  message: string,
+  code?: string | null,
+): boolean {
+  const normalizedCode = normalizedFailureCode(code);
+  const text = message.toLowerCase();
+  if (
+    status === 429
+    && (normalizedCode === "gousagelimiterror" || text.includes("monthly usage limit reached"))
+  ) {
+    return true;
+  }
+  return normalizedCode === "free_rate_limited"
+    || text.includes("err_free_prompt_cap")
+    || (text.includes("free tier") && text.includes("single request"));
+}
+
+export function comboFailureCooldownScope(
+  status: number,
+  message: string,
+  options?: { code?: string | null },
+): ComboFailureCooldownScope {
+  return isProviderScopedQuotaCap(status, message, options?.code) ? "provider" : "target";
+}
 
 function isModelLifecycleGone(
   status: number,
@@ -310,6 +342,9 @@ export function comboFailureDecision(
   // tries each candidate once via `tried`, and combo excludes each attempted target. So this is
   // structured-code-only, not provably local.
   if (options?.code === "input_admission_refused" || error.code === "input_admission_refused") {
+    return "hop";
+  }
+  if (isProviderScopedQuotaCap(status, message, options?.code || error.code)) {
     return "hop";
   }
   if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {

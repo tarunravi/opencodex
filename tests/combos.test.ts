@@ -40,7 +40,11 @@ import {
   tryPickComboModel,
   UnknownComboError,
 } from "../src/combos";
-import { comboFailureDecision } from "../src/combos/failover";
+import {
+  comboFailureCooldownScope,
+  comboFailureDecision,
+  isTransientRequestRateLimit,
+} from "../src/combos/failover";
 import { comboUnavailableResponse } from "../src/server/responses/core";
 import { getConfigPath, readConfigDiagnostics, saveConfig } from "../src/config";
 import { routeModel } from "../src/router";
@@ -497,6 +501,51 @@ describe("combo failure policy and advancement", () => {
     // generic 413 with no structured code keeps its existing conservative handling.
     expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
     expect(comboFailureDecision(413, "request too large")).toBe("stop");
+  });
+
+  test("provider-scoped free-tier and monthly quota failures hop without weakening generic 400 handling", () => {
+    const orca = JSON.stringify({ error: {
+      type: "invalid_request_error",
+      code: "free_rate_limited",
+      message: "This prompt is longer than the free tier allows for a single request.",
+    }});
+    expect(comboFailureDecision(400, orca, { code: "free_rate_limited" })).toBe("hop");
+    expect(comboFailureCooldownScope(400, orca, { code: "free_rate_limited" })).toBe("provider");
+    expect(comboFailureDecision(400, "ordinary invalid request", { code: "invalid_request_error" })).toBe("stop");
+    expect(comboFailureCooldownScope(429, "Monthly usage limit reached. Resets in 14 days.", {
+      code: "GoUsageLimitError",
+    })).toBe("provider");
+    expect(isTransientRequestRateLimit({
+      status: 429,
+      code: "GoUsageLimitError",
+      message: "Monthly usage limit reached. Resets in 14 days.",
+    })).toBe(false);
+    expect(comboFailureCooldownScope(429, "Rate limit reached for requests", { code: "1302" })).toBe("target");
+    expect(isTransientRequestRateLimit({
+      status: 429,
+      code: "1302",
+      message: "Rate limit reached for requests",
+    })).toBe(true);
+  });
+
+  test("provider-scoped cooldown skips sibling models but leaves other providers eligible", () => {
+    const config = baseConfig({
+      combos: {
+        free: {
+          targets: [
+            { provider: "a", model: "m1" },
+            { provider: "a", model: "m1b" },
+            { provider: "b", model: "m2" },
+          ],
+        },
+      },
+    });
+    config.providers.a!.models = ["m1", "m1b"];
+    const first = pickComboTarget(config, "free", { now: 1_000 })!;
+    const next = advanceComboAfterFailure(config, first, { now: 1_000, cooldownScope: "provider" })!;
+    expect(next.target.provider).toBe("b");
+    expect(isComboTargetInCooldown("free", { provider: "a", model: "m1b" }, 1_001)).toBe(true);
+    expect(isComboTargetInCooldown("free", { provider: "b", model: "m2" }, 1_001)).toBe(false);
   });
 
   test("failure clears the active sticky target without adding a success", () => {
