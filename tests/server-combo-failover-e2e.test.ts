@@ -440,6 +440,46 @@ describe("server combo failover 030 activation matrix", () => {
     expect(hits).toEqual(["a:m1:SECRET_PROMPT_X"]);
   });
 
+  test("monthly quota then Orca free-prompt cap continues to a healthy third provider", async () => {
+    const hits: string[] = [];
+    const go = serve(async request => {
+      const body = await request.json() as { model?: string };
+      hits.push(`go:${body.model}`);
+      return Response.json({
+        error: { type: "GoUsageLimitError", message: "Monthly usage limit reached. Resets in 14 days." },
+      }, { status: 429 });
+    });
+    const orca = serve(async request => {
+      const body = await request.json() as { model?: string };
+      hits.push(`orca:${body.model}`);
+      return Response.json({ error: {
+        message: "This prompt is longer than the free tier allows for a single request.",
+        type: "invalid_request_error",
+        code: "free_rate_limited",
+        metadata: { reason: "err_free_prompt_cap" },
+      } }, { status: 400 });
+    });
+    const backup = serve(async request => {
+      const body = await request.json() as { model?: string };
+      hits.push(`backup:${body.model}`);
+      return chatSuccess("healthy fallback", "m3");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(go), "key-a"),
+      b: provider("openai-chat", baseUrl(orca), "key-b"),
+      c: provider("openai-chat", baseUrl(backup), "key-c"),
+    }, [
+      { provider: "a", model: "m1" },
+      { provider: "b", model: "m2" },
+      { provider: "c", model: "m3" },
+    ]);
+
+    const response = await post(config);
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("healthy fallback");
+    expect(hits).toEqual(["go:m1", "orca:m2", "backup:m3"]);
+  });
+
   test("ordinary openai-chat 503 hops to backup for non-stream and stream", async () => {
     const hits: string[] = [];
     const a = serve(async request => {

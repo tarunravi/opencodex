@@ -528,6 +528,40 @@ describe("combo failure policy and advancement", () => {
     })).toBe(true);
   });
 
+  test("failover skips providers with fresh exhausted quota evidence before dispatch", () => {
+    const now = 50_000;
+    const config = baseConfig();
+    setCachedProviderQuotaForTests("a", {
+      monthlyPercent: 100,
+      monthlyResetAt: now + 14 * 24 * 60 * 60_000,
+      updatedAt: now,
+    });
+    const pick = pickComboTarget(config, "free", { now });
+    expect(pick?.target.provider).toBe("b");
+  });
+
+  test("elapsed quota reset does not permanently blacklist a provider", () => {
+    const now = 50_000;
+    const config = baseConfig();
+    setCachedProviderQuotaForTests("a", {
+      monthlyPercent: 100,
+      monthlyResetAt: now - 1,
+      updatedAt: now,
+    });
+    const pick = pickComboTarget(config, "free", { now });
+    expect(pick?.target.provider).toBe("a");
+  });
+
+  test("exhausted credits without an unlimited flag skip the provider", () => {
+    const now = 50_000;
+    const config = baseConfig();
+    setCachedProviderQuotaForTests("a", {
+      creditsUsd: { used: 10, limit: 10, remaining: 0, percent: 100 },
+      updatedAt: now,
+    });
+    expect(pickComboTarget(config, "free", { now })?.target.provider).toBe("b");
+  });
+
   test("provider-scoped cooldown skips sibling models but leaves other providers eligible", () => {
     const config = baseConfig({
       combos: {
