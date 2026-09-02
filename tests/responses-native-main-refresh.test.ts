@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearAccountNeedsReauth } from "../src/codex/auth-api";
@@ -12,6 +12,7 @@ import { clearCodexUpstreamHealth, clearThreadAccountMap } from "../src/codex/ro
 import { handleResponses, handleResponsesCompact } from "../src/server/responses";
 import type { RequestLogContext } from "../src/server/request-log";
 import type { OcxConfig } from "../src/types";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 
 const originalFetch = globalThis.fetch;
 let home = "";
@@ -77,7 +78,7 @@ afterEach(() => {
   else process.env.OPENCODEX_HOME = previousOcxHome;
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = previousCodexHome;
-  rmSync(home, { recursive: true, force: true });
+  removeTreeWithRetry(home);
 });
 
 function install401ThenRefreshHarness(): { sends: string[]; refreshes: string[] } {
@@ -164,7 +165,11 @@ describe("native main 401 refresh and replay", () => {
     const timeoutSpy = spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
     try {
       const pending = getValidMainAccountToken();
-      while (!addListener.mock.calls.some(([type]) => type === "abort")) await Promise.resolve();
+      // Yield to the macrotask queue, not only microtasks: on Windows the exclusive claim
+      // hardens its lock file through an icacls/PowerShell subprocess before it ever reaches
+      // the abort listener, and a microtask spin never lets that child's exit callback run.
+      // Dispatch 33597649234 shard 4 sat here for 8 minutes until the job ceiling.
+      while (!addListener.mock.calls.some(([type]) => type === "abort")) await Bun.sleep(1);
       timeout.abort(new DOMException("claim timed out", "TimeoutError"));
       await expect(pending).rejects.toMatchObject({
         name: "MainAccountTokenRefreshError",
@@ -294,7 +299,7 @@ describe("native main 401 refresh and replay", () => {
             config(),
             { model: "", provider: "" } as RequestLogContext,
           );
-        while (!claimWaitListener?.mock.calls.some(([type]) => type === "abort")) await Promise.resolve();
+        while (!claimWaitListener?.mock.calls.some(([type]) => type === "abort")) await Bun.sleep(1);
         controller.abort("websocket turn superseded or closed");
 
         const response = await pending;

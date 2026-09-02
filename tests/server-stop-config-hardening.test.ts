@@ -68,8 +68,19 @@ test("server.stop(true) waits for the config-dir ACL flight the startup loadConf
     expect(started).toBe(1);
     let stopped = false;
     const stopping = server.stop(true).then(() => { stopped = true; });
-    await new Promise(resolve => setTimeout(resolve, 60));
-    // Listeners are closed by now; the only thing keeping stop() open is the ACL child.
+    // Deterministic oracle: wait until the listener is actually closed (a connect attempt is
+    // refused) instead of guessing a delay. After that, the only thing keeping stop() open is
+    // the held ACL flight.
+    const port = server.port;
+    let refused = false;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      refused = await fetch(`http://127.0.0.1:${port}/healthz`).then(() => false, () => true);
+      if (refused) break;
+      await Bun.sleep(5);
+    }
+    // Fail closed: "still pending" is only meaningful once the listener is provably closed.
+    expect(refused).toBe(true);
+    await Bun.sleep(5);
     expect(stopped).toBe(false);
     release();
     await stopping;
@@ -106,7 +117,8 @@ test("a rejected native-lifecycle release still drains the ACL flight before sto
   try {
     server = startServer(0);
     let settled: "pending" | "rejected" | "resolved" = "pending";
-    const stopping = server.stop(true).then(() => { settled = "resolved"; }, () => { settled = "rejected"; });
+    let rejection: unknown;
+    const stopping = server.stop(true).then(() => { settled = "resolved"; }, (error: unknown) => { settled = "rejected"; rejection = error; });
     await new Promise(resolve => setTimeout(resolve, 60));
     // The release already threw, but stop() must not settle until the flight is drained.
     expect(settled).toBe("pending");
@@ -115,6 +127,9 @@ test("a rejected native-lifecycle release still drains the ACL flight before sto
     await stopping;
     expect(flightSettled).toBe(true);
     expect(settled).toBe("rejected");
+    // The original failure is what the caller sees; the flush never replaces it.
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).message).toBe("native release exploded");
     server = null;
   } finally {
     release();
