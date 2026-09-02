@@ -326,6 +326,7 @@ import {
   restoreImageGenCallsInJson,
 } from "../responses-image-gen-repair";
 import { createResponsesModelPayloadRewrite, rewriteResponsesModelJson } from "../responses-model-rewrite";
+import { parseRequestEffortRowId } from "../effort-row";
 import {
   collectSelfNamedNamespaceScrubAuthorization,
   createSelfNamedToolCallNamespaceScrubRewrite,
@@ -2697,6 +2698,23 @@ async function handleResponsesInner(
     }
     return decodeRequestErrorResponse(err, "responses");
   }
+  // An effort row naming a table-less combo (`combo/x--high`) must reach the combo dispatcher
+  // as its base id, so the selector is normalized here, before comboIdFromRawBody reads model.
+  const comboEffortRow = !options.comboAttempt && body && typeof body === "object" && !Array.isArray(body)
+    && typeof (body as { model?: unknown }).model === "string"
+    ? parseRequestEffortRowId((body as { model: string }).model, config)
+    : null;
+  if (comboEffortRow) {
+    const raw = body as Record<string, unknown>;
+    raw.model = comboEffortRow.baseId;
+    const rawReasoning = raw.reasoning;
+    raw.reasoning = {
+      ...(rawReasoning && typeof rawReasoning === "object" && !Array.isArray(rawReasoning)
+        ? rawReasoning as Record<string, unknown>
+        : {}),
+      effort: comboEffortRow.effort,
+    };
+  }
   const comboId = !options.comboAttempt ? comboIdFromRawBody(body, config) : null;
   if (comboId && Object.hasOwn(config.combos ?? {}, comboId)) {
     options.onRequestBodyRead?.();
@@ -2751,6 +2769,20 @@ async function handleResponsesInner(
   let toolBridgeMaps: ReturnType<typeof buildToolBridgeMaps>;
   try {
     parsed = parseRequest(body);
+    const effortRow = parseRequestEffortRowId(parsed.modelId, config);
+    if (effortRow) {
+      parsed.modelId = effortRow.baseId;
+      parsed.options.reasoning = effortRow.effort;
+      const raw = parsed._rawBody as Record<string, unknown>;
+      const rawReasoning = raw.reasoning;
+      raw.model = effortRow.baseId;
+      raw.reasoning = {
+        ...(rawReasoning && typeof rawReasoning === "object" && !Array.isArray(rawReasoning)
+          ? rawReasoning as Record<string, unknown>
+          : {}),
+        effort: effortRow.effort,
+      };
+    }
     if (options.comboReplaySnapshot?.recoveredPlaintext) {
       markBodyNonPersistable(parsed._rawBody);
     }
