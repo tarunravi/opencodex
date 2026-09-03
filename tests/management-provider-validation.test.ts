@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { managementFetch as fetch, ManagementRequest as Request } from "./helpers/management-auth";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCodexAccountRecord, saveCodexAccountCredential } from "../src/codex/account-store";
@@ -3916,6 +3916,55 @@ describe("provider management validation", () => {
     expect(rows.find(row => row.name === "openai")?.hasHeaders).toBe(false);
     expect(raw).not.toContain(sentinelName);
     expect(raw).not.toContain(sentinelValue);
+  });
+
+  test("GET /api/providers exposes passive OAuth credential health", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "anthropic",
+      providers: {
+        anthropic: { adapter: "anthropic", baseUrl: "https://api.anthropic.com", authMode: "oauth" },
+      },
+    };
+    saveConfig(liveConfig);
+    const req = new Request("http://127.0.0.1/api/providers", { method: "GET" });
+    const res = await handleManagementAPI(req, new URL(req.url), liveConfig, {});
+    expect(res?.status).toBe(200);
+    const rows = await res!.json() as Array<{ name: string; oauthLoggedIn?: boolean; activeNeedsReauth?: boolean }>;
+    expect(rows.find(row => row.name === "anthropic")).toMatchObject({
+      oauthLoggedIn: false,
+      activeNeedsReauth: false,
+    });
+  });
+
+  test("GET /api/providers leaves a malformed OAuth store untouched", async () => {
+    if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "anthropic",
+      providers: {
+        anthropic: { adapter: "anthropic", baseUrl: "https://api.anthropic.com", authMode: "oauth" },
+      },
+    };
+    saveConfig(liveConfig);
+    const authPath = join(TEST_DIR, "auth.json");
+    writeFileSync(authPath, "{broken", { mode: 0o644 });
+    const beforeMode = statSync(authPath).mode & 0o777;
+
+    const req = new Request("http://127.0.0.1/api/providers", { method: "GET" });
+    const res = await handleManagementAPI(req, new URL(req.url), liveConfig, {});
+
+    expect(res?.status).toBe(200);
+    expect(readFileSync(authPath, "utf8")).toBe("{broken");
+    expect(statSync(authPath).mode & 0o777).toBe(beforeMode);
+    expect(readdirSync(TEST_DIR).filter(name => name.startsWith("auth.json.invalid."))).toEqual([]);
   });
   test("provider PATCH merges headers case-insensitively", async () => {
     if (existsSync(TEST_DIR)) removeTreeWithRetry(TEST_DIR);

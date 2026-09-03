@@ -8,6 +8,7 @@ import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import { removeTreeWithRetry } from "./helpers/remove-tree";
+import { rotateKeyOn429 } from "../src/providers/key-failover";
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -56,6 +57,23 @@ describe("provider API key pool", () => {
     }
   });
 
+  test("provider list exposes disabled and setup state without key material", async () => {
+    const config = baseConfig();
+    config.providers.disabled = { adapter: "openai-chat", baseUrl: "https://disabled.example/v1", apiKey: "disabled-secret", disabled: true };
+    config.providers.optional = { adapter: "openai-chat", baseUrl: "https://optional.example/v1", keyOptional: true };
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const raw = await fetch(new URL("/api/providers", server.url)).then(r => r.text());
+      const rows = JSON.parse(raw) as Array<{ name: string; disabled?: boolean; keyOptional?: boolean }>;
+      expect(rows.find(row => row.name === "disabled")).toMatchObject({ disabled: true, keyOptional: false });
+      expect(rows.find(row => row.name === "optional")).toMatchObject({ disabled: false, keyOptional: true });
+      expect(raw).not.toContain("disabled-secret");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("POST adds + activates; PUT switches; DELETE removes and promotes", async () => {
     const server = startServer(0);
     try {
@@ -98,6 +116,38 @@ describe("provider API key pool", () => {
       expect(list.activeId).toBe(secondId);
       const cfg2 = JSON.parse(readFileSync(join(testDir, "config.json"), "utf-8"));
       expect(cfg2.providers["opencode-go"].apiKey).toBe("key-second-444555666777");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("GET exposes active key cooldowns without exposing key material", async () => {
+    const config = baseConfig();
+    config.providers["opencode-go"]!.apiKeyPool = [
+      { id: "first", key: "key-first-000111222333" },
+      { id: "second", key: "key-second-444555666777" },
+    ];
+    saveConfig(config);
+    const before = Date.now();
+    rotateKeyOn429(config, "opencode-go", "60", before, "key-first-000111222333");
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/providers/keys?name=opencode-go", server.url));
+      const raw = await response.text();
+      const body = JSON.parse(raw) as { keys: Array<{ id: string; cooldownUntil?: number }> };
+      expect(body.keys.find(key => key.id === "first")?.cooldownUntil).toBe(before + 60_000);
+      expect(body.keys.find(key => key.id === "second")?.cooldownUntil).toBeUndefined();
+      expect(raw).not.toContain("key-first-000111222333");
+      expect(raw).not.toContain("key-second-444555666777");
+
+      const providersRaw = await fetch(new URL("/api/providers", server.url)).then(r => r.text());
+      const providers = JSON.parse(providersRaw) as Array<{ name: string; coolingKeyCount?: number; nextKeyRecoveryAt?: number }>;
+      expect(providers.find(provider => provider.name === "opencode-go")).toMatchObject({
+        coolingKeyCount: 1,
+        nextKeyRecoveryAt: before + 60_000,
+      });
+      expect(providersRaw).not.toContain("key-first-000111222333");
+      expect(providersRaw).not.toContain("key-second-444555666777");
     } finally {
       await server.stop(true);
     }

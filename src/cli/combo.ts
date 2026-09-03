@@ -9,21 +9,70 @@ import {
   takeOption,
   type RuntimeApiDeps,
 } from "./runtime-api";
+import { isCodexReasoningEffort } from "../reasoning-effort";
+import type { OcxComboDefaultEffort } from "../types";
 
 const USAGE = `Usage:
   ocx combo [list] [--json]
   ocx combo show <id> [--json]
-  ocx combo set <id> --targets <provider/model[:weight],...>
+  ocx combo set <id> --targets <provider/model[:weight],...|json-array>
       [--strategy <failover|round-robin>] [--sticky <1-100>]
       [--cooldown-ms <0-600000>]
       [--effort <low|medium|high|xhigh|max|ultra|->] [--alias <name|->]
       [--native-alias] [--display-name <label|->]
       [--rename-from <id>] [--json]
+  Per-target effort/service tier uses JSON: '[{"provider":"p","model":"m","effort":"xhigh","serviceTier":"fast","weight":2}]'
   ocx combo remove <id> --yes [--json]`;
 
 type ComboRow = Record<string, unknown> & { id?: string; model?: string };
+type ComboTargetArg = { provider: string; model: string; weight?: number; effort?: OcxComboDefaultEffort; serviceTier?: string };
 
-function parseTargets(value: string): Array<{ provider: string; model: string; weight?: number }> {
+function parseJsonTargets(value: string): ComboTargetArg[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new CliUsageError("--targets JSON must be a valid array", USAGE);
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new CliUsageError("--targets JSON must be a non-empty array", USAGE);
+  }
+  return parsed.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new CliUsageError(`--targets JSON entry ${index} must be an object`, USAGE);
+    }
+    const target = raw as Record<string, unknown>;
+    if (typeof target.provider !== "string" || !target.provider.trim()
+      || typeof target.model !== "string" || !target.model.trim()) {
+      throw new CliUsageError(`--targets JSON entry ${index} requires provider and model strings`, USAGE);
+    }
+    if (target.weight !== undefined
+      && (typeof target.weight !== "number" || !Number.isInteger(target.weight)
+        || target.weight < 1 || target.weight > 10_000)) {
+      throw new CliUsageError(`target weight must be 1-10000 at JSON entry ${index}`, USAGE);
+    }
+    if (target.effort !== undefined
+      && (typeof target.effort !== "string" || !isCodexReasoningEffort(target.effort))) {
+      throw new CliUsageError(`invalid target effort at JSON entry ${index}; use low, medium, high, xhigh, max, or ultra`, USAGE);
+    }
+    if (target.serviceTier !== undefined
+      && (typeof target.serviceTier !== "string"
+        || target.serviceTier.trim().length === 0
+        || target.serviceTier.trim().length > 64)) {
+      throw new CliUsageError(`invalid target serviceTier at JSON entry ${index}; use a nonblank string of at most 64 characters`, USAGE);
+    }
+    return {
+      provider: target.provider,
+      model: target.model,
+      ...(target.weight !== undefined ? { weight: target.weight } : {}),
+      ...(target.effort !== undefined ? { effort: target.effort as OcxComboDefaultEffort } : {}),
+      ...(target.serviceTier !== undefined ? { serviceTier: target.serviceTier.trim() } : {}),
+    };
+  });
+}
+
+export function parseComboTargets(value: string): ComboTargetArg[] {
+  if (value.trimStart().startsWith("[")) return parseJsonTargets(value);
   const targets = value.split(",").map(part => part.trim()).filter(Boolean).map(part => {
     const colon = part.lastIndexOf(":");
     let selector = part;
@@ -91,7 +140,7 @@ async function set(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const combo: Record<string, unknown> = {
     strategy,
     stickyLimit: stickyLimit ?? 1,
-    targets: parseTargets(targetsRaw),
+    targets: parseComboTargets(targetsRaw),
   };
   if (cooldownMs !== undefined) combo.cooldownMs = cooldownMs;
   if (effort !== undefined) combo.defaultEffort = effort === "-" ? null : effort;

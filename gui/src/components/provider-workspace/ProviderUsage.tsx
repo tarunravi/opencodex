@@ -7,7 +7,7 @@ import { useT, useI18n } from "../../i18n/shared";
 import QuotaBars from "../QuotaBars";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatRelativeTime, relativeTimeLabelsFromT, formatRequestCount, formatTokenCount, formatCostUsd } from "../../provider-workspace/usage";
-import { accountQuotaFromReport, formatQuotaSourceLabel, type ProviderQuotaReportView } from "../../provider-workspace/report";
+import { accountQuotaFromReport, capacityAggregationFromReport, formatQuotaSourceLabel, type ProviderQuotaReportView } from "../../provider-workspace/report";
 import type { ProviderUsageTotals, ProviderModelUsageRow } from "./types";
 
 export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsage }: {
@@ -21,6 +21,7 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
   const timeLabels = relativeTimeLabelsFromT(t);
   const hasUsage = usageTotals?.requests !== undefined;
   const quota = accountQuotaFromReport(quotaReport);
+  const quotaPlan = capacityAggregationFromReport(quotaReport)?.currentAccount?.plan ?? null;
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
   void item;
 
@@ -80,6 +81,9 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
                   <th className="num">{t("pws.col.cost")}</th>
                   <th className="num">{t("pws.col.tokens")}</th>
                   <th className="num">{t("pws.col.requests")}</th>
+                  <th className="num">{t("usage.col.avgTtft")}</th>
+                  <th className="num">{t("usage.col.e2eTps")}</th>
+                  <th className="num">{t("usage.col.decodeTps")}</th>
                   <th>{t("pws.col.share")}</th>
                 </tr>
               </thead>
@@ -103,6 +107,9 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
                         <td className="num mono">{formatCostUsd(row.estimatedCostUsd, locale)}</td>
                         <td className="num mono">{formatTokenCount(row.totalTokens, locale)}</td>
                         <td className="num">{row.requests}</td>
+                        <td className="num mono">{row.averageTtftMs != null ? `${(row.averageTtftMs / 1000).toLocaleString(locale, { maximumFractionDigits: 1 })}s` : "—"}</td>
+                        <td className="num mono">{row.endToEndTokensPerSecond != null ? `${row.endToEndTokensPerSecond.toLocaleString(locale, { maximumFractionDigits: 1 })} tok/s` : "—"}</td>
+                        <td className="num mono">{row.decodeTokensPerSecond != null ? `${row.decodeTokensPerSecond.toLocaleString(locale, { maximumFractionDigits: 1 })} tok/s` : "—"}</td>
                         <td>
                           <div className="pws-share-bar">
                             <div className="pws-share-bar-fill" style={{ width: `${Math.round(row.shareRatio * 100)}%` }} />
@@ -111,7 +118,7 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
                       </tr>
                       {isExpanded && (
                         <tr className="pws-model-detail">
-                          <td colSpan={5}>
+                          <td colSpan={8}>
                             <div className="pws-model-detail-grid">
                               <div>
                                 <span className="muted">{t("pws.tokenInput")}</span>
@@ -138,7 +145,7 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, modelUsa
         <h3 className="pws-section-title">{t("pws.rateLimits")}</h3>
         {quota ? (
           <>
-            <QuotaBars quota={quota} plan={null} threshold={80} t={t} layout="stacked" />
+            <QuotaBars quota={quota} plan={quotaPlan} threshold={80} t={t} layout="stacked" />
             <dl className="pws-kv pws-usage-meta">
               {quotaReport?.source?.trim() && (
                 <div className="pws-kv-row">

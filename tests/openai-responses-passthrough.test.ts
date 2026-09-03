@@ -3837,3 +3837,63 @@ describe("reasoning input content channel", () => {
     expect(out.encrypted_content).toBe("upstream-issued-blob");
   });
 });
+
+describe("internal chat message metadata passthrough", () => {
+  const metadata = {
+    turn_id: "01a03583-4cdd-78c2-90f5-edaac96356dd",
+    create_time: 1787604193.791705,
+    content_item_kinds: ["text"],
+  };
+  const input = [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "ping" }],
+      internal_chat_message_metadata_passthrough: metadata,
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "pong" }],
+    },
+  ];
+
+  function outboundInput(target: Parameters<typeof createResponsesPassthroughAdapter>[0]) {
+    const request = createResponsesPassthroughAdapter(target).buildRequest({
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.6-sol", input },
+    }, { headers: new Headers({ authorization: "Bearer token" }) });
+    return (JSON.parse(request.body) as { input: Record<string, unknown>[] }).input;
+  }
+
+  test("strips ChatGPT-private item metadata before Azure", () => {
+    const out = outboundInput({
+      adapter: "openai-responses",
+      baseUrl: "https://codex-azure-migration-eastus2.services.ai.azure.com/openai/v1",
+      authMode: "key",
+      apiKey: "sk-test",
+    });
+    expect(out[0]).not.toHaveProperty("internal_chat_message_metadata_passthrough");
+    expect(out[0].content).toEqual(input[0].content);
+    expect(out[1]).toEqual(input[1]);
+  });
+
+  test("strips the field on LiteLLM and other non-ChatGPT gateways", () => {
+    const out = outboundInput({
+      adapter: "openai-responses",
+      baseUrl: "http://127.0.0.1:41113/v1",
+      authMode: "key",
+      apiKey: "sk-test",
+      allowPrivateNetwork: true,
+    });
+    expect(out[0]).not.toHaveProperty("internal_chat_message_metadata_passthrough");
+  });
+
+  test("keeps the field on the canonical ChatGPT backend", () => {
+    const out = outboundInput(provider);
+    expect(out[0].internal_chat_message_metadata_passthrough).toEqual(metadata);
+  });
+});

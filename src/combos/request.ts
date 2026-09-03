@@ -56,12 +56,20 @@ function responsesInputNodeHasImage(value: unknown): boolean {
 
 export function concreteComboRequestBody(
   body: unknown,
-  target: Pick<OcxComboTarget, "provider" | "model">,
+  target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">,
   defaultEffort: OcxComboDefaultEffort | null,
   targetReasoningEfforts: readonly string[] | undefined,
 ): Record<string, unknown> {
   const clone = structuredClone(body) as Record<string, unknown>;
   clone.model = `${target.provider}/${target.model}`;
+  if (target.serviceTier) clone.service_tier = target.serviceTier;
+  if (target.effort) {
+    const reasoning = clone.reasoning;
+    clone.reasoning = reasoning && typeof reasoning === "object" && !Array.isArray(reasoning)
+      ? { ...(reasoning as Record<string, unknown>), effort: target.effort }
+      : { effort: target.effort };
+    return clone;
+  }
   if (!defaultEffort) return clone;
   const reasoning = clone.reasoning;
   const needsDefault = reasoning === undefined || (

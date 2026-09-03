@@ -3,7 +3,7 @@ import { getCachedProviderQuota } from "../providers/quota-routing-cache";
 import { coolComboTarget, isComboTargetInCooldown } from "./failover";
 import { quotaResetRemainingMs } from "./reset-window";
 import { getCombo, resolveComboId, targetKey } from "./types";
-import type { NormalizedComboConfig } from "./types";
+import type { NormalizedComboConfig, NormalizedComboTarget } from "./types";
 import {
   captureConfigGeneration,
   type GenerationContext,
@@ -11,7 +11,7 @@ import {
 
 export interface ComboPick {
   comboId: string;
-  target: Required<OcxComboTarget>;
+  target: NormalizedComboTarget;
   targetIndex: number;
   attempted: string[];
   writerGeneration: number;
@@ -59,9 +59,9 @@ function targetProviderIsUsable(config: OcxConfig, target: OcxComboTarget): bool
 }
 
 function smoothWeightedIndex(
-  targets: Required<OcxComboTarget>[],
+  targets: NormalizedComboTarget[],
   state: SelectionState,
-  eligible: (target: Required<OcxComboTarget>) => boolean,
+  eligible: (target: NormalizedComboTarget) => boolean,
 ): number {
   let best = -1;
   let bestScore = Number.NEGATIVE_INFINITY;
@@ -95,8 +95,8 @@ function smoothWeightedIndex(
  * unknown (Infinity).
  */
 function resetWindowIndex(
-  targets: Required<OcxComboTarget>[],
-  eligible: (target: Required<OcxComboTarget>) => boolean,
+  targets: NormalizedComboTarget[],
+  eligible: (target: NormalizedComboTarget) => boolean,
   now = Date.now(),
 ): number {
   let selected = -1;
@@ -120,14 +120,14 @@ export function pickComboTarget(
   comboId: string,
   options: {
     exclude?: Iterable<string>;
-    eligible?: (target: Required<OcxComboTarget>) => boolean;
+    eligible?: (target: NormalizedComboTarget) => boolean;
   } = {},
 ): ComboPick | null {
   const writerGeneration = captureConfigGeneration();
   const combo = getCombo(config, comboId);
   if (!combo) throw new UnknownComboError(comboId);
   const excluded = new Set(options.exclude ?? []);
-  const eligible = (target: Required<OcxComboTarget>): boolean =>
+  const eligible = (target: NormalizedComboTarget): boolean =>
     targetProviderIsUsable(config, target)
     && !excluded.has(targetKey(target))
     && (options.eligible?.(target) ?? true);
@@ -206,7 +206,7 @@ export function pickComboTarget(
 export function noteComboSuccess(
   comboId: string,
   combo: NormalizedComboConfig,
-  target: Required<OcxComboTarget>,
+  target: NormalizedComboTarget,
   writerGeneration = captureConfigGeneration(),
 ): void {
   const key = targetKey(target);
@@ -250,7 +250,7 @@ export function advanceComboAfterFailure(
     retryAfter?: string | null;
     now?: number;
     cooldownMs?: number;
-    eligible?: (target: Required<OcxComboTarget>) => boolean;
+    eligible?: (target: NormalizedComboTarget) => boolean;
   } = {},
 ): ComboPick | null {
   noteComboFailure(pick.comboId, pick.target, pick.writerGeneration);

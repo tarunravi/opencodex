@@ -22,8 +22,23 @@ export type ProviderEntitlementSummary =
 
 export interface ConfiguredProviderSummary {
   name: string;
+  adapter?: string;
+  baseUrl?: string;
   authMode?: string;
+  hasApiKey?: boolean;
+  hasHeaders?: boolean;
+  keyOptional?: boolean;
   disabled?: boolean;
+  coolingKeyCount?: number;
+  nextKeyRecoveryAt?: number;
+  credentialDisabled?: boolean;
+  oauthLoggedIn?: boolean;
+  activeNeedsReauth?: boolean;
+  activeOAuthHealth?: {
+    status: "healthy" | "cooldown" | "reauth_required" | "warning";
+    reason?: string;
+    until?: string;
+  };
   liveModels?: boolean;
   models?: string[];
   contextWindow?: number;

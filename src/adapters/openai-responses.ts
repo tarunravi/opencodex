@@ -130,6 +130,31 @@ export function sanitizeReasoningInputContent(
   return changed ? { ...raw, input } : body;
 }
 
+/**
+ * Codex Desktop attaches ChatGPT-private per-item metadata. ChatGPT's backend
+ * accepts it; Azure and other public Responses gateways reject unknown nested
+ * keys (`content_item_kinds`) as `unknown_parameter` (openai/codex#30161).
+ * Codex only strips this when the provider name is not "OpenAI"; traffic
+ * through this proxy looks like OpenAI, so the adapter must strip it on every
+ * non-ChatGPT destination.
+ */
+export function stripInternalChatMessageMetadata(body: unknown): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+  let changed = false;
+  const input = body.input.map(item => {
+    if (
+      !isPlainObject(item)
+      || !Object.prototype.hasOwnProperty.call(item, "internal_chat_message_metadata_passthrough")
+    ) {
+      return item;
+    }
+    changed = true;
+    const { internal_chat_message_metadata_passthrough: _dropped, ...rest } = item;
+    return rest;
+  });
+  return changed ? { ...body, input } : body;
+}
+
 function stripUnsupportedReasoningSummaryDelivery(body: unknown, modelId: string): unknown {
   if (catalogModelSupportsReasoningSummaries(modelId) !== false) return body;
   if (!isPlainObject(body) || !isPlainObject(body.stream_options)) return body;
@@ -2275,9 +2300,12 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         ),
         isXaiSchemaTarget(provider),
       );
+      const routedBody = isCanonicalOpenAiForwardProvider(provider)
+        ? sanitizedBody
+        : stripInternalChatMessageMetadata(sanitizedBody);
       const finalBody = stripDisabledVerbosity(
         stripDisabledReasoningSummaries(
-          normalizeConfiguredReasoningSummaryDelivery(sanitizedBody, provider, parsed.modelId),
+          normalizeConfiguredReasoningSummaryDelivery(routedBody, provider, parsed.modelId),
           provider,
           parsed.modelId,
         ),

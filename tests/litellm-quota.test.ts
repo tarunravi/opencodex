@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../src/providers/quota";
+import { clearProviderQuotaCache, fetchProviderQuotaReports, getCachedProviderQuotaReport } from "../src/providers/quota";
 import type { OcxConfig } from "../src/types";
 
 const originalFetch = globalThis.fetch;
@@ -75,6 +75,28 @@ describe("LiteLLM provider quota", () => {
         },
       },
     });
+    expect(result.reports[0]?.credentialDisabled).toBeUndefined();
+  });
+
+  test("surfaces a blocked LiteLLM key without exposing its value", async () => {
+    globalThis.fetch = (async () => Response.json({
+      info: { blocked: true, spend: 10, max_budget: 100 },
+    })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(config(), true);
+
+    expect(result.reports[0]).toMatchObject({ provider: "litellm", credentialDisabled: true });
+    expect(getCachedProviderQuotaReport("litellm")).toMatchObject({ provider: "litellm", credentialDisabled: true });
+    expect(JSON.stringify(result)).not.toContain("litellm-secret");
+  });
+
+  test("surfaces a blocked LiteLLM key even when quota fields are unavailable", async () => {
+    globalThis.fetch = (async () => Response.json({ info: { blocked: true } })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(config(), true);
+
+    expect(result.reports[0]).toMatchObject({ provider: "litellm", credentialDisabled: true });
+    expect(JSON.stringify(result)).not.toContain("litellm-secret");
   });
 
   test("supports an explicitly allowed loopback bridge", async () => {

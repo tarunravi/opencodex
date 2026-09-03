@@ -65,11 +65,13 @@ function freshQuotaReport(value: unknown, now: number): ProviderQuotaReportView 
   if (!("quota" in row)) return null;
   if (row.label !== undefined && typeof row.label !== "string") return null;
   if (row.source !== undefined && typeof row.source !== "string") return null;
+  if (row.credentialDisabled !== undefined && typeof row.credentialDisabled !== "boolean") return null;
   return {
     ...(typeof row.label === "string" ? { label: row.label } : {}),
     ...(typeof row.source === "string" ? { source: row.source } : {}),
     updatedAt: row.updatedAt,
     quota: row.quota,
+    ...(row.credentialDisabled === true ? { credentialDisabled: true } : {}),
     ...(row.aggregation !== undefined ? { aggregation: row.aggregation } : {}),
   };
 }
@@ -220,7 +222,7 @@ export default function ProviderWorkspaceShell({
   useEffect(() => {
     let cancelled = false;
     const timeout = window.setTimeout(() => {
-      const data = usageResource.data as { providers?: Array<{ provider: string; requests: number; totalTokens?: number }>; models?: Array<{ provider: string; model: string; resolvedModel?: string; requests: number; totalTokens: number; inputTokens: number; outputTokens: number; shareRatio: number; estimatedCostUsd?: number }> } | undefined;
+      const data = usageResource.data as { providers?: Array<{ provider: string; requests: number; totalTokens?: number }>; models?: Array<{ provider: string; model: string; resolvedModel?: string; requests: number; totalTokens: number; inputTokens: number; outputTokens: number; averageTtftMs?: number | null; endToEndTokensPerSecond?: number | null; decodeTokensPerSecond?: number | null; shareRatio: number; estimatedCostUsd?: number }> } | undefined;
       if (cancelled) return;
       if (!data) {
         if (usageResource.loading) setUsageLoading(!readSessionListCache(usageCacheKey));
@@ -233,7 +235,7 @@ export default function ProviderWorkspaceShell({
       for (const m of data.models ?? []) {
         const key = m.provider;
         if (!byProviderModels[key]) byProviderModels[key] = [];
-        byProviderModels[key].push({ model: m.model, ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}), requests: m.requests, totalTokens: m.totalTokens, inputTokens: m.inputTokens, outputTokens: m.outputTokens, shareRatio: m.shareRatio, ...(m.estimatedCostUsd !== undefined ? { estimatedCostUsd: m.estimatedCostUsd } : {}) });
+        byProviderModels[key].push({ model: m.model, ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}), requests: m.requests, totalTokens: m.totalTokens, inputTokens: m.inputTokens, outputTokens: m.outputTokens, ...(m.averageTtftMs !== undefined ? { averageTtftMs: m.averageTtftMs } : {}), ...(m.endToEndTokensPerSecond !== undefined ? { endToEndTokensPerSecond: m.endToEndTokensPerSecond } : {}), ...(m.decodeTokensPerSecond !== undefined ? { decodeTokensPerSecond: m.decodeTokensPerSecond } : {}), shareRatio: m.shareRatio, ...(m.estimatedCostUsd !== undefined ? { estimatedCostUsd: m.estimatedCostUsd } : {}) });
       }
       setUsageModels(byProviderModels);
       writeSessionListCache(usageCacheKey, { totals: byProvider, models: byProviderModels });
@@ -251,7 +253,7 @@ export default function ProviderWorkspaceShell({
       // be bypassed. The old derived-key effect always read the cached view, which is why a
       // switch could leave the bars showing the previous account's quota.
       void fetch(`${apiBase}/api/provider-quotas${quotaForceRefresh ? "?refresh=1" : ""}`)
-        .then(r => readJsonIfOk<{ reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown; aggregation?: unknown }> }>(r))
+        .then(r => readJsonIfOk<{ reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown; credentialDisabled?: boolean; aggregation?: unknown }> }>(r))
         .then((data) => {
           if (cancelled || !data) return;
           // A successful endpoint response is authoritative, including an empty report list.

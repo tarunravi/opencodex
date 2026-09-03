@@ -103,7 +103,10 @@ export function comboCatalogOmissionReason(
   }
   if (members.length !== combo.targets.length) return "incomplete_metadata";
   if (!members.every((member, index) => (
-    `${member.provider}/${member.id}` === targetKey(combo.targets[index]!)
+    `${member.provider}/${member.id}` === targetKey({
+      provider: combo.targets[index]!.provider,
+      model: combo.targets[index]!.model,
+    })
   ))) {
     return "incomplete_metadata";
   }
@@ -225,7 +228,7 @@ export function comboCatalogWarningSignature(
   ] as const));
   return JSON.stringify(combo.targets.map(target => {
     const key = targetKey(target);
-    const member = discovered.get(key);
+    const member = discovered.get(targetKey({ provider: target.provider, model: target.model }));
     return {
       key,
       contextWindow: member?.contextWindow ?? null,

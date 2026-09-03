@@ -78,7 +78,7 @@ function sparseComboConfig<T extends {
   imageInput?: "auto" | "disabled";
   reasoningEffortMode?: "strict" | "adaptive";
   cooldownMs?: number | null;
-}>(combo: T): Omit<T, "imageInput" | "reasoningEffortMode"> & {
+}>(combo: T): Omit<T, "imageInput" | "reasoningEffortMode" | "cooldownMs"> & {
   imageInput?: "disabled";
   reasoningEffortMode?: "adaptive";
   cooldownMs?: number;

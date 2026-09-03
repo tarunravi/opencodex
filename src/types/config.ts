@@ -803,6 +803,10 @@ export interface OcxComboTarget {
   model: string;
   /** Relative target weight for round-robin batches and random selection. Default 1; valid range 1..10000. */
   weight?: number;
+  /** Force this target attempt to use one Codex reasoning effort. */
+  effort?: OcxComboDefaultEffort;
+  /** Force this target attempt to send one canonical or provider-defined service tier. */
+  serviceTier?: string;
 }
 
 export interface OcxComboConfig {

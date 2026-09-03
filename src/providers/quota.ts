@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolveEnvValue } from "../config";
 import {
   effectiveCodexAuthAccountId,
   fetchMainAccountInfoSnapshot,
@@ -130,6 +131,8 @@ export interface ProviderQuotaReport {
   quota: ProviderQuota;
   updatedAt: number;
   reverseEngineered?: boolean;
+  /** Upstream says this credential is blocked. No key/token material is exposed. */
+  credentialDisabled?: boolean;
   aggregation?: CodexCapacityAggregation;
 }
 
@@ -148,6 +151,19 @@ export function clearProviderQuotaCache(): void {
   cache = null;
   clearCachedProviderQuotas();
   invalidationEpoch += 1;
+}
+
+/**
+ * Return recent provider quota evidence without starting an upstream request.
+ *
+ * Health/status surfaces use this to report a credential that the last explicit
+ * quota refresh found disabled. Configuration mutations clear the cache, so a
+ * surviving row still belongs to the current provider definition.
+ */
+export function getCachedProviderQuotaReport(provider: string, now = Date.now()): ProviderQuotaReport | null {
+  const row = cache?.response.reports.find(candidate => candidate.provider === provider);
+  if (!row || now - row.updatedAt >= LAST_GOOD_MAX_AGE_MS || !isProviderQuotaReportCurrent(row)) return null;
+  return row;
 }
 
 function cacheKey(config: OcxConfig): string {
@@ -1739,6 +1755,10 @@ function parseLiteLlmQuotaPayload(value: unknown, now = Date.now()): ProviderQuo
   };
 }
 
+function liteLlmKeyBlocked(value: unknown): boolean {
+  return asRecord(asRecord(value)?.info)?.blocked === true;
+}
+
 async function fetchLiteLlmQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
   const endpoint = liteLlmKeyInfoUrl(config.baseUrl, config.allowPrivateNetwork);
   const apiKey = resolveEnvValue(config.apiKey)?.trim();
@@ -1758,8 +1778,22 @@ async function fetchLiteLlmQuota(provider: string, config: OcxProviderConfig): P
   }
   const body = await readQuotaJson(response);
   if (body === QUOTA_JSON_READ_FAILURE) return null;
+  const credentialDisabled = liteLlmKeyBlocked(body);
   const quota = parseLiteLlmQuotaPayload(body);
-  return quota ? report(provider, "litellm:key-info", quota) : null;
+  if (!quota) {
+    if (!credentialDisabled) return null;
+    const updatedAt = Date.now();
+    return {
+      provider,
+      label: providerLabel(provider),
+      source: "litellm:key-info",
+      quota: { updatedAt },
+      updatedAt,
+      credentialDisabled: true,
+    };
+  }
+  const result = report(provider, "litellm:key-info", quota);
+  return result && credentialDisabled ? { ...result, credentialDisabled: true } : result;
 }
 
 function quotaResetAt(row: Record<string, unknown>): number | undefined {

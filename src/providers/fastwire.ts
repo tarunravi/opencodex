@@ -12,8 +12,7 @@ import type { InboundWire, ModelWireDefault, ProviderAuthKind } from "./registry
 const SERVICE_TIER_ADAPTERS = new Set(["openai-chat", "openai-responses"]);
 const FAST_WIRE_ADAPTERS: Readonly<Record<FastWire["kind"], ReadonlySet<string>>> = {
   "service-tier": SERVICE_TIER_ADAPTERS,
-  // A1 deliberately has no adapter implementation for Anthropic speed.
-  "anthropic-speed": new Set(),
+  "anthropic-speed": new Set(["anthropic"]),
   // Cursor expresses Fast as a variant dimension of the picked model, resolved in the
   // request builder, so the adapter set is exactly the cursor adapter.
   "cursor-variant": new Set(["cursor"]),

@@ -124,6 +124,11 @@ describe("GET /api/usage", () => {
       expect(Array.isArray(body.models)).toBe(true);
       expect(Array.isArray(body.providers)).toBe(true);
       expect(Array.isArray(body.accounts)).toBe(true);
+      expect(body.models.find((model: { provider: string; model: string }) => model.provider === "openai" && model.model === "gpt-5.5")).toMatchObject({
+        modelCallMs: 22,
+        endToEndTokensPerSecond: 2500,
+        decodeTokensPerSecond: null,
+      });
     } finally {
       await server.stop(true);
     }
@@ -317,6 +322,7 @@ describe("GET /api/usage", () => {
       const first = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
       const second = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
       expect(second.summary).toEqual(first.summary);
+      expect(second.models).toEqual(first.models);
       expect(usageReadCacheStatsForTests().fullReads).toBe(1);
 
       appendFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({

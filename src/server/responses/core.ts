@@ -1511,6 +1511,8 @@ export interface HandleResponsesOptions {
   stripClaudeMainAuthForNoncanonicalForward?: boolean;
   /** Internal recursion guard; callers outside this module must not set it. */
   comboAttempt?: boolean;
+  /** Trusted per-target combo override; takes precedence over the global Fast default. */
+  comboTargetServiceTier?: string;
   /** Internal combo handoff for one parent-validated continuation snapshot. */
   comboReplaySnapshot?: {
     sourceBody: unknown;
@@ -2013,8 +2015,9 @@ async function applyFinalRouteRequestNormalization(args: {
   logCtx: RequestLogContext;
   inboundWire: InboundWire;
   inboundTransport?: "websocket";
+  comboTargetServiceTier?: string;
 }): Promise<void> {
-  const { parsed, route, config, req, logCtx, inboundWire, inboundTransport } = args;
+  const { parsed, route, config, req, logCtx, inboundWire, inboundTransport, comboTargetServiceTier } = args;
 
   // Only Anthropic message routes retain the Codex-facing selector. Other providers must keep
   // their existing response.model contract even when their public and wire model ids differ.
@@ -2091,14 +2094,17 @@ async function applyFinalRouteRequestNormalization(args: {
   // The ChatGPT-internal Codex backend echoes `service_tier: "default"` even on turns it
   // scheduled as priority, so its echo cannot confirm OR deny Fast. Believing it reported every
   // Fast request as `response-declined` (#2558). The public API's echo stays authoritative.
+  const targetTier = comboTargetServiceTier;
+  const requestedTier = targetTier ?? callerTier;
+  const effectiveFastMode = targetTier === undefined ? config.fastMode : undefined;
   parsed.options.tierObservation = tierObservationContext(
     fastPolicy,
-    config.fastMode,
-    callerTier,
+    effectiveFastMode,
+    requestedTier,
     isCanonicalOpenAiForwardProvider(route.provider) ? false : undefined,
   );
-  parsed.options.tierDecision = decideTier(fastPolicy, config.fastMode, callerTier);
-  parsed.options.serviceTier = tierValueAfterDecision(parsed.options.tierDecision, callerTier);
+  parsed.options.tierDecision = decideTier(fastPolicy, effectiveFastMode, requestedTier);
+  parsed.options.serviceTier = tierValueAfterDecision(parsed.options.tierDecision, requestedTier);
   if (fastPolicy.capability === true && fastPolicy.fastWire === null) {
     warnFastWireCapabilityGap(route.providerName, route.modelId);
   }
@@ -2400,6 +2406,7 @@ export async function handleComboResponses(
       response = await handleResponses(childRequest, config, childLog, {
         ...options,
         comboAttempt: true,
+        comboTargetServiceTier: pick.target.serviceTier,
         comboReplaySnapshot,
         deferCodexResetDerivedCooldown,
         // Attempt-relative TTFT is recorded HERE (not via childLog.firstOutputMs — a later
@@ -3170,6 +3177,7 @@ async function handleResponsesInner(
     logCtx,
     inboundWire,
     inboundTransport: options.inboundTransport,
+    comboTargetServiceTier: options.comboTargetServiceTier,
   });
   // Attribute local auth/cooldown failures to the public selector too; exact auth may fail before
   // the normal post-resolution provider label is assigned.

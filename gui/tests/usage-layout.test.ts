@@ -137,7 +137,7 @@ test("Usage renders Available history and a persistent qualification when histor
       root.render(createElement(LanguageProvider, null, createElement(Usage, { apiBase: "http://usage-qualification-test" })));
     });
     const deadline = Date.now() + 1_000;
-    while (!(container.textContent ?? "").includes("Totals cover available history only")) {
+    while (!(container.textContent ?? "").includes("Partial history")) {
       if (Date.now() >= deadline) throw new Error("Usage qualification did not render");
       await act(async () => {
         await new Promise<void>(resolve => testWindow.setTimeout(resolve, 10));
@@ -145,7 +145,8 @@ test("Usage renders Available history and a persistent qualification when histor
     }
 
     expect(container.querySelector('button[aria-label="Available history"]')).not.toBeNull();
-    expect(container.textContent).toContain("Totals cover available history only because older usage was not loaded.");
+    expect(container.textContent).toContain("Partial history: totals use only loaded records; earlier file entries were omitted by the read limit.");
+    expect(container.querySelector('[role="note"]')).not.toBeNull();
   } finally {
     await act(async () => { root.unmount(); });
     container.remove();
@@ -170,8 +171,8 @@ test("Usage names the loaded window when history is truncated", async () => {
   // range, so both bounds must round-trip through Date before the detailed wording is used.
   expect(page).toContain("function renderableInstant");
   expect(page).toContain("Number.isFinite(at.getTime())");
-  // A total that silently omits in-range rows is a caveat, not a status update.
-  expect(page).toContain('<Notice tone="warn">');
+  // This is persistent scope metadata, not an alarming transient warning.
+  expect(page).toContain('className="usage-history-note muted" role="note"');
 });
 
 test("Usage falls back to the generic caveat when a reported bound is unrenderable", async () => {
@@ -228,7 +229,7 @@ test("Usage falls back to the generic caveat when a reported bound is unrenderab
       root.render(createElement(LanguageProvider, null, createElement(Usage, { apiBase: "http://usage-invalid-window-test" })));
     });
     const deadline = Date.now() + 1_000;
-    while (!(container.textContent ?? "").includes("Totals cover available history only")) {
+    while (!(container.textContent ?? "").includes("Partial history")) {
       if (Date.now() >= deadline) throw new Error("Usage fallback qualification did not render");
       await act(async () => {
         await new Promise<void>(resolve => testWindow.setTimeout(resolve, 10));
@@ -246,6 +247,24 @@ test("Usage falls back to the generic caveat when a reported bound is unrenderab
       Object.defineProperty(globalThis, key, { configurable: true, value: previous[key] });
     }
   }
+});
+
+test("Usage model tables show per-model throughput and effort rows identify their provider visibly", async () => {
+  const page = await Bun.file(new URL("../src/pages/Usage.tsx", import.meta.url)).text();
+  const providerUsage = await Bun.file(new URL("../src/components/provider-workspace/ProviderUsage.tsx", import.meta.url)).text();
+  expect(page).toContain('t("usage.col.e2eTps")');
+  expect(page).toContain('t("usage.col.decodeTps")');
+  expect(page).toContain('t("usage.col.provider")');
+  expect(page).toContain('{formatProviderDisplayName(group.provider, t)}</span>');
+  expect(page).toContain('t("usage.providerTooltip"');
+  expect(providerUsage).toContain('t("usage.col.e2eTps")');
+  expect(providerUsage).toContain('t("usage.col.decodeTps")');
+  expect(providerUsage).toContain('t("usage.col.avgTtft")');
+  expect(providerUsage).toContain('colSpan={8}');
+  expect(providerUsage).toContain("capacityAggregationFromReport(quotaReport)?.currentAccount?.plan");
+  expect(providerUsage).toContain("plan={quotaPlan}");
+  expect(page).toContain('t("usage.col.speed")');
+  expect(page).toContain("speedModeLabel(group.speedMode, t)");
 });
 
 test("Usage source marks keep brand colors and invert only the monochrome Grok mark", async () => {
