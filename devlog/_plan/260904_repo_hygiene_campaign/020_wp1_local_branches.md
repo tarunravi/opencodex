@@ -23,6 +23,27 @@ proof is preserved rather than deleted.
 ancestors of `dev` and `-d` refuses them; that is exactly the case T3 exists to
 decide, and the decision has already been made with evidence.
 
+## Outcome (executed 2026-09-04)
+
+71 branches deleted, each after re-reading its tip and comparing it to the SHA
+recorded at classification. Zero failures, zero tip mismatches.
+
+| Measure | Before | After |
+|---|---|---|
+| Local branches | 241 | 170 |
+
+Post-deletion verification, run against live state rather than the plan:
+
+| Check | Result |
+|---|---|
+| Open-PR head refs present locally that were lost | 0 of 13 |
+| Worktree-backing refs lost | 0 of 47 |
+| Preserved (rejected) branches wrongly deleted | 0 of 33 |
+| `dev` / `main` / `preview` intact | yes |
+
+That first row is the whole point of this unit. The 2026-09-02 run left only 4
+of 33 open-PR heads alive; this one lost none.
+
 ## Exit criteria
 
 - Exactly the 71 approved refs are gone; nothing else was removed.
