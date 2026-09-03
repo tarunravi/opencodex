@@ -1716,6 +1716,8 @@ export const en = {
   "codexAuth.mainAccount": "Main Account",
   "codexAuth.logLabel": "Log label",
   "codexAuth.codexApp": "Codex App",
+  "codexAuth.moreActions": "Show more actions",
+  "codexAuth.copyId": "Copy account ID",
   "codexAuth.appLogin": "App login",
   "codexAuth.accountPool": "Account Pool",
   "codexAuth.accountModeTitle": "OpenAI account mode",
