@@ -6,8 +6,20 @@
 |---|---|---|---|
 | Local branches | 241 | 171 | −70 |
 | Remote branches | 61 | 59 | −2 |
-| Open issues | 45 | 32 | −13 |
-| Open PRs | 53 | 56 | +3 |
+| Open issues | 45 | 33 | −12 |
+| Open PRs | 53 | 57 | +4 |
+
+The after-counts are live at closeout, not a subtraction from the plan. Both
+"increases" are inbound traffic during the campaign, not work left undone: four
+carry PRs and two stacked PRs were opened by other sessions, and new reports
+arrived (for example #3384 from @Yum-wu). 14 issues were closed and 5
+consolidated issues opened, so the issue ledger nets −12 against a moving
+baseline rather than −13 against a frozen one.
+
+Counting against live state instead of the entry snapshot is deliberate. A
+repository with contributors does not hold still for a cleanup, and a closeout
+that reports the number it predicted rather than the number that exists is
+reporting on its own plan.
 
 Local branch deletion: 71 refs, each with a recorded proof and a tip SHA
 re-checked immediately before removal. Zero open-PR heads lost, zero
