@@ -11,14 +11,14 @@ interface TargetCooldown {
   cooldownUntil: number;
 }
 
-/** Map<`${comboId}\0${provider/model}`, TargetCooldown> */
+/** Map<`${comboId}\0${targetKey}`, TargetCooldown> */
 const targetCooldowns = new Map<string, TargetCooldown>();
 let lastReconciledGeneration = 0;
 let liveComboTargets = new Set<string>();
 
 function cooldownMapKey(
   comboId: string,
-  target: Pick<OcxComboTarget, "provider" | "model">,
+  target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">,
 ): string {
   return `${comboId}\0${targetKey(target)}`;
 }
@@ -43,7 +43,7 @@ export function parseRetryAfterMs(
 
 export function isComboTargetInCooldown(
   comboId: string,
-  target: Pick<OcxComboTarget, "provider" | "model">,
+  target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">,
   now = Date.now(),
 ): boolean {
   const key = cooldownMapKey(comboId, target);
@@ -58,7 +58,7 @@ export function isComboTargetInCooldown(
 
 export function coolComboTarget(
   comboId: string,
-  target: Pick<OcxComboTarget, "provider" | "model">,
+  target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">,
   options?: { retryAfter?: string | null; now?: number; cooldownMs?: number; writerGeneration?: number },
 ): void {
   const now = options?.now ?? Date.now();

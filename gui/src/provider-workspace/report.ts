@@ -11,6 +11,7 @@ export interface ProviderQuotaReportView {
   source?: string;
   updatedAt?: number;
   quota?: unknown;
+  credentialDisabled?: boolean;
   aggregation?: unknown;
 }
 

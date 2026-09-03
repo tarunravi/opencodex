@@ -21,6 +21,7 @@ import {
   markOAuthRefreshIntentStaleOwner,
   mergeAccountCredential,
   normalizeAuthStoreBuffer,
+  peekAuthStore,
   readOAuthRefreshIntent,
   removeAccount,
   saveAccountCredential,
@@ -1628,10 +1629,15 @@ export function submitManualLoginCode(provider: string, input: string): { ok: tr
 
 export interface OAuthAccountSummary { id: string; alias?: string; email?: string; active: boolean; needsReauth?: boolean; expiresAt?: number }
 
-export function getLoginStatus(provider: string): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
-  const cred = getCredential(provider);
+export function getLoginStatus(
+  provider: string,
+  options: { store?: ReturnType<typeof peekAuthStore> } = {},
+): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
   const st = loginState.get(provider);
-  const set = getAccountSet(provider);
+  const set = options.store === undefined
+    ? getAccountSet(provider)
+    : options.store[provider] ?? null;
+  const cred = set?.accounts.find(a => a.id === set.activeAccountId)?.credential ?? null;
   const accounts: OAuthAccountSummary[] | undefined = set?.accounts.map(a => ({
     id: a.id,
     ...(a.alias ? { alias: a.alias } : {}),

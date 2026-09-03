@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import { saveConfigPreservingClaudeCode } from "../config";
 import type { OcxConfig, OcxProviderConfig } from "../types";
+import { getKeyCooldownUntil } from "./key-failover";
 
 export interface ProviderApiKeyInfo {
   id: string;
@@ -17,6 +18,8 @@ export interface ProviderApiKeyInfo {
   masked: string;
   active: boolean;
   addedAt?: number;
+  /** Runtime-only 429 cooldown; omitted when this key is currently routable. */
+  cooldownUntil?: number;
 }
 
 function isEnvReference(value: string): boolean {
@@ -70,13 +73,17 @@ export function listProviderApiKeys(config: OcxConfig, name: string): { activeId
   const activeId = activeEntryId(provider);
   return {
     activeId,
-    keys: pool.map(entry => ({
-      id: entry.id,
-      ...(entry.label ? { label: entry.label } : {}),
-      masked: maskApiKey(entry.key),
-      active: entry.id === activeId,
-      ...(entry.addedAt !== undefined ? { addedAt: entry.addedAt } : {}),
-    })),
+    keys: pool.map(entry => {
+      const cooldownUntil = getKeyCooldownUntil(name, entry.id);
+      return {
+        id: entry.id,
+        ...(entry.label ? { label: entry.label } : {}),
+        masked: maskApiKey(entry.key),
+        active: entry.id === activeId,
+        ...(entry.addedAt !== undefined ? { addedAt: entry.addedAt } : {}),
+        ...(cooldownUntil !== null ? { cooldownUntil } : {}),
+      };
+    }),
   };
 }
 

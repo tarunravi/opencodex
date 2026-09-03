@@ -815,7 +815,7 @@ export function resolveComboCatalogMember(
   contextCap?: number,
   fallback?: ComboCatalogMemberFallback,
 ): CatalogModel | undefined {
-  const existing = memberByKey.get(targetKey(target));
+  const existing = memberByKey.get(targetKey({ provider: target.provider, model: target.model }));
   const prov = providers.get(target.provider);
   // Disabled providers never contribute members — even a complete discovery row
   // is unusable for catalog derivation while the provider is off.

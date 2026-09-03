@@ -240,6 +240,12 @@ Requests are promoted either way: with `fastMode: true`, picking the umbrella id
 resolves to the fast variant, so a client whose saved config predates the switch does not
 need to rediscover. Every legacy variant id keeps routing unchanged.
 
+### Anthropic Fast (`anthropic-speed`)
+
+The built-in Anthropic OAuth and API-key presets classify Claude Opus 4.8 and Opus 5 as
+Fast-capable. Canonical Fast becomes `speed: "fast"` on the Messages request and adds the
+`fast-mode-2026-02-01` beta without replacing existing Anthropic beta values.
+
 ### xAI Priority Processing
 
 The built-in `xai` preset advertises and injects Fast only when its effective transport uses

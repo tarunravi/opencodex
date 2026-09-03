@@ -276,6 +276,15 @@ catalog metadata only — it does not change target order, failover policy, or w
 target receives at dispatch. In the dashboard it is the **Adaptive reasoning ladder** switch in a
 combo's Capabilities section.
 
+For a target-specific override, use the JSON `--targets` form. `targets[].effort` replaces the
+caller's effort for that attempt, while `targets[].serviceTier` replaces `service_tier`. The latter
+is useful for a dedicated Fast alias because the selected provider's FastWire mapping translates
+the canonical `priority` tier to its native wire format.
+
+```bash
+ocx combo set opus-fast --targets '[{"provider":"anthropic","model":"claude-opus-4-8","serviceTier":"priority"}]' --alias claude-opus-4-8-fast
+```
+
 ## Image / multimodal capability
 
 By default a combo publishes the **intersection** of its targets' input modalities (image is
@@ -336,6 +345,7 @@ The primary commands are:
 ocx combo list
 ocx combo show <id>
 ocx combo set <id> --targets provider/model[:weight],...
+ocx combo set <id> --targets '[{"provider":"provider","model":"model","effort":"high","serviceTier":"priority"}]'
 ocx combo remove <id> --yes
 ```
 
@@ -378,8 +388,10 @@ Combos are stored in the top-level `combos` object, keyed by combo id:
 
 | Field | Required | Default | Rules |
 | --- | --- | --- | --- |
-| `targets` | Yes | — | Non-empty ordered array of configured `{ provider, model, weight? }` targets. Duplicate provider/model pairs are rejected. |
+| `targets` | Yes | — | Non-empty ordered array of configured `{ provider, model, weight?, effort?, serviceTier? }` targets. Exact duplicate target variants are rejected. |
 | `targets[].weight` | No | `1` | Integer from 1 to 10,000. Used by round-robin and random; ignored by failover, least-used, and reset-window. |
+| `targets[].effort` | No | caller value | Forces the Codex reasoning effort for this target attempt. |
+| `targets[].serviceTier` | No | caller value | Forces `service_tier` for this target attempt; canonical Fast is `priority`. |
 | `strategy` | No | `"failover"` | `"failover"`, `"round-robin"`, `"random"`, `"least-used"`, or `"reset-window"`. |
 | `stickyLimit` | No | `1` | Integer from 1 to 100 successful requests per round-robin selection. Applies only to round-robin. |
 | `cooldownMs` | No | `Retry-After` or `60000` | Integer from 0 to 600,000. `0` disables cross-request cooldown; a positive value fixes the cooldown duration. |

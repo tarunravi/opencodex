@@ -411,6 +411,40 @@ async function within<T>(promise: Promise<T>, ms = 2_000): Promise<T> {
 }
 
 describe("server combo failover 030 activation matrix", () => {
+  test("target Fast override wins over a global Fast disable", async () => {
+    let upstreamBody: Record<string, unknown> | undefined;
+    const anthropic = serve(async request => {
+      upstreamBody = await request.json() as Record<string, unknown>;
+      return Response.json({
+        id: "msg_fast",
+        type: "message",
+        role: "assistant",
+        model: "claude-opus-4-8",
+        content: [{ type: "text", text: "OK" }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 1, speed: "fast" },
+      });
+    });
+    const config = comboConfig({
+      "test-anthropic": provider("anthropic", baseUrl(anthropic), "key-a", {
+        modelSupportsServiceTier: { "claude-opus-4-8": true },
+        fastWire: {
+          kind: "anthropic-speed",
+          canonicalToWire: { priority: "fast" },
+          foreignCallerTiers: "drop",
+          betas: ["fast-mode-2026-02-01"],
+        },
+      }),
+    }, [{ provider: "test-anthropic", model: "claude-opus-4-8", serviceTier: "priority" }]);
+    config.fastMode = false;
+
+    const response = await post(config);
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(upstreamBody?.speed).toBe("fast");
+  });
+
   test("dispatches a selected concrete target despite a shadowing combo alias", async () => {
     const hits: string[] = [];
     const a = serve(async request => {
@@ -2633,9 +2667,14 @@ describe("server combo failover 030 activation matrix", () => {
   test("connect cancellation wins with 499, no backup, warning, or cooldown", async () => {
     let bHits = 0;
     const aStarted = deferred();
-    const a = serve(() => {
+    const a = serve((request) => {
       aStarted.resolve();
-      return new Promise<Response>(() => {});
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (request.signal.aborted) controller.close();
+          else request.signal.addEventListener("abort", () => controller.close(), { once: true });
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
     });
     const b = serve(() => { bHits += 1; return chatSuccess("must not run"); });
     const config = comboConfig({

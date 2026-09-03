@@ -55,7 +55,10 @@ export default function ProviderOverviewDashboard({
   const knownNames = useMemo(() => new Set(allItems.map(p => p.name)), [allItems]);
 
   const attention = useMemo(() => buildAttentionItems(sections, {}), [sections]);
-  const attentionCount = attention.length;
+  const disabledCredentialProviders = useMemo(() => new Set(
+    Object.entries(quotaReports).filter(([, report]) => report.credentialDisabled === true).map(([name]) => name),
+  ), [quotaReports]);
+  const attentionCount = attention.length + sections.disabled.length + disabledCredentialProviders.size;
   const readyReauthCount = useMemo(
     () => sections.ready.filter(p => p.activeNeedsReauth).length,
     [sections],
@@ -135,6 +138,26 @@ export default function ProviderOverviewDashboard({
                 <div className="pws-dashboard-row-info">
                   <span className="pws-dashboard-row-name">{formatProviderDisplayName(item.name, t)}</span>
                   <span className="pws-dashboard-row-meta muted">{localizeAttentionReason(item.reason)}</span>
+                </div>
+                <IconChevron className="pws-dashboard-row-chevron" aria-hidden="true" />
+              </button>
+            ))}
+            {sections.disabled.map(item => (
+              <button key={`disabled:${item.name}`} type="button" className="pws-dashboard-row pws-dashboard-row--attention" onClick={() => onSelectProvider(item.name)}>
+                <ProviderIcon name={item.name} adapter={item.adapter} baseUrl={item.baseUrl} cls="pws-dashboard-row-icon" />
+                <div className="pws-dashboard-row-info">
+                  <span className="pws-dashboard-row-name">{formatProviderDisplayName(item.name, t)}</span>
+                  <span className="pws-dashboard-row-meta muted">{t("pws.attention.providerDisabled")}</span>
+                </div>
+                <IconChevron className="pws-dashboard-row-chevron" aria-hidden="true" />
+              </button>
+            ))}
+            {allItems.filter(item => disabledCredentialProviders.has(item.name)).map(item => (
+              <button key={`credential:${item.name}`} type="button" className="pws-dashboard-row pws-dashboard-row--attention" onClick={() => onSelectProvider(item.name)}>
+                <ProviderIcon name={item.name} adapter={item.adapter} baseUrl={item.baseUrl} cls="pws-dashboard-row-icon" />
+                <div className="pws-dashboard-row-info">
+                  <span className="pws-dashboard-row-name">{formatProviderDisplayName(item.name, t)}</span>
+                  <span className="pws-dashboard-row-meta muted">{t("pws.attention.keyDisabled")}</span>
                 </div>
                 <IconChevron className="pws-dashboard-row-chevron" aria-hidden="true" />
               </button>

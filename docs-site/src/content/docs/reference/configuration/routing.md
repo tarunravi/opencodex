@@ -88,7 +88,7 @@ namespace, and cannot use reserved bare native families such as `gpt-*`, `o1-*`,
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `targets` | `{ provider: string; model: string; weight?: number }[]` | required | Ordered concrete routes. `weight` is 1–10000 and defaults to `1`. |
+| `targets` | `{ provider: string; model: string; weight?: number; effort?: string; serviceTier?: string }[]` | required | Ordered concrete routes. `weight` is 1–10000 and defaults to `1`; `effort` and `serviceTier` force request values for that target attempt. |
 | `strategy?` | `"failover" \| "round-robin" \| "random" \| "least-used" \| "reset-window"` | `"failover"` | Selection strategy. Target order is failover priority; weights shape round-robin and random draws; least-used follows recorded successes; reset-window follows the soonest quota reset. |
 | `stickyLimit?` | `number` | `1` | Successful requests retained in one round-robin batch. Range 1–100. Applies only to round-robin. |
 | `cooldownMs?` | `number \| null` | `Retry-After` or `60000` | Fixed cross-request cooldown after a retryable failure, from 0 to 600,000 ms. `0` makes failover request-local; `null` or omission preserves normal cooldown behavior. |

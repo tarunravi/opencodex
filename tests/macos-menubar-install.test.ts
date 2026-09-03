@@ -23,4 +23,12 @@ describe("macOS menubar install contract", () => {
     expect(MACOS_MENUBAR_STRAY_PROCESS_NAMES).not.toContain("opencodex");
     expect(MACOS_MENUBAR_STRAY_PROCESS_NAMES).not.toContain("bun");
   });
+
+  test("usage rows consume server-computed per-model timing and throughput", async () => {
+    const source = await Bun.file(new URL("../src/tray/macos/menubar.swift", import.meta.url)).text();
+    expect(source).toContain("let modelCallMs: Int?");
+    expect(source).toContain("let endToEndTokensPerSecond: Double?");
+    expect(source).toContain("formatTps(model.endToEndTokensPerSecond)");
+    expect(source).not.toContain("model.durationMs");
+  });
 });

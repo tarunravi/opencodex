@@ -13,9 +13,9 @@ import { navigateHash, normalizeHashPath } from "../hash-routing";
  * tab shows the plain model list, so a distinct id keeps "the page" and "the tab" from
  * ever having to be disambiguated in code. The visible label is still "Models".
  */
-export type ModelsTab = "catalog" | "combos" | "routing" | "compatibility";
+export type ModelsTab = "catalog" | "health" | "combos" | "routing" | "compatibility";
 
-export const MODELS_TABS: readonly ModelsTab[] = ["catalog", "combos", "routing", "compatibility"];
+export const MODELS_TABS: readonly ModelsTab[] = ["catalog", "health", "combos", "routing", "compatibility"];
 
 export function modelsTabHash(tab: ModelsTab): string {
   return tab === "catalog" ? "models" : `models/${tab}`;
@@ -32,6 +32,7 @@ export function modelsTabHash(tab: ModelsTab): string {
  */
 export function readModelsTab(hash = window.location.hash): ModelsTab {
   const raw = normalizeHashPath(hash);
+  if (raw === "models/health") return "health";
   if (raw === "models/combos" || raw === "combos" || raw.startsWith("combos/")) return "combos";
   if (raw === "models/routing" || raw === "routing" || raw.startsWith("routing/")) return "routing";
   if (raw === "models/compatibility" || raw === "lab" || raw.startsWith("lab/")) return "compatibility";

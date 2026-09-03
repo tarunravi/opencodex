@@ -7,7 +7,7 @@ import {
 import { resolveProviderApiKey } from "../../providers/key-store";
 import { parseRequest } from "../../responses/parser";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
-import { FORWARD_HEADERS, sanitizeReasoningInputContent } from "../../adapters/openai-responses";
+import { FORWARD_HEADERS, sanitizeReasoningInputContent, stripInternalChatMessageMetadata } from "../../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseProviderState, rememberResponseState } from "../../responses/state";
 import { NoEligiblePolicyCandidateError, routeCompactionModel } from "../../router";
 import { evidenceFromBody } from "../../routing/request-evidence";
@@ -643,10 +643,14 @@ export async function handleResponsesCompact(
       headers.set("authorization", `Bearer ${resolveProviderApiKey(compactProvider.apiKey)}`);
     }
     const { reasoning: _reasoning, ...compactBodyRaw } = raw as typeof raw & { reasoning?: unknown };
-    // The regular /v1/responses path applies sanitizeReasoningInputContent via the adapter's
-    // buildRequest, but the compact endpoint forwards directly. Apply the same sanitizer here
-    // so routed-model reasoning items (reasoning_text content) don't 400 the ChatGPT backend.
-    const compactBody = sanitizeReasoningInputContent(compactBodyRaw) as typeof compactBodyRaw;
+    // The regular /v1/responses path applies these sanitizers via the adapter's
+    // buildRequest, but the compact endpoint forwards directly. Apply the same
+    // ones here so routed-model reasoning items and ChatGPT-private input
+    // metadata don't 400 a public Responses gateway.
+    let compactBody = sanitizeReasoningInputContent(compactBodyRaw) as typeof compactBodyRaw;
+    if (!isCanonicalOpenAiForwardProvider(compactProvider)) {
+      compactBody = stripInternalChatMessageMetadata(compactBody) as typeof compactBodyRaw;
+    }
     const compactUrl = `${base}/responses/compact`;
     const actualCompactHostKey = upstreamHostHealthKey(
       route.providerName,

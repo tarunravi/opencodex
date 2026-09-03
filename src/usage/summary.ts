@@ -87,6 +87,14 @@ export interface UsageModel {
   priceCoverageRatio?: number;
   pricedRequests?: number;
   unpricedRequests?: number;
+  /** Sum of physical model-call durations represented by this row. */
+  modelCallMs: number;
+  /** Mean first-output latency over completed calls with TTFT telemetry. */
+  averageTtftMs: number | null;
+  /** Token-weighted output throughput over full model-call duration. */
+  endToEndTokensPerSecond: number | null;
+  /** Token-weighted output throughput after first output, when TTFT is available. */
+  decodeTokensPerSecond: number | null;
   shareRatio: number;
   estimatedCostUsd?: number;
 }
@@ -152,7 +160,9 @@ export interface UsageLatency {
 }
 
 export interface UsageEffortGroup {
+  provider: string;
   model: string;
+  speedMode: "fast" | "standard" | "downgraded" | "unknown";
   requestedEffort: string;
   effectiveEffort: string;
   requests: number;
@@ -376,6 +386,21 @@ interface UsageAttribution {
   usageStatus: UsageStatus;
   usage?: PersistedUsageEntry["usage"];
   totalTokens?: number;
+  status: number;
+  durationMs: number;
+  firstOutputMs?: number;
+  streamAborted?: boolean;
+  terminalStatus?: string;
+  requestedEffort?: string;
+  effectiveEffort?: string;
+  speedMode: UsageEffortGroup["speedMode"];
+}
+
+function usageSpeedMode(outcome: PersistedUsageEntry["tierOutcome"]): UsageEffortGroup["speedMode"] {
+  if (outcome?.fastOutcome === "applied") return "fast";
+  if (outcome?.fastOutcome === "downgraded") return "downgraded";
+  if (outcome?.fastOutcome === "not-requested") return "standard";
+  return "unknown";
 }
 
 
@@ -415,6 +440,13 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
       provider: entry.provider,
       ...usageModelIdentity(entry.provider, entry.model, entry.resolvedModel),
       usageStatus: entry.usageStatus,
+      status: entry.status,
+      durationMs: entry.durationMs,
+      ...(entry.firstOutputMs !== undefined ? { firstOutputMs: entry.firstOutputMs } : {}),
+      ...(entry.terminalStatus !== undefined ? { terminalStatus: entry.terminalStatus } : {}),
+      ...(entry.requestedEffort !== undefined ? { requestedEffort: entry.requestedEffort } : {}),
+      ...(entry.effectiveEffort !== undefined ? { effectiveEffort: entry.effectiveEffort } : {}),
+      speedMode: usageSpeedMode(entry.tierOutcome),
       ...(entry.usage ? { usage: entry.usage } : {}),
       ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
     }];
@@ -424,6 +456,13 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
     provider: attempt.provider,
     ...usageModelIdentity(attempt.provider, attempt.model),
     usageStatus: attempt.usageStatus,
+    status: attempt.status,
+    durationMs: attempt.durationMs,
+    ...(attempt.firstOutputMs !== undefined ? { firstOutputMs: attempt.firstOutputMs } : {}),
+    ...(attempt.streamAborted !== undefined ? { streamAborted: attempt.streamAborted } : {}),
+    ...(attempt.requestedEffort !== undefined ? { requestedEffort: attempt.requestedEffort } : {}),
+    ...(attempt.effectiveEffort !== undefined ? { effectiveEffort: attempt.effectiveEffort } : {}),
+    speedMode: usageSpeedMode(attempt.tierOutcome),
     ...(attempt.usage ? { usage: attempt.usage } : {}),
     ...(attempt.totalTokens !== undefined ? { totalTokens: attempt.totalTokens } : {}),
   }));
@@ -697,6 +736,7 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number, costMa
   }
   const byKey = new Map<string, ModelAccumulator>();
   const statusesByKey = new Map<string, Map<string, UsageStatus[]>>();
+  const ratesByKey = new Map<string, RateAccumulator>();
   for (const entry of entries) {
     for (const attribution of usageAttributions(entry)) {
       const providerKey = baseProviderLabel(attribution.provider);
@@ -722,11 +762,18 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number, costMa
           pricedRequests: 0,
           unpricedRequests: 0,
           priceCoverageRatio: 0,
+          modelCallMs: 0,
+          averageTtftMs: null,
+          endToEndTokensPerSecond: null,
+          decodeTokensPerSecond: null,
           shareRatio: 0,
         };
         byKey.set(key, model);
+        ratesByKey.set(key, blankRates());
       }
       model.attemptCount += 1;
+      model.modelCallMs += attribution.durationMs;
+      accumulateRates(ratesByKey.get(key)!, attribution);
       let requests = statusesByKey.get(key);
       if (!requests) { requests = new Map(); statusesByKey.set(key, requests); }
       const statuses = requests.get(attribution.requestId) ?? [];
@@ -757,6 +804,7 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number, costMa
       if (status === "reported") model.reportedRequests += 1;
       else if (status === "estimated") model.estimatedRequests += 1;
     }
+    Object.assign(model, finalizeRates(ratesByKey.get(key) ?? blankRates()));
   }
   // Accumulate per-model estimated cost & price coverage by request ID
   const pricedRequestsByModel = new Map<string, Set<string>>();
@@ -836,8 +884,13 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number, costMa
       pricedRequests: 0,
       unpricedRequests: 0,
       priceCoverageRatio: 0,
+      modelCallMs: 0,
+      averageTtftMs: null,
+      endToEndTokensPerSecond: null,
+      decodeTokensPerSecond: null,
       shareRatio: 0,
     };
+    const otherRates = blankRates();
     for (const model of overflow) {
       other.attemptCount += model.attemptCount;
       other.totalTokens += model.totalTokens;
@@ -847,6 +900,8 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number, costMa
       other.cachedInputTokens = (other.cachedInputTokens ?? 0) + (model.cachedInputTokens ?? 0);
       other.cacheReadInputTokens = (other.cacheReadInputTokens ?? 0) + (model.cacheReadInputTokens ?? 0);
       other.cacheCreationInputTokens = (other.cacheCreationInputTokens ?? 0) + (model.cacheCreationInputTokens ?? 0);
+      other.modelCallMs += model.modelCallMs;
+      mergeRates(otherRates, ratesByKey.get(usageModelKey(model.provider, model.model)));
       if (model.estimatedCostUsd !== undefined) {
         other.estimatedCostUsd = (other.estimatedCostUsd ?? 0) + model.estimatedCostUsd;
       }
@@ -871,6 +926,7 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number, costMa
     other.shareRatio = totalTokens === 0 ? 0 : other.totalTokens / totalTokens;
     other.cacheHitRate = calculateCacheHitRate(cacheObserved, other.inputTokens, other.cacheReadInputTokens ?? 0);
     other.priceCoverageRatio = other.requests > 0 ? other.pricedRequests / other.requests : 0;
+    Object.assign(other, finalizeRates(otherRates));
     return other;
   });
   for (const model of retained) delete model.cacheObserved;
@@ -1142,8 +1198,14 @@ export function unionDurationMs(intervals: ReadonlyArray<readonly [number, numbe
  * row with real output can honestly contribute to TTFT or tokens/sec. Rows that
  * fail the gate still count toward requests and modelCallMs.
  */
-function isCompletedForRates(entry: PersistedUsageEntry): boolean {
+type UsageRateSample = Pick<
+  UsageAttribution,
+  "status" | "durationMs" | "firstOutputMs" | "streamAborted" | "terminalStatus" | "usageStatus" | "usage"
+>;
+
+function isCompletedForRates(entry: UsageRateSample): boolean {
   return entry.status >= 200 && entry.status < 300
+    && entry.streamAborted !== true
     && (!entry.terminalStatus || entry.terminalStatus === "completed")
     && (entry.usageStatus === "reported" || entry.usageStatus === "estimated")
     && (entry.usage?.outputTokens ?? 0) > 0
@@ -1151,7 +1213,7 @@ function isCompletedForRates(entry: PersistedUsageEntry): boolean {
 }
 
 /** firstOutputMs === 0 is a valid TTFT — never truthiness-check it. */
-function validTtft(entry: PersistedUsageEntry): boolean {
+function validTtft(entry: UsageRateSample): boolean {
   return entry.firstOutputMs != null && entry.firstOutputMs <= entry.durationMs;
 }
 
@@ -1168,7 +1230,17 @@ function blankRates(): RateAccumulator {
   return { ttftSumMs: 0, ttftRows: 0, e2eTokens: 0, e2eMs: 0, decodeTokens: 0, decodeMs: 0 };
 }
 
-function accumulateRates(acc: RateAccumulator, entry: PersistedUsageEntry): void {
+function mergeRates(target: RateAccumulator, source: RateAccumulator | undefined): void {
+  if (!source) return;
+  target.ttftSumMs += source.ttftSumMs;
+  target.ttftRows += source.ttftRows;
+  target.e2eTokens += source.e2eTokens;
+  target.e2eMs += source.e2eMs;
+  target.decodeTokens += source.decodeTokens;
+  target.decodeMs += source.decodeMs;
+}
+
+function accumulateRates(acc: RateAccumulator, entry: UsageRateSample): void {
   if (!isCompletedForRates(entry)) return;
   const outputTokens = entry.usage!.outputTokens;
   acc.e2eTokens += outputTokens;
@@ -1214,41 +1286,51 @@ function buildLatency(entries: PersistedUsageEntry[], activity: CodexTaskActivit
 const NOT_RECORDED_EFFORT = "not-recorded";
 
 function buildEffortGroups(entries: PersistedUsageEntry[]): UsageEffortGroup[] {
-  const byKey = new Map<string, { group: UsageEffortGroup; rates: RateAccumulator }>();
+  const byKey = new Map<string, { group: UsageEffortGroup; rates: RateAccumulator; requestIds: Set<string> }>();
+  const allRequestIds = new Set<string>();
   for (const entry of entries) {
-    const model = entry.resolvedModel ?? entry.model;
-    const requestedEffort = entry.requestedEffort ?? NOT_RECORDED_EFFORT;
-    const effectiveEffort = entry.effectiveEffort ?? NOT_RECORDED_EFFORT;
-    const key = `${model}\0${requestedEffort}\0${effectiveEffort}`;
-    let slot = byKey.get(key);
-    if (!slot) {
-      slot = {
-        group: {
-          model,
-          requestedEffort,
-          effectiveEffort,
-          requests: 0,
-          requestShare: 0,
-          modelCallMs: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          averageTtftMs: null,
-          endToEndTokensPerSecond: null,
-          decodeTokensPerSecond: null,
-        },
-        rates: blankRates(),
-      };
-      byKey.set(key, slot);
+    for (const attribution of usageAttributions(entry)) {
+      allRequestIds.add(attribution.requestId);
+      const provider = baseProviderLabel(attribution.provider);
+      const model = attribution.resolvedModel ?? attribution.model;
+      const requestedEffort = attribution.requestedEffort ?? NOT_RECORDED_EFFORT;
+      const effectiveEffort = attribution.effectiveEffort ?? NOT_RECORDED_EFFORT;
+      const speedMode = attribution.speedMode;
+      const key = `${provider}\0${model}\0${speedMode}\0${requestedEffort}\0${effectiveEffort}`;
+      let slot = byKey.get(key);
+      if (!slot) {
+        slot = {
+          group: {
+            provider,
+            model,
+            speedMode,
+            requestedEffort,
+            effectiveEffort,
+            requests: 0,
+            requestShare: 0,
+            modelCallMs: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            averageTtftMs: null,
+            endToEndTokensPerSecond: null,
+            decodeTokensPerSecond: null,
+          },
+          rates: blankRates(),
+          requestIds: new Set(),
+        };
+        byKey.set(key, slot);
+      }
+      slot.requestIds.add(attribution.requestId);
+      slot.group.modelCallMs += attribution.durationMs;
+      slot.group.inputTokens += attribution.usage?.inputTokens ?? 0;
+      slot.group.outputTokens += attribution.usage?.outputTokens ?? 0;
+      accumulateRates(slot.rates, attribution);
     }
-    slot.group.requests += 1;
-    slot.group.modelCallMs += entry.durationMs;
-    slot.group.inputTokens += entry.usage?.inputTokens ?? 0;
-    slot.group.outputTokens += entry.usage?.outputTokens ?? 0;
-    accumulateRates(slot.rates, entry);
   }
-  const totalRequests = entries.length;
+  const totalRequests = allRequestIds.size;
   const groups: UsageEffortGroup[] = [];
-  for (const { group, rates } of byKey.values()) {
+  for (const { group, rates, requestIds } of byKey.values()) {
+    group.requests = requestIds.size;
     group.requestShare = totalRequests === 0 ? 0 : group.requests / totalRequests * 100;
     Object.assign(group, finalizeRates(rates));
     groups.push(group);

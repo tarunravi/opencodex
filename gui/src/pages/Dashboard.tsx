@@ -53,7 +53,7 @@ export default function Dashboard({ apiBase }: { apiBase: string }) {
 
   const sections: { id: DashboardSection; label: string; body: ReactNode }[] = [
     { id: "overview", label: t("dash.workspace.overview"), body: overviewSection },
-    { id: "providers", label: t("dash.activeProviders"), body: providersSection },
+    { id: "providers", label: t("dash.providers"), body: providersSection },
     { id: "models", label: t("dash.availableModels"), body: modelsSection },
   ];
   const selected = sections.find(s => s.id === selectedSection) ?? sections[0];

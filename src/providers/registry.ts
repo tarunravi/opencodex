@@ -348,6 +348,12 @@ export type ProviderConfigSeed = Pick<
 // 260902 Claude Fable 5.1 (`claude-fable-5-1`): 1M context / 128K output / adaptive thinking
 // always on, per the official models overview and pricing page (platform.claude.com).
 const ANTHROPIC_MODELS = ["claude-fable-5-1", "claude-fable-5", "claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
+const ANTHROPIC_FAST_WIRE: FastWire = Object.freeze({
+  kind: "anthropic-speed",
+  canonicalToWire: Object.freeze({ priority: "fast" }),
+  foreignCallerTiers: "drop",
+  betas: Object.freeze(["fast-mode-2026-02-01"]),
+});
 const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-fable-5-1": 1_000_000, "claude-sonnet-5": 1_000_000, "claude-fable-5": 1_000_000, "claude-opus-5": 1_000_000, "claude-opus-4-8": 1_000_000, "claude-opus-4-7": 1_000_000, "claude-opus-4-6": 1_000_000, "claude-sonnet-4-6": 1_000_000, "claude-haiku-4-5": 200_000 };
 
 // 260814 GLM-5.3 is registered pre-emptively alongside 5.2 everywhere 5.2 appears. Z.AI's
@@ -1312,6 +1318,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "Log in with your Claude account",
     models: [...ANTHROPIC_MODELS],
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
+    fastWire: ANTHROPIC_FAST_WIRE,
+    modelSupportsServiceTier: { "claude-opus-4-8": true, "claude-opus-5": true },
     defaultModel: "claude-sonnet-5",
   },
   {
@@ -1328,6 +1336,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: [...ANTHROPIC_MODELS],
     liveModels: true,
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
+    fastWire: ANTHROPIC_FAST_WIRE,
+    modelSupportsServiceTier: { "claude-opus-4-8": true, "claude-opus-5": true },
     defaultModel: "claude-sonnet-5",
   },
   {

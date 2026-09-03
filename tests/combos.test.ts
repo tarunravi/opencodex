@@ -46,6 +46,7 @@ import { handleResponses } from "../src/server/responses";
 import type { OcxConfig } from "../src/types";
 import { syncCatalogModels } from "../src/codex/catalog";
 import { injectClaudeAgentDefs } from "../src/claude/agents-inject";
+import { parseComboTargets } from "../src/cli/combo";
 import { reconcileComboRotationState } from "../src/combos/resolve";
 import {
   clearCachedProviderQuotas,
@@ -181,6 +182,14 @@ describe("combo namespace primitives", () => {
     expect(isValidComboId("free.v1_2-x")).toBe(true);
     expect(isValidComboId("-free")).toBe(false);
     expect(targetKey({ provider: "a", model: "m1" })).toBe("a/m1");
+    expect(targetKey({ provider: "a", model: "m1", effort: "xhigh" }))
+      .toBe('@combo-target:["a","m1","xhigh"]');
+    expect(targetKey({ provider: "a", model: "m1", serviceTier: "fast" }))
+      .toBe('@combo-target:["a","m1",null,"fast"]');
+    expect(targetKey({ provider: "a", model: "m1", effort: "xhigh", serviceTier: "fast" }))
+      .toBe('@combo-target:["a","m1","xhigh","fast"]');
+    expect(targetKey({ provider: "a", model: "m1@effort=xhigh" }))
+      .not.toBe(targetKey({ provider: "a", model: "m1", effort: "xhigh" }));
   });
 
   test("keeps native-alias discovery disables separate from the bare native key", () => {
@@ -208,6 +217,25 @@ describe("combo namespace primitives", () => {
     expect(tryPickComboModel(config, "vendor/flash")?.comboId).toBe("other");
     expect(tryPickComboModel(config, "unknown-bare")).toBeNull();
     expect(() => tryPickComboModel(config, "combo/missing")).toThrow(UnknownComboError);
+  });
+});
+
+describe("combo CLI target parsing", () => {
+  test("uses JSON for per-target effort without reinterpreting legacy model ids", () => {
+    const targets = [
+      { provider: "azure", model: "gpt-5.5", weight: 2, effort: "xhigh", serviceTier: "fast" },
+      { provider: "litellm", model: "gpt-5.5", effort: "high" },
+    ];
+    expect(parseComboTargets(JSON.stringify(targets))).toEqual(targets);
+    expect(parseComboTargets("azure/model@effort=high:2")).toEqual([
+      { provider: "azure", model: "model@effort=high", weight: 2 },
+    ]);
+    expect(() => parseComboTargets(JSON.stringify([
+      { provider: "azure", model: "gpt-5.5", effort: "turbo" },
+    ]))).toThrow("invalid target effort");
+    expect(() => parseComboTargets(JSON.stringify([
+      { provider: "azure", model: "gpt-5.5", serviceTier: " " },
+    ]))).toThrow("invalid target serviceTier");
   });
 });
 
@@ -295,7 +323,31 @@ describe("combo request cloning", () => {
     ).reasoning).toEqual({ summary: "concise", effort: "high" });
   });
 
-  test("omits combo defaults for unset, no-reasoning, and unknown target capabilities", () => {
+  test("target effort replaces an explicit request effort without dropping reasoning options", () => {
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: { effort: "low", summary: "concise" } },
+      { ...target, effort: "xhigh" },
+      "medium",
+      [],
+    ).reasoning).toEqual({ effort: "xhigh", summary: "concise" });
+    expect(concreteComboRequestBody(
+      { model: "combo/x", reasoning: null },
+      { ...target, effort: "high" },
+      null,
+      undefined,
+    ).reasoning).toEqual({ effort: "high" });
+  });
+
+  test("target service tier overrides the caller tier", () => {
+    expect(concreteComboRequestBody(
+      { model: "combo/x", service_tier: "flex" },
+      { ...target, serviceTier: "fast" },
+      null,
+      undefined,
+    )).toMatchObject({ model: "a/m1", service_tier: "fast" });
+  });
+
+  test("omits combo defaults for unset, unsupported, and unknown target capabilities", () => {
     expect(concreteComboRequestBody({ model: "combo/x" }, target, null, ["high"]).reasoning).toBeUndefined();
     // An explicitly empty ladder is how a no-reasoning model is expressed.
     expect(concreteComboRequestBody({ model: "combo/x" }, target, "high", []).reasoning).toBeUndefined();
@@ -389,6 +441,12 @@ describe("combo target cooldowns", () => {
     expect(isComboTargetInCooldown("free", target, 1_000)).toBe(false);
   });
 
+  test("cooldowns distinguish efforts on the same physical target", () => {
+    coolComboTarget("free", { ...target, effort: "xhigh" }, { now: 1_000, cooldownMs: 100 });
+    expect(isComboTargetInCooldown("free", { ...target, effort: "xhigh" }, 1_050)).toBe(true);
+    expect(isComboTargetInCooldown("free", { ...target, effort: "high" }, 1_050)).toBe(false);
+  });
+
   test("a stale zero-cooldown completion cannot erase a newer shared cooldown", () => {
     reconcileComboTargetCooldowns({
       generation: 10,
@@ -465,6 +523,39 @@ describe("combo failure policy and advancement", () => {
     expect(second.attempted).toEqual(["a/m1", "b/m2"]);
     expect(third.attempted).toEqual(["a/m1", "b/m2", "c/m3"]);
     expect(exhausted).toBeNull();
+  });
+
+  test("ordered retries revisit one provider/model at descending forced efforts", () => {
+    const efforts = ["xhigh", "high", "medium", "low"] as const;
+    const config = baseConfig({
+      combos: {
+        free: {
+          targets: efforts.map(effort => ({ provider: "a", model: "m1", effort })),
+        },
+      },
+    });
+    const attempts: Array<{ key: string; body: Record<string, unknown> }> = [];
+    let pick = pickComboTarget(config, "free");
+    while (pick) {
+      attempts.push({
+        key: targetKey(pick.target),
+        body: concreteComboRequestBody(
+          { model: "combo/free", reasoning: { effort: "low", summary: "concise" } },
+          pick.target,
+          "medium",
+          undefined,
+        ),
+      });
+      pick = advanceComboAfterFailure(config, pick, { now: 1_000 });
+    }
+
+    expect(attempts.map(attempt => attempt.key)).toEqual(efforts.map(effort => (
+      `@combo-target:${JSON.stringify(["a", "m1", effort])}`
+    )));
+    expect(attempts.map(attempt => attempt.body.reasoning)).toEqual(efforts.map(effort => ({
+      effort,
+      summary: "concise",
+    })));
   });
 
   test("advancement preserves an explicit payload-eligibility filter", () => {
@@ -789,10 +880,22 @@ describe("combo validation and normalization", () => {
         message: "at least one enabled provider",
       },
       { raw: { targets: [{ provider: "a", model: "m1", weight: 1.5 }] }, path: ["targets", 0, "weight"], message: "integer from 1 to 10000" },
+      { raw: { targets: [{ provider: "a", model: "m1", effort: "turbo" }] }, path: ["targets", 0, "effort"], message: "low, medium, high" },
+      { raw: { targets: [{ provider: "a", model: "m1", serviceTier: " " }] }, path: ["targets", 0, "serviceTier"], message: "nonblank string" },
       {
         raw: { targets: [{ provider: " a ", model: " m1 " }, { provider: "a", model: "m1" }] },
         path: ["targets", 1],
         message: 'duplicate combo target "a/m1"',
+      },
+      {
+        raw: { targets: [{ provider: "a", model: "m1", effort: "high" }, { provider: "a", model: "m1", effort: "high" }] },
+        path: ["targets", 1],
+        message: 'duplicate combo target "a/m1" with effort "high"',
+      },
+      {
+        raw: { targets: [{ provider: "a", model: "m1", serviceTier: "fast" }, { provider: "a", model: "m1", serviceTier: "fast" }] },
+        path: ["targets", 1],
+        message: 'duplicate combo target "a/m1" with service tier "fast"',
       },
     ];
 
@@ -869,6 +972,21 @@ describe("combo validation and normalization", () => {
     const corrupt = baseConfig() as OcxConfig & { combos: Record<string, { defaultEffort: string; targets: [] }> };
     corrupt.combos.free!.defaultEffort = "turbo";
     expect(comboDefaultEffort(corrupt, "free")).toBeNull();
+    expect(normalizeComboConfig({
+      targets: [
+        { provider: "a", model: "m1", effort: "xhigh", serviceTier: " fast " },
+        { provider: "a", model: "m1", effort: "high" },
+      ],
+    }).targets).toEqual([
+      { provider: "a", model: "m1", effort: "xhigh", serviceTier: "fast", weight: 1 },
+      { provider: "a", model: "m1", effort: "high", weight: 1 },
+    ]);
+    expect(comboConfigIssues("free", {
+      targets: [
+        { provider: "a", model: "m1", effort: "xhigh" },
+        { provider: "a", model: "m1", effort: "high" },
+      ],
+    }, baseConfig().providers)).toEqual([]);
   });
 
   test("inherited combo names are unknown across getters, effort, and routing", () => {
@@ -922,6 +1040,7 @@ describe("persisted combo config parity", () => {
         { id: "free", combo: { targets: [{ provider: "missing", model: "m1" }] } },
         { id: "free", combo: { targets: [{ provider: "a", model: " " }] } },
         { id: "free", combo: { targets: [{ provider: "a", model: "m1", weight: 1.5 }] } },
+        { id: "free", combo: { targets: [{ provider: "a", model: "m1", effort: "turbo" }] } },
         { id: "free", combo: { targets: [{ provider: " a ", model: " m1 " }, { provider: "a", model: "m1" }] } },
         { id: "free", combo: VALID_COMBO, providers: { combo: providers.a! } },
         { id: "a", combo: VALID_COMBO },
