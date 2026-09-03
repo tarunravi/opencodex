@@ -11,6 +11,9 @@ T3 content       paths = git diff --name-only origin/dev...<br>
                  git diff --name-only origin/dev <br> -- <paths>  -> empty
 T4 scratch       branch name encodes a PR number whose state is MERGED or CLOSED
                  AND the name matches the scratch prefix set
+                 AND the number is a WHOLE numeric token of the branch name
+                 AND the branch is provably a duplicate of that PR's head:
+                     identical SHA, an ancestor of it, or content-identical to it
 ```
 
 T3 is the one that matters for this repository, because `dev` takes squash
@@ -24,6 +27,22 @@ T4 is deliberately narrow. It fires only for throwaway prefixes
 `candidate`, `cursor-`, `midstream`) created by earlier review and rebase runs,
 and only when the referenced PR is already MERGED or CLOSED. A `codex/*` branch
 is never deleted on T4 alone.
+
+**T4 alone is not sufficient, and the first version of it was wrong.** PR state
+says nothing about whether *this branch* still holds unique work, so T4 now
+requires a positive duplication proof against the PR head itself: the branch is
+the same commit, an ancestor of it, or content-identical to it. If the PR head
+cannot be fetched or the branch matches none of those, the branch falls through
+to the content test against `dev`, and if that also fails it is preserved.
+
+The number must also be a whole numeric token of the branch name. The naive
+regex extracted `2608` from the date suffix in
+`cursor-call-prerebase-260818` and matched it to an unrelated merged PR — the
+exact name-guessing that destroyed open-PR heads on 2026-09-02, reproduced
+inside the very unit written to prevent it. That branch holds two unique Cursor
+stream-EOF and cancel fixes and 31 otherwise-unreachable commits.
+
+This was caught by an independent auditor, not by the author of the rule.
 
 ## The guards
 
@@ -57,14 +76,23 @@ landed set fell from 41 to 6 and `feat/macos-app` correctly moved to UNLANDED.
 
 ## Result
 
-| Verdict | Count |
-|---|---|
-| Delete: scratch branch for a MERGED/CLOSED PR | 85 |
-| Delete: ancestor of `dev` or zero unique commits | 13 |
-| Delete: content already on `dev` (squash-hidden) | 6 |
-| **Total deletion set** | **104** |
-| Keep: unlanded unique work | 39 |
-| Keep: open-PR head, worktree-backed, or protected | 54 |
+Candidate set 104, of which 33 failed the hardened tests and are preserved.
+
+| Verdict | Count | Proof |
+|---|---|---|
+| Delete | 50 | identical SHA to its PR head |
+| Delete | 2 | ancestor of its PR head |
+| Delete | 13 | ancestor of `dev` or zero unique commits |
+| Delete | 6 | content already on `dev` (squash-hidden) |
+| **Total deletion set** | **71** | every entry carries a named proof |
+| Preserved: failed the duplication proof | 32 | |
+| Preserved: number not a whole token | 1 | `cursor-call-prerebase-260818` |
+| Keep: unlanded unique work | 39 | |
+| Keep: open-PR head, worktree-backed, protected | 54 | |
+
+Every entry in the final set names its own proof, so no deletion rests on the
+absence of evidence. Ledgers: `.tmp/hygiene/DELETE_FINAL.json` and
+`.tmp/hygiene/REJECTED_FINAL.json`.
 
 Ledger of the deletion set with per-branch reason:
 `.tmp/hygiene/delete-local.json` (scratch space, not tracked).
