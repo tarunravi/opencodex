@@ -1316,6 +1316,8 @@ export const de: Record<TKey, string> = {
   "codexAuth.addPickDesc": "Melde dich mit einem anderen ChatGPT-Konto an, um es zum Pool hinzuzufügen.",
   "codexAuth.oauthLogin": "OAuth-Login",
   "codexAuth.oauthDesc": "Öffnet ChatGPT-Login im Browser",
+  "codexAuth.deviceLogin": "Anmeldung per Gerätecode",
+  "codexAuth.deviceDesc": "Für einen Headless- oder Remote-Proxy: kurzen Code auf einem anderen Gerät eingeben",
   "codexAuth.importAuthJson": "auth.json importieren",
   "codexAuth.importAuthJsonDesc": "Von einer anderen Codex-Installation oder codex-auth export",
   "codexAuth.back": "Zurück",

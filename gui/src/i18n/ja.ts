@@ -1767,6 +1767,8 @@ export const ja: Record<TKey, string> = {
   "codexAuth.addPickDesc": "別の ChatGPT アカウントでログインしてプールに追加します。",
   "codexAuth.oauthLogin": "OAuth ログイン",
   "codexAuth.oauthDesc": "ブラウザで ChatGPT ログインを開きます",
+  "codexAuth.deviceLogin": "デバイスコードでログイン",
+  "codexAuth.deviceDesc": "ヘッドレスやリモートのプロキシ向け。別の端末で短いコードを入力します",
   "codexAuth.importAuthJson": "auth.json をインポート",
   "codexAuth.importAuthJsonDesc": "別の Codex インストールまたは codex-auth export から",
   "codexAuth.back": "戻る",

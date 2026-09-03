@@ -1788,6 +1788,8 @@ export const fr: Record<TKey, string> = {
   "codexAuth.addPickDesc": "Connectez-vous avec un autre compte ChatGPT pour l’ajouter au groupe.",
   "codexAuth.oauthLogin": "Connexion OAuth",
   "codexAuth.oauthDesc": "Ouvre la page de connexion ChatGPT dans le navigateur",
+  "codexAuth.deviceLogin": "Connexion par code d'appareil",
+  "codexAuth.deviceDesc": "Pour un proxy headless ou distant : saisissez un code court sur un autre appareil",
   "codexAuth.importAuthJson": "Importer auth.json",
   "codexAuth.importAuthJsonDesc": "Depuis une autre installation de Codex ou un export codex-auth",
   "codexAuth.back": "Retour",

@@ -1401,6 +1401,8 @@ export const zhTW: Record<TKey, string> = {
   "codexAuth.addPickDesc": "使用另一個 ChatGPT 帳號登入以新增到池中。",
   "codexAuth.oauthLogin": "OAuth 登入",
   "codexAuth.oauthDesc": "在瀏覽器中開啟 ChatGPT 登入",
+  "codexAuth.deviceLogin": "裝置碼登入",
+  "codexAuth.deviceDesc": "適用於無頭或遠端代理：在另一台裝置上輸入短代碼",
   "codexAuth.importAuthJson": "匯入 auth.json",
   "codexAuth.importAuthJsonDesc": "從另一個 Codex 安裝或 codex-auth 匯出",
   "codexAuth.back": "返回",

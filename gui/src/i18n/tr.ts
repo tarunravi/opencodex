@@ -1826,6 +1826,8 @@ export const tr: Record<TKey, string> = {
   "codexAuth.addPickDesc": "Havuza eklemek için başka bir ChatGPT hesabı ile giriş yapın.",
   "codexAuth.oauthLogin": "OAuth Girişi",
   "codexAuth.oauthDesc": "Tarayıcıda ChatGPT girişini açar",
+  "codexAuth.deviceLogin": "Cihaz koduyla giriş",
+  "codexAuth.deviceDesc": "Başsız veya uzak proxy için: kısa kodu başka bir cihazda girin",
   "codexAuth.importAuthJson": "auth.json İçe Aktar",
   "codexAuth.importAuthJsonDesc": "Başka bir kurulumdan veya dışa aktarımdan",
   "codexAuth.back": "Geri",

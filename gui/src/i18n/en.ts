@@ -1881,6 +1881,8 @@ export const en = {
   "codexAuth.addPickDesc": "Login with another ChatGPT account to add it to the pool.",
   "codexAuth.oauthLogin": "OAuth Login",
   "codexAuth.oauthDesc": "Opens ChatGPT login in browser",
+  "codexAuth.deviceLogin": "Device code login",
+  "codexAuth.deviceDesc": "For a headless or remote proxy: enter a short code on another device",
   "codexAuth.importAuthJson": "Import auth.json",
   "codexAuth.importAuthJsonDesc": "From another Codex install or codex-auth export",
   "codexAuth.back": "Back",

@@ -1340,6 +1340,8 @@ export const ko: Record<TKey, string> = {
   "codexAuth.addPickDesc": "다른 ChatGPT 계정으로 로그인하여 풀에 추가하세요.",
   "codexAuth.oauthLogin": "OAuth 로그인",
   "codexAuth.oauthDesc": "브라우저에서 ChatGPT 로그인 열기",
+  "codexAuth.deviceLogin": "기기 코드 로그인",
+  "codexAuth.deviceDesc": "헤드리스나 원격 프록시용. 다른 기기에서 짧은 코드를 입력합니다",
   "codexAuth.importAuthJson": "auth.json 가져오기",
   "codexAuth.importAuthJsonDesc": "다른 Codex 설치 또는 codex-auth export에서",
   "codexAuth.back": "뒤로",

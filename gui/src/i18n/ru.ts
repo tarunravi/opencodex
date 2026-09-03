@@ -1818,6 +1818,8 @@ export const ru: Record<TKey, string> = {
   "codexAuth.addPickDesc": "Войдите в другой аккаунт ChatGPT, чтобы добавить его в пул.",
   "codexAuth.oauthLogin": "Вход через OAuth",
   "codexAuth.oauthDesc": "Открывает вход ChatGPT в браузере",
+  "codexAuth.deviceLogin": "Вход по коду устройства",
+  "codexAuth.deviceDesc": "Для headless или удалённого прокси: введите короткий код на другом устройстве",
   "codexAuth.importAuthJson": "Импорт auth.json",
   "codexAuth.importAuthJsonDesc": "Из другой установки Codex или через codex-auth export",
   "codexAuth.back": "Назад",
