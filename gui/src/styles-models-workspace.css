@@ -152,6 +152,18 @@
   min-width: 0;
 }
 
+.models-health-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-3);
+}
+
+.models-health-detail {
+  margin-top: var(--space-1);
+  max-width: 34rem;
+  font-size: var(--text-caption);
+}
+
 /* Controls row: shadow call on the left, sub-agent mode pinned right.
    Right group does not move when the model name length changes. */
 .models-control-top-row {

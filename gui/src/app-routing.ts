@@ -68,7 +68,7 @@ export const DASHBOARD_TAB_HASHES = ["dashboard/providers", "dashboard/models"] 
  * is the bare `#models`, so it has no suffix entry here - same convention Dashboard
  * uses for Overview and Logs uses for the log list.
  */
-export const MODELS_TAB_HASHES = ["models/combos", "models/routing", "models/compatibility"] as const;
+export const MODELS_TAB_HASHES = ["models/health", "models/combos", "models/routing", "models/compatibility"] as const;
 
 /**
  * `#dashboard/update` is an action deep link, not a tab: the sidebar update button uses

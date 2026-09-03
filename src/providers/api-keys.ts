@@ -6,6 +6,7 @@
  * lives in `provider.apiKeyPool` in config.json (same file that already holds apiKey).
  * A legacy bare `apiKey` is projected as one row on reads and seeded on first mutation.
  */
+import { getKeyCooldownUntil } from "./key-failover";
 import { createHash } from "node:crypto";
 import { saveConfigPreservingClaudeCode } from "../config";
 import type { OcxConfig, OcxProviderConfig } from "../types";
@@ -19,6 +20,8 @@ export interface ProviderApiKeyInfo extends AccountQuotaFields {
   masked: string;
   active: boolean;
   addedAt?: number;
+  /** Runtime-only 429 cooldown; omitted when this key is currently routable. */
+  cooldownUntil?: number;
 }
 
 function isEnvReference(value: string): boolean {
@@ -69,13 +72,17 @@ export function listProviderApiKeys(config: OcxConfig, name: string): { activeId
   const activeId = (pool.find(entry => entry.key === provider.apiKey) ?? pool[0])?.id ?? null;
   return {
     activeId,
-    keys: pool.map(entry => ({
-      id: entry.id,
-      ...(entry.label ? { label: entry.label } : {}),
-      masked: maskApiKey(entry.key),
-      active: entry.id === activeId,
-      ...(entry.addedAt !== undefined ? { addedAt: entry.addedAt } : {}),
-    })),
+    keys: pool.map(entry => {
+      const cooldownUntil = getKeyCooldownUntil(name, entry.id);
+      return {
+        id: entry.id,
+        ...(entry.label ? { label: entry.label } : {}),
+        masked: maskApiKey(entry.key),
+        active: entry.id === activeId,
+        ...(entry.addedAt !== undefined ? { addedAt: entry.addedAt } : {}),
+        ...(cooldownUntil !== null ? { cooldownUntil } : {}),
+      };
+    }),
   };
 }
 

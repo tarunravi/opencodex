@@ -1456,7 +1456,14 @@
     "execution-budget-permits.test.ts": "lib",
     "spend-instrumentation-log.test.ts": "server",
     "codex-pool-refresh-backoff.test.ts": "codex-integration",
-    "responses-account-change-scrub.test.ts": "responses"
+    "responses-account-change-scrub.test.ts": "responses",
+    "codexbar-account-import.test.ts": "codex-integration",
+    "cursor-integration.test.ts": "clients",
+    "macos-menubar-install.test.ts": "service",
+    "native-cursor-toggle.test.ts": "server",
+    "litellm-quota.test.ts": "providers",
+    "anthropic-fast-mode.test.ts": "adapters/anthropic",
+    "usage-latency.test.ts": "usage"
   },
   "migrated": [
     "adapters",

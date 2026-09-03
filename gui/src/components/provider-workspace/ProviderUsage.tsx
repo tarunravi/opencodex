@@ -81,6 +81,9 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, currentQ
                   <th className="num">{t("pws.col.cost")}</th>
                   <th className="num">{t("pws.col.tokens")}</th>
                   <th className="num">{t("pws.col.requests")}</th>
+                  <th className="num">{t("usage.col.avgTtft")}</th>
+                  <th className="num">{t("usage.col.e2eTps")}</th>
+                  <th className="num">{t("usage.col.decodeTps")}</th>
                   <th>{t("pws.col.share")}</th>
                 </tr>
               </thead>
@@ -107,6 +110,9 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, currentQ
                         <td className="num mono">{formatCostUsd(row.estimatedCostUsd, locale)}</td>
                         <td className="num mono">{formatTokenCount(row.totalTokens, locale)}</td>
                         <td className="num">{row.requests}</td>
+                        <td className="num mono">{row.averageTtftMs != null ? `${(row.averageTtftMs / 1000).toLocaleString(locale, { maximumFractionDigits: 1 })}s` : "—"}</td>
+                        <td className="num mono">{row.endToEndTokensPerSecond != null ? `${row.endToEndTokensPerSecond.toLocaleString(locale, { maximumFractionDigits: 1 })} tok/s` : "—"}</td>
+                        <td className="num mono">{row.decodeTokensPerSecond != null ? `${row.decodeTokensPerSecond.toLocaleString(locale, { maximumFractionDigits: 1 })} tok/s` : "—"}</td>
                         <td>
                           <div className="pws-share-bar">
                             <div className="pws-share-bar-fill" style={{ width: `${Math.round(row.shareRatio * 100)}%` }} />
@@ -115,7 +121,7 @@ export default function ProviderUsage({ item, usageTotals, quotaReport, currentQ
                       </tr>
                       {isExpanded && (
                         <tr className="pws-model-detail">
-                          <td colSpan={5}>
+                          <td colSpan={8}>
                             <div className="pws-model-detail-grid">
                               <div>
                                 <span className="muted">{t("pws.tokenInput")}</span>

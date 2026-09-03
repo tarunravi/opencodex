@@ -28,6 +28,7 @@ import ErrorBoundary from "../components/ErrorBoundary";
 import Combos from "./Combos";
 import RoutingProfiles from "./RoutingProfiles";
 import CompatibilityMatrix from "./CompatibilityMatrix";
+import ProviderHealth from "./ProviderHealth";
 import { ModelsTabStrip } from "./models-tab-strip";
 import {
   modelsPanelDomId,
@@ -95,6 +96,7 @@ type CachedModelsPage = {
 /** One subtitle per tab: only one panel is visible, so only one description applies. */
 const SUBTITLE_TKEY: Record<ModelsTab, TKey> = {
   catalog: "models.subtitle",
+  health: "models.subtitle.health",
   combos: "models.subtitle.combos",
   routing: "models.subtitle.routing",
   compatibility: "models.subtitle.compatibility",
@@ -906,10 +908,11 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     catalog: catalogCountReady
       ? t("models.active", { active: effectiveVisibleCount, total: models.length })
       : undefined,
+    health: providers.length > 0 ? String(providers.length) : undefined,
     combos: comboCount === null ? undefined : String(comboCount),
     routing: routingCount === null ? undefined : String(routingCount),
     compatibility: compatibilityCount === null ? undefined : String(compatibilityCount),
-  }), [catalogCountReady, comboCount, compatibilityCount, effectiveVisibleCount, models.length, routingCount, t]);
+  }), [catalogCountReady, comboCount, compatibilityCount, effectiveVisibleCount, models.length, providers.length, routingCount, t]);
 
   const applyVisibility = async (
     scope: ModelVisibilityScope,
@@ -2690,6 +2693,26 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
               )
               : catalogPanel}
         </ErrorBoundary>
+      </div>
+
+      <div
+        className="models-tab-panel"
+        role="tabpanel"
+        id={modelsPanelDomId("health")}
+        aria-labelledby={modelsTabDomId("health")}
+        hidden={tab !== "health"}
+      >
+        {mounted.has("health") && (
+          <ErrorBoundary
+            pageName={t("models.tab.health")}
+            title={t("errorBoundary.title")}
+            message={t("errorBoundary.message")}
+            detailsLabel={t("errorBoundary.details")}
+            reloadLabel={t("errorBoundary.reload")}
+          >
+            <ProviderHealth apiBase={apiBase} active={tab === "health"} providers={providers} />
+          </ErrorBoundary>
+        )}
       </div>
 
       {/*

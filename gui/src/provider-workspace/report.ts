@@ -16,6 +16,7 @@ export interface ProviderQuotaReportView {
    * Exempt from the freshness bound below, and rendered with its observation age.
    */
   observed?: boolean;
+  credentialDisabled?: boolean;
   aggregation?: unknown;
 }
 
@@ -53,6 +54,7 @@ export function freshQuotaReport(value: unknown, now: number): ProviderQuotaRepo
     ...(typeof row.source === "string" ? { source: row.source } : {}),
     updatedAt: row.updatedAt,
     quota: row.quota,
+    ...(row.credentialDisabled === true ? { credentialDisabled: true } : {}),
     // Must be carried: this function rebuilds field-by-field and also re-validates the
     // session cache, so an unpropagated flag would drop the row on the next page load.
     ...(observed ? { observed: true } : {}),

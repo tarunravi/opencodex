@@ -219,7 +219,7 @@ export function resolveComboCatalogMember(
   callerFallback?: ComboCatalogMemberFallback,
   metadataModelIdCaseFold?: boolean,
 ): CatalogModel | undefined {
-  const existing = memberByKey.get(targetKey(target));
+  const existing = memberByKey.get(targetKey({ provider: target.provider, model: target.model }));
   const prov = providers.get(target.provider);
   const fallback = callerFallback ?? vendorMetadataComboFallback(target);
   // Disabled providers never contribute members — even a complete discovery row

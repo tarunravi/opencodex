@@ -107,11 +107,13 @@ gate: it requires the native feature to be enabled with an explicit v2 surface
 
 Manage combo failover and round-robin virtual models. `ocx route combo` is the hierarchical alias;
 combo is currently the supported routing resource. Targets use
-`provider/model[:weight],provider/model[:weight]`.
+`provider/model[:weight],provider/model[:weight]`. Use a JSON array when a target needs a forced
+`effort` or `serviceTier`.
 
 ```bash
 ocx combo list
 ocx route combo set reliable --targets ark/model-a:2,openai/gpt-5.5
+ocx route combo set opus-fast --targets '[{"provider":"anthropic","model":"claude-opus-4-8","serviceTier":"priority"}]'
 ```
 
 `set` accepts `--strategy`, `--sticky`, `--effort`, `--alias`, `--rename-from`, `--native-alias`, and

@@ -1,3 +1,4 @@
+import { stripInternalChatMessageMetadata } from "./reasoning";
 import { normalizeRoutedAgentMessages } from "../routed-agent-messages";
 import { stripBracketedModelSuffix } from "../openai-chat";
 import { normalizeOpenCodeGoAdditionalTools } from "../opencode-go-additional-tools";
@@ -381,7 +382,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       );
       const unnormalizedBody = stripDisabledVerbosity(
         stripDisabledReasoningSummaries(
-          normalizeConfiguredReasoningSummaryDelivery(sanitizedBody, provider, parsed.modelId),
+          normalizeConfiguredReasoningSummaryDelivery(isCanonicalOpenAiForwardProvider(provider) ? sanitizedBody : stripInternalChatMessageMetadata(sanitizedBody), provider, parsed.modelId),
           provider,
           parsed.modelId,
         ),

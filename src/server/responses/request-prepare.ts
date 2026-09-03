@@ -838,6 +838,7 @@ export async function prepareResponsesRequest(
     logCtx,
     inboundWire,
     inboundTransport: options.inboundTransport,
+    comboTargetServiceTier: options.comboTargetServiceTier,
     claudeGoAffinity: options.claudeGoAffinity,
   });
   // Attribute local auth/cooldown failures to the public selector too; exact auth may fail before

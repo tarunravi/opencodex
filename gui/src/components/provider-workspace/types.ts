@@ -35,6 +35,9 @@ export interface ProviderModelUsageRow {
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  averageTtftMs?: number | null;
+  endToEndTokensPerSecond?: number | null;
+  decodeTokensPerSecond?: number | null;
   shareRatio: number;
   estimatedCostUsd?: number;
 }
@@ -69,6 +72,7 @@ export type ApiKeyRow = AccountQuotaReading & {
   label?: string;
   masked: string;
   active: boolean;
+  cooldownUntil?: number;
 };
 
 export type LoginHint = {

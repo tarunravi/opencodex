@@ -218,3 +218,20 @@ export function mapRoutedResponsesReasoningEffort(
   if (!mapped || mapped === requested) return body;
   return { ...body, reasoning: { ...body.reasoning, effort: mapped } };
 }
+
+export function stripInternalChatMessageMetadata(body: unknown): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+  let changed = false;
+  const input = body.input.map(item => {
+    if (
+      !isPlainObject(item)
+      || !Object.prototype.hasOwnProperty.call(item, "internal_chat_message_metadata_passthrough")
+    ) {
+      return item;
+    }
+    changed = true;
+    const { internal_chat_message_metadata_passthrough: _dropped, ...rest } = item;
+    return rest;
+  });
+  return changed ? { ...body, input } : body;
+}

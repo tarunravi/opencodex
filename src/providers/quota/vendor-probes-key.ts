@@ -1237,6 +1237,10 @@ function parseLiteLlmQuotaPayload(value: unknown, now = Date.now()): ProviderQuo
   };
 }
 
+function liteLlmKeyBlocked(value: unknown): boolean {
+  return asRecord(asRecord(value)?.info)?.blocked === true;
+}
+
 async function fetchLiteLlmQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
   const endpoint = liteLlmKeyInfoUrl(config.baseUrl, config.allowPrivateNetwork);
   const apiKey = resolveProviderApiKey(config.apiKey)?.trim();
@@ -1257,7 +1261,13 @@ async function fetchLiteLlmQuota(provider: string, config: OcxProviderConfig): P
   const body = await readQuotaJson(response);
   if (body === QUOTA_JSON_READ_FAILURE) return null;
   const quota = parseLiteLlmQuotaPayload(body);
-  return quota ? keyReport(provider, "litellm:key-info", quota, config, apiKey, quota) : null;
+  const credentialDisabled = asRecord(asRecord(body)?.info)?.blocked === true;
+  if (!quota && !credentialDisabled) return null;
+  const updatedAt = Date.now();
+  const result = quota ? keyReport(provider, "litellm:key-info", quota, config, apiKey, quota)
+    : { provider, label: provider, source: "litellm:key-info", quota: { updatedAt }, updatedAt };
+  if (result && credentialDisabled) result.credentialDisabled = true;
+  return result;
 }
 
 type KeyQuotaReader = (name: string, provider: OcxProviderConfig) => Promise<ProviderQuotaProbeResult>;

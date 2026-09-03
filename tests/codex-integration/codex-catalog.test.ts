@@ -344,6 +344,37 @@ describe("combo catalog capability intersection", () => {
     }), [memberA, memberA])).toBeNull();
   });
 
+  test("keeps repeated physical targets with distinct efforts in the routed catalog", async () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "a",
+      providers: {
+        a: {
+          adapter: "openai-chat",
+          baseUrl: "https://a.example/v1",
+          liveModels: false,
+          models: ["m1"],
+          modelContextWindows: { m1: 128_000 },
+          modelReasoningEfforts: { m1: ["low", "medium", "high", "xhigh"] },
+        },
+      },
+      combos: {
+        descending: {
+          targets: [
+            { provider: "a", model: "m1", effort: "xhigh" },
+            { provider: "a", model: "m1", effort: "high" },
+          ],
+        },
+      },
+    };
+
+    const rows = await gatherRoutedModels(config);
+    expect(rows.find(row => row.provider === "combo" && row.id === "descending")).toMatchObject({
+      contextWindow: 128_000,
+      reasoningEfforts: ["low", "medium", "high", "xhigh"],
+    });
+  });
+
   test("omission diagnostics distinguish incomplete metadata from disjoint modalities (#516)", () => {
     const incompleteMembers = [memberA];
     expect(comboCatalogOmissionReason(normalizedCombo(), incompleteMembers)).toBe("incomplete_metadata");

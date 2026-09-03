@@ -21,8 +21,18 @@ export function isNativeAliasCombo(
     && SUPPORTED_NATIVE_OPENAI_SLUGS.has(alias);
 }
 
-export function targetKey(target: Pick<OcxComboTarget, "provider" | "model">): string {
-  return `${target.provider}/${target.model}`;
+export function targetKey(
+  target: Pick<OcxComboTarget, "provider" | "model">
+    & Partial<Pick<OcxComboTarget, "effort" | "serviceTier">>,
+): string {
+  const key = `${target.provider}/${target.model}`;
+  // Valid legacy keys start with an alphanumeric provider name. The reserved prefix
+  // and JSON tuple keep request-variant identities disjoint and losslessly encoded.
+  if (!target.effort && !target.serviceTier) return key;
+  const tuple = target.serviceTier === undefined
+    ? [target.provider, target.model, target.effort]
+    : [target.provider, target.model, target.effort ?? null, target.serviceTier];
+  return `@combo-target:${JSON.stringify(tuple)}`;
 }
 
 export function parseComboModelId(modelId: string): string | null {

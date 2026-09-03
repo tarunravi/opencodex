@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { CursorMcpConfigError, type CursorMcpConfigState } from "../src/integrations/cursor-config";
-import { handleNativeIntegrationRoutes } from "../src/server/management/native-integration-routes";
-import type { ManagementContext } from "../src/server/management/context";
-import type { OcxConfig } from "../src/types";
+import { CursorMcpConfigError, type CursorMcpConfigState } from "../../src/integrations/cursor-config";
+import { handleNativeIntegrationRoutes } from "../../src/server/management/native-integration-routes";
+import type { ManagementContext } from "../../src/server/management/context";
+import type { OcxConfig } from "../../src/types";
 
 const config = { port: 10100, hostname: "127.0.0.1", providers: [] } as unknown as OcxConfig;
 

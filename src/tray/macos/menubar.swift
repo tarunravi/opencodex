@@ -238,7 +238,8 @@ private struct UsageModel: Codable {
     let requests: Int
     let totalTokens: Int
     let outputTokens: Int
-    let durationMs: Int?
+    let modelCallMs: Int?
+    let endToEndTokensPerSecond: Double?
 }
 
 private struct UsageAccount: Codable {
@@ -628,8 +629,8 @@ private final class AppState: NSObject, NSMenuDelegate {
 
             for model in usage.models {
                 let tokens = formatTokens(model.totalTokens)
-                let wall = formatDuration(model.durationMs ?? 0)
-                let tps = formatTps(tokensPerSecond(tokens: model.outputTokens, ms: model.durationMs))
+                let wall = formatDuration(model.modelCallMs ?? 0)
+                let tps = formatTps(model.endToEndTokensPerSecond)
                 let item = NSMenuItem(
                     title: "\(model.model) — \(tokens) tok · \(wall) · \(tps)/s",
                     action: nil,
@@ -921,8 +922,8 @@ private final class UsageViewModel: ObservableObject {
                 provider: model.provider,
                 requests: model.requests,
                 tokens: model.totalTokens,
-                wallMs: model.durationMs ?? 0,
-                tps: tokensPerSecond(tokens: model.outputTokens, ms: model.durationMs)
+                wallMs: model.modelCallMs ?? 0,
+                tps: model.endToEndTokensPerSecond
             )
         }
     }

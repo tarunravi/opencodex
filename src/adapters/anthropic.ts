@@ -29,6 +29,7 @@ import { decodeServerSentEvents } from "../lib/sse-decoder";
 import { isTranslatorBudgetExceededError, retainTranslatedEventBatch, type TranslatorBudget } from "../lib/translator-budget";
 import { isReasoningEffortOmitted, modelRecordValue } from "../reasoning-effort";
 import { applyAgentRouterLanguageFraming, isAgentRouterEndpoint } from "./agentrouter";
+import { createAdapterTierMetadata, type AdapterTierMetadata } from "../providers/fastwire";
 
 /** Map a user content part to an Anthropic content block (text or image source). */
 function toAnthropicContentPart(p: OcxContentPart): unknown {
@@ -623,6 +624,23 @@ function usageFromAnthropic(usage: unknown): OcxUsage | undefined {
   };
 }
 
+function observeAnthropicSpeed(usage: unknown, tierMetadata: AdapterTierMetadata | undefined): void {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return;
+  const speed = (usage as Record<string, unknown>).speed;
+  if (typeof speed === "string") tierMetadata?.observeResponseServiceTier(speed);
+}
+
+function appendAnthropicBetas(headers: Record<string, string>, betas: readonly string[]): void {
+  const keys = Object.keys(headers).filter(name => name.toLowerCase() === "anthropic-beta");
+  const values = keys.map(key => headers[key])
+    .flatMap(value => (value ?? "").split(",").map(item => item.trim()))
+    .filter(Boolean)
+    .concat(betas);
+  const key = keys[0] ?? "anthropic-beta";
+  for (const duplicate of keys.slice(1)) delete headers[duplicate];
+  headers[key] = [...new Set(values)].join(",");
+}
+
 type PendingAnthropicUsage = Record<string, unknown> | null | undefined;
 
 function mergeAnthropicUsage(base: PendingAnthropicUsage, next: unknown): PendingAnthropicUsage {
@@ -979,6 +997,13 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       if (parsed.options.temperature !== undefined) body.temperature = parsed.options.temperature;
       if (parsed.options.topP !== undefined) body.top_p = parsed.options.topP;
       if (parsed.options.stopSequences) body.stop_sequences = parsed.options.stopSequences;
+      const fastWire = parsed.options.tierObservation?.fastWire;
+      const anthropicFastBetas = fastWire?.kind === "anthropic-speed" ? fastWire.betas ?? [] : [];
+      const anthropicSpeed = fastWire?.kind === "anthropic-speed"
+        && parsed.options.tierDecision?.kind === "set"
+        ? parsed.options.tierDecision.value
+        : undefined;
+      if (anthropicSpeed) body.speed = anthropicSpeed;
 
       // `reasoning` is a Codex effort string; "none" is the disable sentinel (see parser.ts
       // REASONING_EFFORTS). A bare truthy check would treat "none" as truthy and wrongly enable
@@ -1088,7 +1113,14 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         if (anthropicKeyUsesBearer(provider)) headers["Authorization"] = `Bearer ${provider.apiKey}`;
         else headers["x-api-key"] = provider.apiKey;
       }
+      const requiredAnthropicBetas = anthropicSpeed
+        ? (Object.entries(headers).find(([name]) => name.toLowerCase() === "anthropic-beta")?.[1] ?? "")
+            .split(",")
+            .map(value => value.trim())
+            .filter(Boolean)
+        : [];
       if (provider.headers) Object.assign(headers, provider.headers);
+      if (anthropicSpeed) appendAnthropicBetas(headers, [...requiredAnthropicBetas, ...anthropicFastBetas]);
 
       // Prompt caching: native Anthropic supports top-level automatic caching, which
       // follows the moving final block across turns. Keep one breakpoint slot free for it.
@@ -1103,10 +1135,23 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       enforceCacheControlLimit(body, explicitLimit);
       normalizeTtlOrdering(body);
 
-      return { url, method: "POST", headers, body: JSON.stringify(body) };
+      const actualSpeed = typeof body.speed === "string" ? body.speed : null;
+      const tierLog = createAdapterTierMetadata(
+        parsed.options.tierObservation,
+        parsed.options.tierDecision,
+        actualSpeed === null ? null : "anthropic-speed",
+        actualSpeed,
+      );
+      return {
+        url,
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        ...(tierLog ? { tierLog } : {}),
+      };
     },
 
-    async *parseStream(response: Response, budget: TranslatorBudget): AsyncGenerator<AdapterEvent> {
+    async *parseStream(response: Response, budget: TranslatorBudget, tierMetadata?: AdapterTierMetadata): AsyncGenerator<AdapterEvent> {
       if (!response.body) {
         yield { type: "error", message: "No response body" };
         return;
@@ -1164,6 +1209,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         try {
           parsed = JSON.parse(payload);
         } catch {
+          tierMetadata?.markResponseUnparseable();
           debugDroppedFrame("anthropic", payload);
           continue;
         }
@@ -1171,6 +1217,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         // it and the `data.type` read below crashed the stream. Drop a non-record frame the same
         // way an unparseable one is dropped, so the message_stop check still governs the outcome.
         if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          tierMetadata?.markResponseUnparseable();
           debugDroppedFrame("anthropic", payload);
           continue;
         }
@@ -1179,6 +1226,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         switch (record.event || data.type) {
               case "message_start": {
                 const message = data.message as { usage?: unknown } | undefined;
+                observeAnthropicSpeed(message?.usage, tierMetadata);
                 pendingUsage = mergeAnthropicUsage(pendingUsage, message?.usage);
                 break;
               }
@@ -1268,6 +1316,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
               }
               case "message_delta": {
                 const usage = data.usage;
+                observeAnthropicSpeed(usage, tierMetadata);
                 pendingUsage = mergeAnthropicUsage(pendingUsage, usage);
                 const delta = data.delta as { stop_reason?: unknown } | undefined;
                 if (typeof delta?.stop_reason === "string") pendingStopReason = delta.stop_reason;
@@ -1358,8 +1407,14 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       }
     },
 
-    async parseResponse(response: Response, budget: TranslatorBudget): Promise<AdapterEvent[]> {
-      const parsed: unknown = await response.json();
+    async parseResponse(response: Response, budget: TranslatorBudget, tierMetadata?: AdapterTierMetadata): Promise<AdapterEvent[]> {
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch (error) {
+        tierMetadata?.markResponseUnparseable();
+        throw error;
+      }
       // `response.json()` resolves a body of `null` to `null` without throwing, so the cast below
       // used to reach `json.content` on it — the #1219 defect at the buffered body root. The
       // streaming parser has skipped a non-record frame since #1240, but a buffered body has no
@@ -1430,6 +1485,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         }
       }
       const usage = json.usage as Record<string, number> | undefined;
+      observeAnthropicSpeed(usage, tierMetadata);
       const stopReason = typeof json.stop_reason === "string" ? json.stop_reason : undefined;
       // An Anthropic-compatible upstream can forward an `error` stop reason verbatim. As a
       // `done` it reads as a clean completion, so the turn reports success and — on a compaction

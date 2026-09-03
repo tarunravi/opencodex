@@ -8,7 +8,7 @@ import { formatUptime } from "../formatUptime";
 import { catalogValue } from "../i18n/catalogs";
 import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
-import { EmptyState, Notice } from "../ui";
+import { EmptyState, Notice, Tooltip } from "../ui";
 import { IconChevron } from "../icons";
 import { modelLabel } from "../model-display";
 import { useDataSurface } from "../data-surface";
@@ -68,6 +68,10 @@ interface UsageModel {
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  modelCallMs?: number;
+  averageTtftMs?: number | null;
+  endToEndTokensPerSecond?: number | null;
+  decodeTokensPerSecond?: number | null;
   shareRatio: number;
 }
 
@@ -95,7 +99,9 @@ interface UsageLatency {
 }
 
 interface UsageEffortGroup {
+  provider: string;
   model: string;
+  speedMode: "fast" | "standard" | "downgraded" | "unknown";
   requestedEffort: string;
   effectiveEffort: string;
   requests: number;
@@ -717,6 +723,10 @@ function effortLabel(effort: string, t: TFn): ReactNode {
   return effort;
 }
 
+function speedModeLabel(speedMode: UsageEffortGroup["speedMode"], t: TFn): string {
+  return t(`usage.speed.${speedMode}`);
+}
+
 function UsagePerformancePanel({
   latency,
   effortGroups,
@@ -787,6 +797,8 @@ function UsagePerformancePanel({
               <thead>
                 <tr>
                   <th>{t("logs.col.model")}</th>
+                  <th>{t("usage.col.provider")}</th>
+                  <th>{t("usage.col.speed")}</th>
                   <th>{t("usage.col.requestedEffort")}</th>
                   <th>{t("usage.col.effectiveEffort")}</th>
                   <th className="num">{t("usage.col.requests")}</th>
@@ -801,8 +813,14 @@ function UsagePerformancePanel({
               </thead>
               <tbody>
                 {groups.map(group => (
-                  <tr key={`${group.model}/${group.requestedEffort}/${group.effectiveEffort}`}>
-                    <td className="mono">{modelLabel(group.model)}</td>
+                  <tr key={`${group.provider}/${group.model}/${group.speedMode}/${group.requestedEffort}/${group.effectiveEffort}`}>
+                    <td className="mono">
+                      <Tooltip content={t("usage.providerTooltip", { provider: formatProviderDisplayName(group.provider, t) })} side="top">
+                        <span tabIndex={0}>{modelLabel(group.model)}</span>
+                      </Tooltip>
+                    </td>
+                    <td><span className="badge badge-muted">{formatProviderDisplayName(group.provider, t)}</span></td>
+                    <td><span className="badge badge-muted">{speedModeLabel(group.speedMode, t)}</span></td>
                     <td>{effortLabel(group.requestedEffort, t)}</td>
                     <td>{effortLabel(group.effectiveEffort, t)}</td>
                     <td className="num">{group.requests.toLocaleString(locale)}</td>
@@ -878,6 +896,9 @@ function UsageModelsTable({
             <th className="num">{t("usage.col.requests")}</th>
             <th className="num">{t("usage.col.measured")}</th>
             <th className="num">{t("usage.col.tokens")}</th>
+            <th className="num">{t("usage.col.avgTtft")}</th>
+            <th className="num">{t("usage.col.e2eTps")}</th>
+            <th className="num">{t("usage.col.decodeTps")}</th>
             <th>{t("usage.col.share")}</th>
           </tr>
         </thead>
@@ -889,6 +910,9 @@ function UsageModelsTable({
               <td className="num">{model.requests}</td>
               <td className="num">{model.measuredRequests}</td>
               <td className="num mono">{formatTokens(model.totalTokens, locale)}</td>
+              <td className="num mono">{isFiniteNumber(model.averageTtftMs) ? formatDurationMs(model.averageTtftMs, locale) : "—"}</td>
+              <td className="num mono">{isFiniteNumber(model.endToEndTokensPerSecond) ? formatTokensPerSecond(model.endToEndTokensPerSecond, locale, t) : "—"}</td>
+              <td className="num mono">{isFiniteNumber(model.decodeTokensPerSecond) ? formatTokensPerSecond(model.decodeTokensPerSecond, locale, t) : "—"}</td>
               <td><div className="usage-bar"><div className="usage-bar-fill" style={{ width: `${Math.round(model.shareRatio * 100)}%` }} /></div></td>
             </tr>
           ))}
@@ -1324,11 +1348,7 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
           {state.showError && <Notice tone="err">{t(connected ? "usage.hubOffline" : "usage.loadError")}</Notice>}
           <UsageIncompleteNotice data={data} />
           {data?.historyTruncated && (
-            // Naming the loaded window is the point: without it, `30d` and "Available history"
-            // look identical on a busy installation even though both may cover far less than
-            // they claim (#1497). `warn` rather than `ok` because a total that silently omits
-            // in-range rows is a caveat, not a status update.
-            <Notice tone="warn">
+            <p className="usage-history-note muted" role="note">
               {(() => {
                 // Both bounds must be renderable before the detailed wording is used: an older
                 // proxy omits the fields entirely, and a hand-edited row can carry a timestamp
@@ -1339,7 +1359,7 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
                   ? t("usage.historyTruncatedWindow", { start, end })
                   : t("usage.historyTruncated");
               })()}
-            </Notice>
+            </p>
           )}
           <UsageWorkspaceBody
             data={data}

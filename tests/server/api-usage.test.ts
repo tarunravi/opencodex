@@ -281,6 +281,11 @@ describe("GET /api/usage", () => {
       expect(Array.isArray(body.models)).toBe(true);
       expect(Array.isArray(body.providers)).toBe(true);
       expect(Array.isArray(body.accounts)).toBe(true);
+      expect(body.models.find((model: { provider: string; model: string }) => model.provider === "openai" && model.model === "gpt-5.5")).toMatchObject({
+        modelCallMs: 22,
+        endToEndTokensPerSecond: 2500,
+        decodeTokensPerSecond: null,
+      });
     } finally {
       await server.stop(true);
     }

@@ -5,16 +5,16 @@ import { join } from "node:path";
 import {
   discoverCodexBarManagedAccounts,
   setCodexBarAccountImportRootForTests,
-} from "../src/codex/codexbar-account-import";
-import { getCodexAccountCredential } from "../src/codex/account-store";
-import { handleCodexAuthAPI } from "../src/codex/auth-api";
-import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/account-id";
-import { clearAccountNeedsReauth } from "../src/codex/account-runtime-state";
-import { clearAccountQuota } from "../src/codex/quota";
-import { clearCodexUpstreamHealth, clearThreadAccountMap, resolveCodexAccountForThread } from "../src/codex/routing";
-import { clearPoolRotationState } from "../src/codex/pool-rotation";
-import { setLiveStateStoreConfig } from "../src/lib/state-store-registrations";
-import type { OcxConfig } from "../src/types";
+} from "../../src/codex/codexbar-account-import";
+import { getCodexAccountCredential } from "../../src/codex/account-store";
+import { handleCodexAuthAPI } from "../../src/codex/auth-api";
+import { MAIN_CODEX_ACCOUNT_ID } from "../../src/codex/account-id";
+import { clearAccountNeedsReauth } from "../../src/codex/account-runtime-state";
+import { clearAccountQuota } from "../../src/codex/quota";
+import { clearCodexUpstreamHealth, clearThreadAccountMap, resolveCodexAccountForThread } from "../../src/codex/routing";
+import { clearPoolRotationState } from "../../src/codex/pool-rotation";
+import { setLiveStateStoreConfig } from "../../src/lib/state-store-registrations";
+import type { OcxConfig } from "../../src/types";
 
 const TEST_ROOT = join(import.meta.dir, ".tmp-codexbar-account-import-test");
 const CODEXBAR_ROOT = join(TEST_ROOT, "CodexBar");

@@ -72,6 +72,7 @@ export type { ProviderQuota, ProviderQuotaCreditsUsd, ProviderQuotaWindow } from
 export { QUOTA_RESPONSE_MAX_BYTES } from "./quota-wire";
 export {
   clearProviderQuotaCache,
+  getCachedProviderQuotaReport,
   publishKeyReportForTests,
   readProviderQuotaJsonForTests,
   setProviderQuotaBeforePublishForTests,

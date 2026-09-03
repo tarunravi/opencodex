@@ -88,7 +88,7 @@ namespace, and cannot use reserved bare native families such as `gpt-*`, `o1-*`,
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `targets` | `{ provider: string; model: string; weight?: number }[]` | required | Ordered concrete routes. `weight` is 1–10000 and defaults to `1`. |
+| `targets` | `{ provider: string; model: string; weight?: number; effort?: string; serviceTier?: string }[]` | required | Ordered concrete routes. `weight` is 1–10000 and defaults to `1`; `effort` and `serviceTier` force request values for that target attempt. |
 | `strategy?` | `"failover" \| "round-robin" \| "random" \| "least-used" \| "reset-window"` | `"failover"` | Selection strategy. Target order is failover priority; weights shape round-robin and random draws; least-used follows recorded successes; reset-window follows the soonest quota reset. |
 | `stickyLimit?` | `number` | `1` | Successful requests retained in one round-robin batch. Range 1–100. Applies only to round-robin. |
 | `cooldownMs?` | `number` | unset → upstream fallback (5 s for request-rate 429 codes `1302`/`1305`, otherwise 60 s) | Range 0–600000. Zero disables shared cooldown. When positive, applies whenever no usable upstream `Retry-After` or Codex reset signal exists, including request-rate 429s; when unset, uses the upstream fallback. Upstream signals take precedence and all cooldowns are capped at 10 minutes. |

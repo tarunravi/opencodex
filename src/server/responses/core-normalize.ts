@@ -116,9 +116,10 @@ export async function applyFinalRouteRequestNormalization(args: {
   logCtx: RequestLogContext;
   inboundWire: InboundWire;
   inboundTransport?: "websocket";
+  comboTargetServiceTier?: string;
   claudeGoAffinity?: HandleResponsesOptions["claudeGoAffinity"];
 }): Promise<void> {
-  const { parsed, route, config, req, logCtx, inboundWire, inboundTransport } = args;
+  const { parsed, route, config, req, logCtx, inboundWire, inboundTransport, comboTargetServiceTier } = args;
   const effortSelector = prepareEffortNormalization(parsed, route);
 
   // Only Anthropic message routes retain the Codex-facing selector. Other providers must keep
@@ -211,14 +212,17 @@ export async function applyFinalRouteRequestNormalization(args: {
   // The ChatGPT-internal Codex backend echoes `service_tier: "default"` even on turns it
   // scheduled as priority, so its echo cannot confirm OR deny Fast. Believing it reported every
   // Fast request as `response-declined` (#2558). The public API's echo stays authoritative.
+  const targetTier = comboTargetServiceTier;
+  const requestedTier = targetTier ?? callerTier;
+  const effectiveFastMode = targetTier === undefined ? config.fastMode : undefined;
   parsed.options.tierObservation = tierObservationContext(
     fastPolicy,
-    config.fastMode,
-    callerTier,
+    effectiveFastMode,
+    requestedTier,
     isCanonicalOpenAiForwardProvider(route.provider) ? false : undefined,
   );
-  parsed.options.tierDecision = decideTier(fastPolicy, config.fastMode, callerTier);
-  parsed.options.serviceTier = tierValueAfterDecision(parsed.options.tierDecision, callerTier);
+  parsed.options.tierDecision = decideTier(fastPolicy, effectiveFastMode, requestedTier);
+  parsed.options.serviceTier = tierValueAfterDecision(parsed.options.tierDecision, requestedTier);
   if (fastPolicy.capability === true && fastPolicy.fastWire === null) {
     warnFastWireCapabilityGap(route.providerName, route.modelId);
   }

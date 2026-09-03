@@ -338,6 +338,7 @@ export default function ProviderDetails({
             oauth={oauth}
             accounts={accounts}
             keys={keys}
+            credentialDisabled={quotaReport?.credentialDisabled === true}
             accountLoadState={accountLoadState}
             switchingAccountId={switchingAccountId}
             busy={busyProvider === item.name}

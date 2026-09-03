@@ -198,7 +198,7 @@ describe("resolveFastPolicy matrix", () => {
     expect(resolveFastPolicy(authority, MODEL).adapter).toBe("anthropic");
   });
 
-  test("anthropic-speed has no A1 adapter mapping", () => {
+  test("anthropic-speed maps only to the Anthropic adapter", () => {
     const policy = resolveFastPolicy({
       ...authorityForMatrix({
         source: "provider-adapter",
@@ -207,6 +207,7 @@ describe("resolveFastPolicy matrix", () => {
         capability: "true",
         chatForeignTierForward: true,
       }),
+      providerAdapter: "anthropic",
       fastWireDeclaration: {
         kind: "anthropic-speed",
         canonicalToWire: { priority: "fast" },
@@ -214,7 +215,31 @@ describe("resolveFastPolicy matrix", () => {
         betas: ["fast-beta"],
       },
     }, MODEL);
-    expect(policy).toMatchObject({ eligibility: "wire-unavailable", forwardCallerTier: false });
+    expect(policy).toMatchObject({
+      capability: true,
+      eligibility: "eligible",
+      adapter: "anthropic",
+      forwardCallerTier: false,
+      fastWire: { kind: "anthropic-speed" },
+    });
+  });
+
+  test("Anthropic direct Opus models are Fast-capable for OAuth and API-key presets", () => {
+    for (const provider of ["anthropic", "anthropic-apikey"]) {
+      for (const model of ["claude-opus-4-8", "claude-opus-5"]) {
+        const policy = fastPolicyForModel(
+          { adapter: "anthropic", baseUrl: "https://api.anthropic.com", authMode: provider === "anthropic" ? "oauth" : "key" },
+          model,
+          provider,
+        );
+        expect(policy).toMatchObject({ capability: true, eligibility: "eligible", adapter: "anthropic" });
+        expect(policy.fastWire).toMatchObject({
+          kind: "anthropic-speed",
+          canonicalToWire: { priority: "fast" },
+          betas: ["fast-mode-2026-02-01"],
+        });
+      }
+    }
   });
 
   test("an incompatible hard pin reports pin-unavailable", () => {
@@ -646,17 +671,19 @@ describe("FastWire config and registry validation", () => {
     })).toBeNull();
   });
 
-  test("cursor is the only registry FastWire declaration, and it is the variant wire", () => {
+  test("registry FastWire declarations include Cursor variants and Anthropic speed", () => {
     // A1 shipped none; Cursor's Fast is a model VARIANT rather than a service_tier field,
     // so it must declare its own wire instead of inheriting the OpenAI adapter default.
     // Every other provider still gets its wire from defaultFastWireForAdapter.
     const declared = PROVIDER_REGISTRY.filter(entry => entry.fastWire !== undefined);
-    expect(declared.map(entry => entry.id)).toEqual(["cursor"]);
-    expect(declared[0]?.fastWire).toEqual({
+    expect(declared.map(entry => entry.id)).toEqual(["cursor", "anthropic", "anthropic-apikey"]);
+    expect(declared.find(entry => entry.id === "cursor")?.fastWire).toEqual({
       kind: "cursor-variant",
       canonicalToWire: { priority: "fast" },
       foreignCallerTiers: "drop",
     });
+    expect(PROVIDER_REGISTRY.filter(entry => entry.id.startsWith("anthropic")).map(entry => entry.fastWire?.kind))
+      .toEqual(["anthropic-speed", "anthropic-speed"]);
   });
 });
 

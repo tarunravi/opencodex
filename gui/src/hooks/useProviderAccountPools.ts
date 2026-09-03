@@ -24,7 +24,7 @@ export interface OAuthAccount extends AccountQuotaReading {
   healthSummary?: string;
   healthAction?: string;
 }
-export interface ApiKeyEntry extends AccountQuotaReading { id: string; label?: string; masked: string; active: boolean }
+export interface ApiKeyEntry extends AccountQuotaReading { id: string; label?: string; masked: string; active: boolean; cooldownUntil?: number }
 export interface AccountSelectionTarget { provider: string; kind: "oauth" | "api-key" }
 
 function selectionRows<T extends { id: string; active: boolean }>(rows: T[], id: string | null | undefined): T[] {
@@ -526,6 +526,22 @@ export function useProviderAccountPools(deps: {
     keyPoolsKeyRef.current = key;
     void Promise.resolve().then(() => { void fetchKeyPools(keyCardProviders); });
   }, [apiBase, fetchKeyPools, keyCardProviders]);
+
+  useEffect(() => {
+    const nextRecoveryAt = Object.values(keyPools)
+      .flat()
+      .reduce<number | undefined>((next, key) => (
+        key.cooldownUntil !== undefined && (next === undefined || key.cooldownUntil < next)
+          ? key.cooldownUntil
+          : next
+      ), undefined);
+    if (nextRecoveryAt === undefined) return;
+    const timer = window.setTimeout(
+      () => { void fetchKeyPools(keyCardProviders); },
+      Math.max(0, nextRecoveryAt - Date.now()) + 25,
+    );
+    return () => window.clearTimeout(timer);
+  }, [fetchKeyPools, keyCardProviders, keyPools]);
 
   const activeAccountNeedsReauth = useMemo(
     () => buildActiveAccountNeedsReauthMap(accountSets, codexActiveNeedsReauth),

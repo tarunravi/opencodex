@@ -22,6 +22,8 @@ export interface ComboValidationIssue {
   message: string;
 }
 
+export type NormalizedComboTarget = Omit<OcxComboTarget, "weight"> & { weight: number };
+
 export interface NormalizedComboConfig {
   strategy: OcxComboStrategy;
   stickyLimit: number;
@@ -38,7 +40,7 @@ export interface NormalizedComboConfig {
   nativeAlias: boolean;
   /** Display-only label for the catalog row, or null when unset. */
   displayName: string | null;
-  targets: Array<Required<OcxComboTarget>>;
+  targets: NormalizedComboTarget[];
 }
 
 /**
@@ -262,11 +264,43 @@ export function comboConfigIssues(
         message: `targets[${i}].weight must be an integer from 1 to 10000`,
       });
     }
+    if (target.effort !== undefined
+      && (typeof target.effort !== "string" || !isCodexReasoningEffort(target.effort))) {
+      issues.push({
+        path: ["targets", i, "effort"],
+        message: `targets[${i}].effort must be one of: low, medium, high, xhigh, max, ultra`,
+      });
+    }
+    if (target.serviceTier !== undefined
+      && (typeof target.serviceTier !== "string"
+        || target.serviceTier.trim().length === 0
+        || target.serviceTier.trim().length > 64)) {
+      issues.push({
+        path: ["targets", i, "serviceTier"],
+        message: `targets[${i}].serviceTier must be a nonblank string of at most 64 characters`,
+      });
+    }
 
     if (provider && model) {
-      const key = targetKey({ provider, model });
+      const effort = typeof target.effort === "string" && isCodexReasoningEffort(target.effort)
+        ? target.effort as OcxComboDefaultEffort
+        : undefined;
+      const serviceTier = typeof target.serviceTier === "string" && target.serviceTier.trim()
+        ? target.serviceTier.trim()
+        : undefined;
+      const key = targetKey({
+        provider,
+        model,
+        ...(effort ? { effort } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
+      });
       if (seen.has(key)) {
-        issues.push({ path: ["targets", i], message: `duplicate combo target "${key}"` });
+        const variants = [
+          ...(effort ? [`effort "${effort}"`] : []),
+          ...(serviceTier ? [`service tier "${serviceTier}"`] : []),
+        ];
+        const suffix = variants.length > 0 ? ` with ${variants.join(" and ")}` : "";
+        issues.push({ path: ["targets", i], message: `duplicate combo target "${provider}/${model}"${suffix}` });
       } else {
         seen.add(key);
       }
@@ -310,6 +344,12 @@ export function normalizeComboConfig(raw: OcxComboConfig): NormalizedComboConfig
       provider: target.provider.trim(),
       model: target.model.trim(),
       weight: target.weight ?? 1,
+      ...(typeof target.effort === "string" && isCodexReasoningEffort(target.effort)
+        ? { effort: target.effort }
+        : {}),
+      ...(typeof target.serviceTier === "string" && target.serviceTier.trim()
+        ? { serviceTier: target.serviceTier.trim() }
+        : {}),
     })),
   };
 }

@@ -55,6 +55,7 @@ export interface ProviderQuotaReport {
   /** Added by the management response projection, never stored on a cached report. */
   routingQuota?: ProviderRoutingQuota;
   reverseEngineered?: boolean;
+  credentialDisabled?: boolean;
   /**
    * The row was OBSERVED in-band on a streaming turn rather than probed.
    *
@@ -99,6 +100,19 @@ export function clearProviderQuotaCache(): void {
   clearCachedProviderQuotas();
   clearProviderApiKeyQuotaCache();
   invalidationEpoch += 1;
+}
+
+/**
+ * Return recent provider quota evidence without starting an upstream request.
+ *
+ * Health/status surfaces use this to report a credential that the last explicit
+ * quota refresh found disabled. Configuration mutations clear the cache, so a
+ * surviving row still belongs to the current provider definition.
+ */
+export function getCachedProviderQuotaReport(provider: string, now = Date.now()): ProviderQuotaReport | null {
+  const row = cache?.response.reports.find(candidate => candidate.provider === provider);
+  if (!row || now - row.updatedAt >= LAST_GOOD_MAX_AGE_MS || !isProviderQuotaReportCurrent(row)) return null;
+  return row;
 }
 
 function cacheKey(config: OcxConfig): string {

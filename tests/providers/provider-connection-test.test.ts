@@ -449,6 +449,20 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
     expect(body.models).toBe(2);
   });
 
+  test("a valid catalog above the retained model limit still proves connectivity", async () => {
+    globalThis.fetch = (async () => Response.json({
+      data: Array.from({ length: 2_001 }, (_, index) => ({ id: `model-${index}` })),
+    })) as typeof fetch;
+    const config = baseConfig({
+      large: { adapter: "openai-chat", baseUrl: "https://api.example.test/v1", apiKey: "sk-x" },
+    });
+
+    const { body } = await probe(config, "large");
+
+    expect(body.ok).toBe(true);
+    expect(String(body.message)).toContain("catalog display capped");
+  });
+
   test("malformed 2xx data is an explicit failure, not a silent pass", async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ nope: true }), {
       status: 200,

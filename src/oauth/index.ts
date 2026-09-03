@@ -22,6 +22,7 @@ import {
   markOAuthRefreshIntentStaleOwner,
   mergeAccountCredential,
   normalizeAuthStoreBuffer,
+  peekAuthStore,
   readOAuthRefreshIntent,
   removeAccount,
   saveAccountCredential,
@@ -1847,10 +1848,12 @@ export interface OAuthAccountSummary {
  * the config at its request boundary and resolves the policy there with `emailMaskingEnabled`.
  * The default masks, so every existing caller keeps today's behaviour.
  */
-export function getLoginStatus(provider: string, maskEmails = true): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
-  const cred = getCredential(provider);
+export function getLoginStatus(provider: string, maskEmails = true, options: { store?: ReturnType<typeof peekAuthStore> } = {}): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
   const st = loginState.get(provider);
-  const set = getAccountSet(provider);
+  const set = options.store === undefined
+    ? getAccountSet(provider)
+    : options.store[provider] ?? null;
+  const cred = set?.accounts.find(a => a.id === set.activeAccountId)?.credential ?? null;
   const accounts: OAuthAccountSummary[] | undefined = set?.accounts.map(a => ({
     id: a.id,
     ...(a.alias ? { alias: a.alias } : {}),

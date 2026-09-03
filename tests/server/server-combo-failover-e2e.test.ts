@@ -3474,9 +3474,14 @@ describe("server combo failover 030 activation matrix", () => {
   test("connect cancellation wins with 499, no backup, warning, or cooldown", async () => {
     let bHits = 0;
     const aStarted = deferred();
-    const a = serve(() => {
+    const a = serve((request) => {
       aStarted.resolve();
-      return new Promise<Response>(() => {});
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (request.signal.aborted) controller.close();
+          else request.signal.addEventListener("abort", () => controller.close(), { once: true });
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
     });
     const b = serve(() => { bHits += 1; return chatSuccess("must not run"); });
     const config = comboConfig({

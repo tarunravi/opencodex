@@ -1,3 +1,4 @@
+import type { FastWire } from "../../types";
 import { KIRO_MODELS, KIRO_MODEL_CONTEXT_WINDOWS, KIRO_MODEL_REASONING_EFFORTS } from "../kiro-models";
 import { DEVIN_MODEL_CONTEXT_WINDOWS, DEVIN_MODEL_EFFORTS, DEVIN_DEFAULT_EFFORTS } from "../../adapters/devin/live-models";
 import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, ANTIGRAVITY_MODEL_EFFORTS, ANTIGRAVITY_MODEL_INPUT_MODALITIES } from "../antigravity-models";
@@ -13,6 +14,13 @@ import {
 import { cursorFastCapableBases } from "../../adapters/cursor/catalog";
 import { COMMAND_CODE_MODEL_REASONING_EFFORTS } from "../command-code-efforts";
 import { isCanonicalOpenRouterTarget } from "../openrouter-routing";
+const ANTHROPIC_FAST_WIRE: FastWire = Object.freeze({
+  kind: "anthropic-speed",
+  canonicalToWire: Object.freeze({ priority: "fast" }),
+  foreignCallerTiers: "drop",
+  betas: Object.freeze(["fast-mode-2026-02-01"]),
+});
+
 import type { ProviderRegistryEntry } from "./types";
 import {
   ANTHROPIC_MODELS,
@@ -383,6 +391,8 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
     note: "Log in with your Claude account",
     models: [...ANTHROPIC_MODELS],
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
+    fastWire: ANTHROPIC_FAST_WIRE,
+    modelSupportsServiceTier: { "claude-opus-4-8": true, "claude-opus-5": true },
     modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
     // Codex omits max_output_tokens; without a provider budget the Anthropic adapter
     // falls back to 8192, which truncates long answers with stop_reason=max_tokens.
@@ -403,6 +413,8 @@ export const PROVIDER_REGISTRY_CORE: readonly ProviderRegistryEntry[] = [
     models: [...ANTHROPIC_MODELS],
     liveModels: true,
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
+    fastWire: ANTHROPIC_FAST_WIRE,
+    modelSupportsServiceTier: { "claude-opus-4-8": true, "claude-opus-5": true },
     modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
     defaultMaxOutputTokens: ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
     defaultModel: "claude-sonnet-5",

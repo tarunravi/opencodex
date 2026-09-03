@@ -81,7 +81,6 @@ function sparseComboConfig<T extends {
   imageInput?: "auto" | "disabled";
   reasoningEffortMode?: "strict" | "adaptive";
 }>(combo: T): Omit<T, "cooldownMs" | "waitForCooldownMs" | "imageInput" | "reasoningEffortMode"> & {
-  cooldownMs?: number | null;
   waitForCooldownMs?: number;
   imageInput?: "disabled";
   reasoningEffortMode?: "adaptive";
@@ -96,7 +95,6 @@ function sparseComboConfig<T extends {
   } = combo;
   return {
     ...rest,
-    ...(cooldownMs !== undefined && cooldownMs !== null ? { cooldownMs } : {}),
     ...(waitForCooldownMs !== undefined && waitForCooldownMs !== COMBO_DEFAULT_WAIT_FOR_COOLDOWN_MS
       ? { waitForCooldownMs }
       : {}),

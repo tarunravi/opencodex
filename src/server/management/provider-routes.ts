@@ -1,3 +1,4 @@
+import { emailMaskingEnabled } from "../../lib/privacy";
 import { modelCapabilitiesConfigError, mergeModelCapabilities } from "../../config/provider-validation";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -37,7 +38,7 @@ import {
 } from "../../oauth";
 import { captureConfigTopLevelRollback } from "../../config/rebase-provenance";
 import { canonicalAutoReviewModelKey, mergeModelPinnedEfforts, modelPinnedEffortsConfigError, pinnedReasoningEffortConfigError } from "../../config/provider-validation";
-import { replaceProviderAccountSet } from "../../oauth/store";
+import { peekAuthStore, replaceProviderAccountSet } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { reconcileLiveStateStores } from "../../lib/state-store-registrations";
 import { ProviderOutboundPolicyError, providerOutboundGet, providerOutboundPost, providerRedirectError } from "../../lib/provider-outbound";
@@ -58,11 +59,13 @@ import {
 } from "../../providers/model-discovery";
 import { extractGoogleAiStudioModelItems } from "../../providers/google-ai-studio-model-discovery";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
+import { projectOAuthAccountHealth, projectStoredOAuthAccountHealth } from "../../oauth/health";
+import { getCachedProviderQuotaReport } from "../../providers/quota/report-cache";
 import { clearAccountQuotaCache, clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
 import { getCachedProviderRoutingQuota } from "../../providers/quota-routing-cache";
 import { PROVIDER_QUOTA_MAX_AGE_MS, type ProviderRoutingQuota } from "../../providers/quota-types";
 import { cachedProviderQuotaIsExhausted } from "../../combos/resolve";
-import { clearKeyCooldowns, forgetApiKeyRotationCursor } from "../../providers/key-failover";
+import { clearKeyCooldowns, getKeyCooldownUntil, forgetApiKeyRotationCursor } from "../../providers/key-failover";
 import { providerRequestPacingStatus } from "../../providers/request-pacing";
 import { CODEX_FORWARD_BASE_URL, isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { codexAccountNamespaceProviderCollisionError } from "../../codex/account-namespace-match";
@@ -848,7 +851,24 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
   }
 
   if (url.pathname === "/api/providers" && req.method === "GET") {
-    return jsonResponse(Object.entries(config.providers).map(([name, p]) => ({
+    const authStore = peekAuthStore();
+    return jsonResponse(Object.entries(config.providers).map(([name, p]) => {
+      const keyCooldowns = (p.apiKeyPool ?? []).flatMap(key => {
+        const until = getKeyCooldownUntil(name, key.id);
+        return until === null ? [] : [until];
+      });
+      const login = p.authMode === "oauth" ? getLoginStatus(name, emailMaskingEnabled(config), { store: authStore }) : undefined;
+      const activeAccount = login?.accounts?.find(account => account.active)
+        ?? login?.accounts?.find(account => account.id === login.activeAccountId);
+      const storedAccounts = p.authMode === "oauth" ? authStore[name] ?? null : null;
+      const storedActiveAccount = storedAccounts?.accounts.find(account => account.id === storedAccounts.activeAccountId);
+      const activeOAuthHealth = p.authMode !== "oauth"
+        ? undefined
+        : storedActiveAccount
+          ? projectStoredOAuthAccountHealth(name, storedActiveAccount, Date.now(), { observeOnly: true })
+          : projectOAuthAccountHealth({ needsReauth: activeAccount?.needsReauth === true });
+      const cachedQuota = getCachedProviderQuotaReport(name);
+      return {
       name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
       hasApiKey: !!p.apiKey,
       // Presence only (#959 review): header names and values never leave the process.
@@ -872,14 +892,22 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       upstreamWebsocket: p.upstreamWebsocket === true,
       authMode: p.authMode,
       apiKeyTransport: p.apiKeyTransport,
+      keyOptional: p.keyOptional === true,
       disabled: p.disabled === true,
+      coolingKeyCount: keyCooldowns.length,
+      nextKeyRecoveryAt: keyCooldowns.length > 0 ? Math.min(...keyCooldowns) : undefined,
+      credentialDisabled: cachedQuota?.credentialDisabled === true,
+      oauthLoggedIn: login?.loggedIn,
+      activeNeedsReauth: activeAccount?.needsReauth === true,
+      activeOAuthHealth,
       codexAccountMode: providerCodexAccountMode(name, p),
       ...(name === "xai" ? { xaiResponsesOptInState: xaiResponsesOptInState(p) } : {}),
       discovery: p.liveModels === false ? undefined : getProviderDiscoveryStatus(name),
       ...(name === "openai" && isCanonicalOpenAiForwardProvider(p)
         ? { entitlement: getCodexModelEntitlementStatus(config) }
         : {}),
-    })));
+    };
+    }));
   }
 
   if (url.pathname === LOCAL_PROVIDER_RELOAD_PATH && req.method === "POST") {
@@ -1644,12 +1672,19 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
         ? extractProviderModelItems(bounded.value, discovery)
         : extractModelEnvelopeRows(bounded.value, discovery.maxModels, ["models"]);
       if (extracted && !extracted.ok) {
+        // A valid JSON model catalog proves the endpoint and credentials are reachable even
+        // when it is larger than OpenCodex is willing to retain as a routing catalog.
+        if (extracted.reason === "too_many_models") {
+          return jsonResponse({
+            ok: true,
+            latencyMs,
+            message: `Connected — more than ${discovery.maxModels} models available (catalog display capped).`,
+          });
+        }
         return jsonResponse({
           ok: false,
           latencyMs,
-          error: extracted.reason === "too_many_models"
-            ? `upstream /models exceeded the ${discovery.maxModels}-row model limit`
-            : "upstream /models returned an unexpected shape",
+          error: "upstream /models returned an unexpected shape",
         });
       }
       const models = ccaModels?.length ?? ("items" in extracted! ? extracted!.items.length : extracted!.rows.length);

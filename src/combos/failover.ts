@@ -45,7 +45,7 @@ let liveComboTargets = new Set<string>();
 
 function cooldownMapKey(
   comboId: string,
-  target: Pick<OcxComboTarget, "provider" | "model">,
+  target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">,
 ): string {
   return `${comboId}\0${targetKey(target)}`;
 }
@@ -140,7 +140,7 @@ export function parseRetryAfterMs(
 
 export function isComboTargetInCooldown(
   comboId: string,
-  target: Pick<OcxComboTarget, "provider" | "model">,
+  target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">,
   now = Date.now(),
 ): boolean {
   const key = cooldownMapKey(comboId, target);
@@ -196,7 +196,7 @@ export function comboCooldownRetryAfterSeconds(comboId: string, now = Date.now()
 
 export function coolComboTarget(
   comboId: string,
-  target: Pick<OcxComboTarget, "provider" | "model">,
+  target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">,
   options?: {
     retryAfter?: string | null;
     resetAt?: unknown | unknown[];
@@ -232,10 +232,10 @@ export function coolComboTarget(
 
 export function earliestComboCooldown(
   comboId: string,
-  targets: Iterable<Pick<OcxComboTarget, "provider" | "model">>,
+  targets: Iterable<Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">>,
   now = Date.now(),
-): { expiry: number; target: Pick<OcxComboTarget, "provider" | "model"> } | undefined {
-  let earliest: { expiry: number; target: Pick<OcxComboTarget, "provider" | "model"> } | undefined;
+): { expiry: number; target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier"> } | undefined {
+  let earliest: { expiry: number; target: Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier"> } | undefined;
   for (const target of targets) {
     const key = cooldownMapKey(comboId, target);
     const entry = targetCooldowns.get(key);
@@ -250,7 +250,7 @@ export function earliestComboCooldown(
 /** Public convenience wrapper returning only the earliest cooldown expiry. */
 export function earliestComboCooldownExpiry(
   comboId: string,
-  targets: Iterable<Pick<OcxComboTarget, "provider" | "model">>,
+  targets: Iterable<Pick<OcxComboTarget, "provider" | "model" | "effort" | "serviceTier">>,
   now = Date.now(),
 ): number | undefined {
   return earliestComboCooldown(comboId, targets, now)?.expiry;

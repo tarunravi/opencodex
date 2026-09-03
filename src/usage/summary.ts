@@ -127,6 +127,14 @@ export interface UsageModel {
   priceCoverageRatio?: number;
   pricedRequests?: number;
   unpricedRequests?: number;
+  /** Sum of physical model-call durations represented by this row. */
+  modelCallMs: number;
+  /** Mean first-output latency over completed calls with TTFT telemetry. */
+  averageTtftMs: number | null;
+  /** Token-weighted output throughput over full model-call duration. */
+  endToEndTokensPerSecond: number | null;
+  /** Token-weighted output throughput after first output, when TTFT is available. */
+  decodeTokensPerSecond: number | null;
   shareRatio: number;
   estimatedCostUsd?: number;
 }
@@ -194,7 +202,9 @@ export interface UsageLatency {
 }
 
 export interface UsageEffortGroup {
+  provider: string;
   model: string;
+  speedMode: "fast" | "standard" | "downgraded" | "unknown";
   requestedEffort: string;
   effectiveEffort: string;
   requests: number;
@@ -460,10 +470,25 @@ interface UsageAttribution {
   usageStatus: UsageStatus;
   usage?: PersistedUsageEntry["usage"];
   totalTokens?: number;
+  status: number;
+  durationMs: number;
+  firstOutputMs?: number;
+  streamAborted?: boolean;
+  terminalStatus?: string;
+  requestedEffort?: string;
+  effectiveEffort?: string;
+  speedMode: UsageEffortGroup["speedMode"];
   /** Attempt provenance when the row has one, else the entry's; never assumed observed. */
   cacheProvenance?: CacheTelemetryProvenance;
 }
 
+
+function usageSpeedMode(outcome: PersistedUsageEntry["tierOutcome"]): UsageEffortGroup["speedMode"] {
+  if (outcome?.fastOutcome === "applied") return "fast";
+  if (outcome?.fastOutcome === "downgraded") return "downgraded";
+  if (outcome?.fastOutcome === "not-requested") return "standard";
+  return "unknown";
+}
 
 /**
  * Usage row identity for model breakdowns.
@@ -503,6 +528,13 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
       ...(isUnresolvedRequestedModel(entry, entry) ? { hasUnresolvedRequestedModel: true as const } : {}),
       ...(entry.accountLogLabel ? { accountLogLabel: entry.accountLogLabel } : {}),
       usageStatus: entry.usageStatus,
+      status: entry.status,
+      durationMs: entry.durationMs,
+      ...(entry.firstOutputMs !== undefined ? { firstOutputMs: entry.firstOutputMs } : {}),
+      ...(entry.terminalStatus !== undefined ? { terminalStatus: entry.terminalStatus } : {}),
+      ...(entry.requestedEffort !== undefined ? { requestedEffort: entry.requestedEffort } : {}),
+      ...(entry.effectiveEffort !== undefined ? { effectiveEffort: entry.effectiveEffort } : {}),
+      speedMode: usageSpeedMode(entry.tierOutcome),
       ...(entry.usage ? { usage: entry.usage } : {}),
       ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
       ...(entry.cacheProvenance ? { cacheProvenance: entry.cacheProvenance } : {}),
@@ -520,6 +552,13 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
       ...(isUnresolvedRequestedModel(entry, attempt) ? { hasUnresolvedRequestedModel: true as const } : {}),
       ...(attempt.accountLogLabel ? { accountLogLabel: attempt.accountLogLabel } : {}),
       usageStatus: attempt.usageStatus,
+      status: attempt.status,
+      durationMs: attempt.durationMs,
+      firstOutputMs: attempt.firstOutputMs,
+      streamAborted: attempt.streamAborted,
+      requestedEffort: attempt.requestedEffort,
+      effectiveEffort: attempt.effectiveEffort,
+      speedMode: usageSpeedMode(attempt.tierOutcome),
       ...(attempt.usage ? { usage: attempt.usage } : {}),
       ...(attempt.totalTokens !== undefined ? { totalTokens: attempt.totalTokens } : {}),
       ...(cacheProvenance ? { cacheProvenance } : {}),
@@ -695,6 +734,8 @@ interface UsageModelOverlap {
 }
 
 interface UsageModelAccumulator {
+  modelCallMs: number;
+  rates: RateAccumulator;
   provider: string;
   model: string;
   resolvedModel?: string;
@@ -891,6 +932,8 @@ function blankModelAccumulator(
     cacheCreationInputTokens: 0,
     cacheObserved: false,
     cacheObservedInputTokens: 0,
+    modelCallMs: 0,
+    rates: blankRates(),
     requestCounts: blankRequestCounts(),
     ...(mode === "exact" ? { requestFacts: new Map() } : {}),
   };
@@ -899,12 +942,15 @@ function blankModelAccumulator(
 function cloneModelAccumulator(source: UsageModelAccumulator): UsageModelAccumulator {
   return {
     ...source,
+    rates: { ...source.rates },
     requestCounts: { ...source.requestCounts },
     ...(source.requestFacts ? { requestFacts: new Map(source.requestFacts) } : {}),
   };
 }
 
 function mergeModelAccumulator(target: UsageModelAccumulator, source: UsageModelAccumulator): void {
+  target.modelCallMs += source.modelCallMs;
+  mergeRates(target.rates, source.rates);
   if (source.hasUnresolvedRequestedModel) target.hasUnresolvedRequestedModel = true;
   if (source.firstSeen < target.firstSeen) {
     target.firstSeen = source.firstSeen;
@@ -1131,6 +1177,8 @@ function buildUsageModels(
       priceCoverageRatio: requests > 0 ? counts.pricedRequests / requests : 0,
       pricedRequests: counts.pricedRequests,
       unpricedRequests: counts.unpricedRequests,
+      modelCallMs: model.modelCallMs,
+      ...finalizeRates(model.rates),
       shareRatio: totalTokens === 0 ? 0 : model.summaryTotalTokens / totalTokens,
       ...(model.estimatedCostUsd !== undefined ? { estimatedCostUsd: model.estimatedCostUsd } : {}),
     };
@@ -1339,6 +1387,8 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
   ): void {
     if (attribution.hasUnresolvedRequestedModel) breakdown.hasUnresolvedRequestedModel = true;
     breakdown.attemptCount += 1;
+    breakdown.modelCallMs += attribution.durationMs;
+    accumulateRates(breakdown.rates, attribution);
     if (attribution.usage) {
       breakdown.inputTokens += attribution.usage.inputTokens;
       breakdown.outputTokens += attribution.usage.outputTokens;
@@ -1501,7 +1551,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
     this.comboOverlap ||= projected.comboOverlap;
     const entry = projected.entry;
     const partition = this.partitionFor(entry);
-    this.estimatedRetainedBytes += addAnalytics(partition.analytics, entry);
+
     const costInfo = computeEntryCost(entry);
     bumpStatus(partition.totals, entry.usageStatus);
     partition.totals.attemptCount += entry.attempts?.length ?? 1;
@@ -1511,6 +1561,7 @@ class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
     addEstimatedCost(partition.totals, entry, costInfo);
 
     const requestKey = this.mode === "exact" ? this.requestKey(entry.requestId) : null;
+    this.estimatedRetainedBytes += addAnalytics(partition.analytics, entry, requestKey);
     const attributions = usageAttributions(entry);
     const modelFacts = new Map<string, number>();
     const providerFacts = new Map<string, number>();
@@ -1710,8 +1761,14 @@ export function unionDurationMs(intervals: ReadonlyArray<readonly [number, numbe
  * row with real output can honestly contribute to TTFT or tokens/sec. Rows that
  * fail the gate still count toward requests and modelCallMs.
  */
-function isCompletedForRates(entry: PersistedUsageEntry): boolean {
+type UsageRateSample = Pick<
+  UsageAttribution,
+  "status" | "durationMs" | "firstOutputMs" | "streamAborted" | "terminalStatus" | "usageStatus" | "usage"
+>;
+
+function isCompletedForRates(entry: UsageRateSample): boolean {
   return entry.status >= 200 && entry.status < 300
+    && entry.streamAborted !== true
     && (!entry.terminalStatus || entry.terminalStatus === "completed")
     && (entry.usageStatus === "reported" || entry.usageStatus === "estimated")
     && (entry.usage?.outputTokens ?? 0) > 0
@@ -1719,7 +1776,7 @@ function isCompletedForRates(entry: PersistedUsageEntry): boolean {
 }
 
 /** firstOutputMs === 0 is a valid TTFT — never truthiness-check it. */
-function validTtft(entry: PersistedUsageEntry): boolean {
+function validTtft(entry: UsageRateSample): boolean {
   return entry.firstOutputMs != null && entry.firstOutputMs <= entry.durationMs;
 }
 
@@ -1736,7 +1793,17 @@ function blankRates(): RateAccumulator {
   return { ttftSumMs: 0, ttftRows: 0, e2eTokens: 0, e2eMs: 0, decodeTokens: 0, decodeMs: 0 };
 }
 
-function accumulateRates(acc: RateAccumulator, entry: PersistedUsageEntry): void {
+function mergeRates(target: RateAccumulator, source: RateAccumulator | undefined): void {
+  if (!source) return;
+  target.ttftSumMs += source.ttftSumMs;
+  target.ttftRows += source.ttftRows;
+  target.e2eTokens += source.e2eTokens;
+  target.e2eMs += source.e2eMs;
+  target.decodeTokens += source.decodeTokens;
+  target.decodeMs += source.decodeMs;
+}
+
+function accumulateRates(acc: RateAccumulator, entry: UsageRateSample): void {
   if (!isCompletedForRates(entry)) return;
   const outputTokens = entry.usage!.outputTokens;
   acc.e2eTokens += outputTokens;
@@ -1764,11 +1831,12 @@ interface UsageAnalytics {
   modelCallMs: number;
   rates: RateAccumulator;
   intervals: Array<[number, number]>;
-  efforts: Map<string, { group: UsageEffortGroup; rates: RateAccumulator }>;
+  requests: number;
+  efforts: Map<string, { group: UsageEffortGroup; rates: RateAccumulator; requestIds?: Set<number> }>;
 }
 
 function blankAnalytics(): UsageAnalytics {
-  return { modelCallMs: 0, rates: blankRates(), intervals: [], efforts: new Map() };
+  return { modelCallMs: 0, rates: blankRates(), intervals: [], requests: 0, efforts: new Map() };
 }
 
 function addInterval(intervals: Array<[number, number]>, start: number, end: number): void {
@@ -1784,36 +1852,45 @@ function addInterval(intervals: Array<[number, number]>, start: number, end: num
   intervals.splice(first, last - first, [start, end]);
 }
 
-function addAnalytics(acc: UsageAnalytics, entry: PersistedUsageEntry): number {
+function addAnalytics(acc: UsageAnalytics, entry: PersistedUsageEntry, requestKey: number | null): number {
   acc.modelCallMs += entry.durationMs;
   accumulateRates(acc.rates, entry);
   const previousIntervals = acc.intervals.length;
   addInterval(acc.intervals, entry.timestamp, entry.timestamp + entry.durationMs);
-  const model = entry.resolvedModel ?? entry.model;
-  const requestedEffort = entry.requestedEffort ?? "not-recorded";
-  const effectiveEffort = entry.effectiveEffort ?? "not-recorded";
-  const key = JSON.stringify([model, requestedEffort, effectiveEffort]);
-  let slot = acc.efforts.get(key);
+  acc.requests++;
   let bytes = (acc.intervals.length - previousIntervals) * 128;
-  if (!slot) {
-    slot = { group: { model, requestedEffort, effectiveEffort, requests: 0, requestShare: 0,
-      modelCallMs: 0, inputTokens: 0, outputTokens: 0, ...finalizeRates(blankRates()) }, rates: blankRates() };
-    acc.efforts.set(key, slot);
-    bytes += 1024 + key.length * 2;
+  const seen = new Set<string>();
+  for (const attribution of usageAttributions(entry)) {
+    const provider = baseProviderLabel(attribution.provider);
+    const model = attribution.resolvedModel ?? attribution.model;
+    const requestedEffort = attribution.requestedEffort ?? "not-recorded";
+    const effectiveEffort = attribution.effectiveEffort ?? "not-recorded";
+    const speedMode = attribution.speedMode;
+    const key = JSON.stringify([provider, model, speedMode, requestedEffort, effectiveEffort]);
+    let slot = acc.efforts.get(key);
+    if (!slot) {
+      slot = { group: { provider, model, speedMode, requestedEffort, effectiveEffort, requests: 0, requestShare: 0,
+        modelCallMs: 0, inputTokens: 0, outputTokens: 0, ...finalizeRates(blankRates()) }, rates: blankRates(),
+        ...(requestKey !== null ? { requestIds: new Set<number>() } : {}) };
+      acc.efforts.set(key, slot);
+      bytes += 1024 + key.length * 2;
+    }
+    if (requestKey !== null && slot.requestIds) {
+      if (!slot.requestIds.has(requestKey)) bytes += 256;
+      slot.requestIds.add(requestKey);
+      slot.group.requests = slot.requestIds.size;
+    } else if (!seen.has(key)) slot.group.requests++;
+    seen.add(key);
+    slot.group.modelCallMs += attribution.durationMs;
+    slot.group.inputTokens += attribution.usage?.inputTokens ?? 0;
+    slot.group.outputTokens += attribution.usage?.outputTokens ?? 0;
+    accumulateRates(slot.rates, attribution);
   }
-  slot.group.requests++;
-  slot.group.modelCallMs += entry.durationMs;
-  slot.group.inputTokens += entry.usage?.inputTokens ?? 0;
-  slot.group.outputTokens += entry.usage?.outputTokens ?? 0;
-  accumulateRates(slot.rates, entry);
   return bytes;
 }
 
-function mergeRates(target: RateAccumulator, source: RateAccumulator): void {
-  for (const key of Object.keys(target) as Array<keyof RateAccumulator>) target[key] += source[key];
-}
-
 function mergeAnalytics(target: UsageAnalytics, source: UsageAnalytics): void {
+  target.requests += source.requests;
   target.modelCallMs += source.modelCallMs;
   mergeRates(target.rates, source.rates);
   for (const [start, end] of source.intervals) addInterval(target.intervals, start, end);
@@ -1822,13 +1899,24 @@ function mergeAnalytics(target: UsageAnalytics, source: UsageAnalytics): void {
     if (!existing) target.efforts.set(key, structuredClone(slot));
     else {
       for (const field of ["requests", "modelCallMs", "inputTokens", "outputTokens"] as const) existing.group[field] += slot.group[field];
+      if (existing.requestIds && slot.requestIds) {
+        for (const requestId of slot.requestIds) existing.requestIds.add(requestId);
+        existing.group.requests = existing.requestIds.size;
+      }
       mergeRates(existing.rates, slot.rates);
     }
   }
 }
 
 function finalizeAnalytics(acc: UsageAnalytics, activity: CodexTaskActivity | null): Pick<UsageSummary, "latency" | "effortGroups"> {
-  const requests = [...acc.efforts.values()].reduce((sum, slot) => sum + slot.group.requests, 0);
+  const exactRequestIds = new Set<number>();
+  let exact = false;
+  for (const slot of acc.efforts.values()) {
+    if (!slot.requestIds) continue;
+    exact = true;
+    for (const requestId of slot.requestIds) exactRequestIds.add(requestId);
+  }
+  const requests = exact ? exactRequestIds.size : acc.requests;
   return {
     latency: { modelCallMs: acc.modelCallMs, apiActiveMs: unionDurationMs(acc.intervals),
       activeWallMs: activity?.activeWallMs ?? null, activeTurns: activity?.activeTurns ?? 0,

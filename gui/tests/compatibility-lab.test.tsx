@@ -309,7 +309,7 @@ test("4. keyboard traversal covers four tabs in strip", async () => {
   const { root, container } = await mountModels();
   try {
     const tabs = [...container.querySelectorAll('[role="tab"]')] as HTMLButtonElement[];
-    expect(tabs).toHaveLength(4);
+    expect(tabs).toHaveLength(5);
     const routing = container.querySelector("#models-tab-routing") as HTMLButtonElement;
     await act(async () => { routing.click(); });
     routing.focus();

@@ -3,15 +3,15 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { summarizeUsage, unionDurationMs } from "../src/usage/summary";
+import { createUsageSummaryAccumulator, summarizeUsage, unionDurationMs } from "../../src/usage/summary";
 import {
   codexTaskActivity,
   parseRolloutTaskEventLine,
   resetCodexActivityCacheForTests,
   summarizeTaskEvents,
   type CodexTaskEvent,
-} from "../src/usage/codex-activity";
-import type { PersistedUsageEntry } from "../src/usage/log";
+} from "../../src/usage/codex-activity";
+import type { PersistedUsageEntry } from "../../src/usage/log";
 
 const FIXED_NOW = Date.UTC(2026, 5, 28, 12, 0, 0);
 
@@ -30,6 +30,8 @@ function entry(overrides: Partial<PersistedUsageEntry> & { ts: number }): Persis
     ...(rest.resolvedModel !== undefined ? { resolvedModel: rest.resolvedModel } : {}),
     ...(rest.requestedEffort !== undefined ? { requestedEffort: rest.requestedEffort } : {}),
     ...(rest.effectiveEffort !== undefined ? { effectiveEffort: rest.effectiveEffort } : {}),
+    ...(rest.tierOutcome !== undefined ? { tierOutcome: rest.tierOutcome } : {}),
+    ...(rest.attempts !== undefined ? { attempts: rest.attempts } : {}),
     ...(rest.usage ? { usage: rest.usage } : {}),
   };
 }
@@ -135,10 +137,61 @@ describe("summarizeUsage latency", () => {
     expect(sum.latency.activeTurns).toBe(0);
     expect(sum.latency.completedTurns).toBe(0);
   });
+
+  test("reports token-weighted throughput for each model", () => {
+    const entries = [
+      entry({ ts: FIXED_NOW, provider: "alpha", model: "fast", durationMs: 1000, firstOutputMs: 200, usage: { inputTokens: 1, outputTokens: 100 } }),
+      entry({ ts: FIXED_NOW + 2000, provider: "alpha", model: "fast", durationMs: 3000, firstOutputMs: 1000, usage: { inputTokens: 1, outputTokens: 100 } }),
+      entry({ ts: FIXED_NOW + 6000, provider: "beta", model: "slow", durationMs: 4000, firstOutputMs: 2000, usage: { inputTokens: 1, outputTokens: 20 } }),
+      entry({ ts: FIXED_NOW + 11_000, provider: "beta", model: "slow", status: 500, durationMs: 10, firstOutputMs: 1, usage: { inputTokens: 1, outputTokens: 999 } }),
+    ];
+
+    const models = summarizeUsage(entries, "all", FIXED_NOW + 20_000).models;
+    expect(models.find(row => row.model === "fast")).toMatchObject({
+      modelCallMs: 4000,
+      averageTtftMs: 600,
+      endToEndTokensPerSecond: 50,
+      decodeTokensPerSecond: 200 / 2.8,
+    });
+    expect(models.find(row => row.model === "slow")).toMatchObject({
+      modelCallMs: 4010,
+      averageTtftMs: 2000,
+      endToEndTokensPerSecond: 5,
+      decodeTokensPerSecond: 10,
+    });
+  });
+
+  test("attributes combo throughput to physical attempts without counting the parent", () => {
+    const sum = summarizeUsage([entry({
+      ts: FIXED_NOW,
+      provider: "combo",
+      model: "fallback",
+      durationMs: 9000,
+      firstOutputMs: 1000,
+      usage: { inputTokens: 999, outputTokens: 999 },
+      attempts: [
+        { ordinal: 1, provider: "alpha", model: "failed", adapter: "openai-chat", status: 500, durationMs: 1000, firstOutputMs: 100, sendCount: 1, recoveryKinds: [], usageStatus: "reported", usage: { inputTokens: 1, outputTokens: 100 } },
+        { ordinal: 2, provider: "beta", model: "winner", adapter: "openai-chat", status: 200, durationMs: 2000, firstOutputMs: 500, sendCount: 1, recoveryKinds: [], usageStatus: "reported", usage: { inputTokens: 2, outputTokens: 60 } },
+      ],
+    })], "all", FIXED_NOW + 20_000);
+
+    expect(sum.models).toHaveLength(2);
+    expect(sum.models.find(row => row.model === "failed")).toMatchObject({
+      modelCallMs: 1000,
+      endToEndTokensPerSecond: null,
+      decodeTokensPerSecond: null,
+    });
+    expect(sum.models.find(row => row.model === "winner")).toMatchObject({
+      modelCallMs: 2000,
+      endToEndTokensPerSecond: 30,
+      decodeTokensPerSecond: 40,
+    });
+    expect(sum.models.find(row => row.model === "fallback")).toBeUndefined();
+  });
 });
 
 describe("summarizeUsage effortGroups", () => {
-  test("groups by (resolvedModel ?? model, requestedEffort, effectiveEffort) with not-recorded defaults", () => {
+  test("groups by provider, model, speed, and effort with not-recorded defaults", () => {
     const entries = [
       entry({ ts: FIXED_NOW, model: "gpt-5.5", requestedEffort: "high", effectiveEffort: "high", durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } }),
       entry({ ts: FIXED_NOW + 1, model: "gpt-5.5", requestedEffort: "high", effectiveEffort: "high", durationMs: 100, usage: { inputTokens: 10, outputTokens: 5 } }),
@@ -148,6 +201,8 @@ describe("summarizeUsage effortGroups", () => {
     const sum = summarizeUsage(entries, "all", FIXED_NOW + 1000);
     expect(sum.effortGroups).toHaveLength(2);
     const [top, second] = sum.effortGroups;
+    expect(top!.provider).toBe("openai");
+    expect(top!.speedMode).toBe("unknown");
     expect(top!.model).toBe("gpt-5.5");
     expect(top!.requestedEffort).toBe("high");
     expect(top!.effectiveEffort).toBe("high");
@@ -169,6 +224,97 @@ describe("summarizeUsage effortGroups", () => {
     ];
     const sum = summarizeUsage(entries, "all", FIXED_NOW + 1000);
     expect(sum.effortGroups).toHaveLength(2);
+  });
+
+  test("separates Fast and standard TTFT for the same Enterprise model and effort", () => {
+    const shared = { provider: "openai", model: "gpt-5.6-sol", requestedEffort: "high", effectiveEffort: "high" };
+    const entries = [
+      entry({ ...shared, ts: FIXED_NOW, durationMs: 1000, firstOutputMs: 200, usage: { inputTokens: 10, outputTokens: 20 }, tierOutcome: { canonical: "priority", wireKind: "service-tier", wireValue: "priority", fastOutcome: "applied", confirmation: "confirmed", responseServiceTier: "priority" } }),
+      entry({ ...shared, ts: FIXED_NOW + 2000, durationMs: 1000, firstOutputMs: 600, usage: { inputTokens: 10, outputTokens: 20 }, tierOutcome: { wireKind: null, wireValue: null, fastOutcome: "not-requested", confirmation: "unknown", responseServiceTier: "default" } }),
+    ];
+
+    const groups = summarizeUsage(entries, "all", FIXED_NOW + 5000).effortGroups;
+    expect(groups).toHaveLength(2);
+    expect(groups.find(group => group.speedMode === "fast")?.averageTtftMs).toBe(200);
+    expect(groups.find(group => group.speedMode === "standard")?.averageTtftMs).toBe(600);
+  });
+
+  test("the same model and effort remain separate across providers", () => {
+    const entries = [
+      entry({ ts: FIXED_NOW, provider: "work", model: "gpt-5.5", requestedEffort: "high", effectiveEffort: "high" }),
+      entry({ ts: FIXED_NOW + 1, provider: "litellm", model: "gpt-5.5", requestedEffort: "high", effectiveEffort: "high" }),
+    ];
+
+    const groups = summarizeUsage(entries, "all", FIXED_NOW + 1000).effortGroups;
+    expect(groups).toHaveLength(2);
+    expect(groups.map(group => group.provider).sort()).toEqual(["litellm", "work"]);
+    expect(groups.every(group => group.requests === 1 && group.requestShare === 50)).toBe(true);
+  });
+
+  test("same-provider retries count as one request while retaining physical call time", () => {
+    const groups = summarizeUsage([entry({
+      ts: FIXED_NOW,
+      provider: "combo",
+      model: "fallback",
+      attempts: [
+        { ordinal: 1, provider: "work", model: "gpt-5.5", adapter: "openai-responses", status: 500, durationMs: 100, sendCount: 1, recoveryKinds: [], usageStatus: "unreported", requestedEffort: "high", effectiveEffort: "high" },
+        { ordinal: 2, provider: "work", model: "gpt-5.5", adapter: "openai-responses", status: 200, durationMs: 200, sendCount: 1, recoveryKinds: [], usageStatus: "reported", usage: { inputTokens: 2, outputTokens: 3 }, requestedEffort: "high", effectiveEffort: "high" },
+      ],
+    })], "all", FIXED_NOW + 1000).effortGroups;
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ provider: "work", requests: 1, requestShare: 100, modelCallMs: 300 });
+  });
+
+  test("a combo request spanning providers uses one logical request as the share denominator", () => {
+    const groups = summarizeUsage([entry({
+      ts: FIXED_NOW,
+      provider: "combo",
+      model: "fallback",
+      attempts: [
+        { ordinal: 1, provider: "work", model: "gpt-5.5", adapter: "openai-responses", status: 500, durationMs: 100, sendCount: 1, recoveryKinds: [], usageStatus: "unreported", requestedEffort: "high", effectiveEffort: "high" },
+        { ordinal: 2, provider: "litellm", model: "gpt-5.5", adapter: "openai-responses", status: 200, durationMs: 200, sendCount: 1, recoveryKinds: [], usageStatus: "reported", usage: { inputTokens: 2, outputTokens: 3 }, requestedEffort: "high", effectiveEffort: "high" },
+      ],
+    })], "all", FIXED_NOW + 1000).effortGroups;
+
+    expect(groups).toHaveLength(2);
+    expect(groups.every(group => group.requests === 1 && group.requestShare === 100)).toBe(true);
+  });
+});
+
+describe("streaming latency attribution", () => {
+  test("exact mode deduplicates effort request identity across day partitions", () => {
+    const rows = [
+      entry({ ts: FIXED_NOW - 86_400_000, requestId: "retry", durationMs: 100 }),
+      entry({ ts: FIXED_NOW, requestId: "retry", durationMs: 200 }),
+    ];
+    const summary = summarizeUsage(rows, "all", FIXED_NOW + 1000);
+    expect(summary.effortGroups[0]).toMatchObject({ requests: 1, requestShare: 100, modelCallMs: 300 });
+    expect(summary.models[0]?.modelCallMs).toBe(300);
+  });
+
+  test("clones independently retain model rates and exact effort request identities", () => {
+    const source = createUsageSummaryAccumulator();
+    source.add(entry({ ts: FIXED_NOW, requestId: "first", durationMs: 1000, usage: { inputTokens: 1, outputTokens: 100 } }));
+    const clone = source.clone();
+    clone.add(entry({ ts: FIXED_NOW + 1000, requestId: "second", durationMs: 3000, usage: { inputTokens: 1, outputTokens: 100 } }));
+    const original = source.summarize("all", FIXED_NOW + 5000);
+    const changed = clone.summarize("all", FIXED_NOW + 5000);
+    expect(original.models[0]?.endToEndTokensPerSecond).toBe(100);
+    expect(changed.models[0]?.endToEndTokensPerSecond).toBe(50);
+    expect(original.effortGroups[0]?.requests).toBe(1);
+    expect(changed.effortGroups[0]?.requests).toBe(2);
+  });
+
+  test("compact accumulation retains no per-request effort identities", () => {
+    const accumulator = createUsageSummaryAccumulator({ mode: "row-unique" });
+    accumulator.add(entry({ ts: FIXED_NOW, durationMs: 1000 }));
+    const initialBytes = accumulator.estimatedBytes;
+    for (let index = 1; index <= 100; index++) {
+      accumulator.add(entry({ ts: FIXED_NOW + index, durationMs: 1000 }));
+    }
+    expect(accumulator.estimatedBytes).toBe(initialBytes);
+    expect(accumulator.summarize("all", FIXED_NOW + 5000).effortGroups[0]?.requests).toBe(101);
   });
 });
 

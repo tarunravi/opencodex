@@ -176,13 +176,14 @@ function safeCockpitImportResult(value: unknown): CockpitImportResult | null {
 export default function ProviderAuthPanel({
   item, apiBase, oauth, accounts = EMPTY_OAUTH_ACCOUNTS, keys = EMPTY_API_KEYS, accountLoadState = "ready",
   switchingAccountId = null, busy = false, loginHint, authHandlers, onCodexActiveNeedsReauthChange,
-  codexController, onUpdateProvider,
+  codexController, onUpdateProvider, credentialDisabled = false,
 }: {
   item: WorkspaceItem;
   apiBase: string;
   oauth?: { loggedIn: boolean; email?: string; error?: string };
   accounts?: OAuthAccountRow[];
   keys?: ApiKeyRow[];
+  credentialDisabled?: boolean;
   accountLoadState?: AccountLoadState;
   switchingAccountId?: string | null;
   busy?: boolean;
@@ -629,6 +630,11 @@ export default function ProviderAuthPanel({
 
         {isKeyAuth && (
           <>
+            {credentialDisabled && (
+              <div className="pwi-auth-state pwi-auth-state--error" role="status">
+                {t("pws.keyDisabled")}
+              </div>
+            )}
             {keys.length > 0 && (
               <ul className="pwi-auth-list">
                 {keys.map(entry => (
@@ -637,11 +643,17 @@ export default function ProviderAuthPanel({
                     <button type="button" className="pwi-auth-row-main"
                       onClick={() => void authHandlers.onSwitchApiKey(item.name, entry)}
                       disabled={entry.active}>
-                      <span className={`pwi-auth-dot ${entry.active ? "pwi-auth-dot--ok" : "pwi-auth-dot--off"}`} aria-hidden="true" />
+                      <span className={`pwi-auth-dot ${entry.cooldownUntil !== undefined ? "pwi-auth-dot--warn" : entry.active ? "pwi-auth-dot--ok" : "pwi-auth-dot--off"}`} aria-hidden="true" />
                       <span className="pwi-auth-row-copy">
                         <span className="pwi-auth-row-label">{entry.label ?? entry.masked}</span>
                         {entry.label && <code className="pwi-auth-row-secondary">{entry.masked} · {t("prov.accountId")}: {entry.id}</code>}
+                        {entry.cooldownUntil !== undefined && (
+                          <span className="pwi-auth-row-secondary faint">
+                            {t("pws.keyCoolingDownUntil", { until: new Date(entry.cooldownUntil!).toLocaleString() })}
+                          </span>
+                        )}
                       </span>
+                      {entry.cooldownUntil !== undefined && <span className="badge badge-amber">{t("pws.healthLabel.rateLimited")}</span>}
                       {entry.active && <span className="badge badge-primary">{t("prov.accountActive")}</span>}
                     </button>
                     <button type="button" className="btn btn-ghost btn-sm"
