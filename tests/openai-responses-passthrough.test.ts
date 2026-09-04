@@ -3838,62 +3838,95 @@ describe("reasoning input content channel", () => {
   });
 });
 
-describe("internal chat message metadata passthrough", () => {
-  const metadata = {
-    turn_id: "01a03583-4cdd-78c2-90f5-edaac96356dd",
-    create_time: 1787604193.791705,
-    content_item_kinds: ["text"],
+
+describe("raw usage passthrough on the forward path (#41980 parity, #37138 adjacency)", () => {
+  const usageExtras = {
+    input_tokens: 7,
+    output_tokens: 4,
+    total_tokens: 11,
+    subscription: { window: { used_percent: 12 } },
+    future_counter_v2: "wire-value",
   };
-  const input = [
-    {
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: "ping" }],
-      internal_chat_message_metadata_passthrough: metadata,
+  const config = {
+    port: 0,
+    defaultProvider: "fixture",
+    providers: {
+      fixture: {
+        adapter: "openai-responses",
+        baseUrl: "https://fixture.test/v1",
+        authMode: "key" as const,
+        apiKey: "fixture-key",
+      },
     },
-    {
-      type: "message",
-      role: "assistant",
-      content: [{ type: "output_text", text: "pong" }],
-    },
-  ];
+  } as OcxConfig;
+  const requestBody = (stream: boolean) => JSON.stringify({
+    model: "fixture/model",
+    stream,
+    input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+  });
+  const call = (stream: boolean) => handleResponses(new Request("http://localhost/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: requestBody(stream),
+  }), config, { model: "", provider: "" });
 
-  function outboundInput(target: Parameters<typeof createResponsesPassthroughAdapter>[0]) {
-    const request = createResponsesPassthroughAdapter(target).buildRequest({
-      modelId: "gpt-5.6-sol",
-      context: { messages: [] },
-      stream: true,
-      options: {},
-      _rawBody: { model: "gpt-5.6-sol", input },
-    }, { headers: new Headers({ authorization: "Bearer token" }) });
-    return (JSON.parse(request.body) as { input: Record<string, unknown>[] }).input;
-  }
-
-  test("strips ChatGPT-private item metadata before Azure", () => {
-    const out = outboundInput({
-      adapter: "openai-responses",
-      baseUrl: "https://codex-azure-migration-eastus2.services.ai.azure.com/openai/v1",
-      authMode: "key",
-      apiKey: "sk-test",
-    });
-    expect(out[0]).not.toHaveProperty("internal_chat_message_metadata_passthrough");
-    expect(out[0].content).toEqual(input[0].content);
-    expect(out[1]).toEqual(input[1]);
+  test("streamed response.completed with usage extras reaches the client byte-identical", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response([
+      'event: response.completed',
+      `data: ${JSON.stringify({ type: "response.completed", response: {
+        id: "resp_x", status: "completed", output: [
+          { type: "message", status: "completed", content: [{ type: "output_text", text: "hi" }] },
+        ], usage: usageExtras,
+      } })}`,
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    try {
+      const response = await call(true);
+      const text = await response.text();
+      const completedLine = text.split("\n").find(line => line.startsWith("data:") && line.includes("response.completed"));
+      expect(completedLine).toBeDefined();
+      const payload = JSON.parse(completedLine!.slice(5).trim()) as { response: { usage: unknown } };
+      expect(payload.response.usage).toEqual(usageExtras);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 
-  test("strips the field on LiteLLM and other non-ChatGPT gateways", () => {
-    const out = outboundInput({
-      adapter: "openai-responses",
-      baseUrl: "http://127.0.0.1:41113/v1",
-      authMode: "key",
-      apiKey: "sk-test",
-      allowPrivateNetwork: true,
-    });
-    expect(out[0]).not.toHaveProperty("internal_chat_message_metadata_passthrough");
+  test("non-streaming forward JSON keeps usage extras", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      id: "resp_x",
+      status: "completed",
+      output: [{ type: "message", status: "completed", content: [{ type: "output_text", text: "hi" }] }],
+      usage: usageExtras,
+    }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+    try {
+      const response = await call(false);
+      const json = await response.json() as { usage: unknown };
+      expect(json.usage).toEqual(usageExtras);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 
-  test("keeps the field on the canonical ChatGPT backend", () => {
-    const out = outboundInput(provider);
-    expect(out[0].internal_chat_message_metadata_passthrough).toEqual(metadata);
+  test("response.completed without usage is accepted (Codex tolerates usage: null, #37138)", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response([
+      'data: {"type":"response.completed","response":{"id":"resp_x","status":"completed","output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":"hi"}]}]}}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    try {
+      const response = await call(true);
+      const text = await response.text();
+      expect(text).toContain("response.completed");
+      expect(text).not.toContain('"usage"');
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
   });
 });

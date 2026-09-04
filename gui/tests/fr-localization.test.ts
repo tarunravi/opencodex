@@ -15,6 +15,7 @@ const PLACEHOLDER_RE = /\{([a-zA-Z0-9_]+)\}/g;
 
 const INTENTIONAL_ENGLISH = new Set<TKey>([
   // Units, symbols, protocol values, machine labels, and product names.
+  "integrations.cursor.noControl",
   "uptime.hour",
   "uptime.second",
   // "auto" is the same word in French, and it labels a machine-derived alias source rather
@@ -172,6 +173,10 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   // "Clients" is the same word in French, and it is the plural noun the
   // Integrations page uses to head its client catalog.
   "integrations.catalog.title",
+  // Cost cells are a fixed `$0.1401` / `≥$0.1401` in every locale (the column header is the
+  // untranslated `~$`); the templates are pure placeholders on purpose.
+  "logs.cost.approximate",
+  "logs.cost.lowerBound",
 ]);
 
 function placeholders(value: string): string[] {

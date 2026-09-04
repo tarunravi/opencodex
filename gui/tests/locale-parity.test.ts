@@ -30,6 +30,8 @@ async function readDict(locale: string): Promise<Map<string, string>> {
 // gap. Anything *not* on this list that ships an English-identical value is treated as a stale
 // placeholder and fails the build.
 const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
+  // A bare em dash: the "no Reasoning control" marker is a symbol, not copy.
+  "integrations.cursor.noControl",
   // API protocol/endpoint names
   "api.chatCompletionsEndpoint",
   "api.messagesEndpoint",
@@ -162,6 +164,10 @@ const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   "integrations.cursor.title",
   "integrations.cursor.privateInference",
   "integrations.cursor.baseUrl",
+  // Cost cells are a fixed `$0.1401` / `≥$0.1401` in every locale (the column header is the
+  // untranslated `~$`); the templates are pure placeholders on purpose.
+  "logs.cost.approximate",
+  "logs.cost.lowerBound",
 ]);
 
 test("zh-TW ships no untranslated English placeholders beyond the intentional allowlist", async () => {
@@ -205,6 +211,8 @@ test("every locale key set matches the English source", async () => {
 const CURSOR_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   "integrations.tab.cursor",
   "integrations.cursor.title",
+  // Em-dash marker, identical in every locale.
+  "integrations.cursor.noControl",
   "integrations.cursor.privateInference",
   "integrations.cursor.baseUrl",
   // "API Key" is the literal field name in Cursor's gateway form.

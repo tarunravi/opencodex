@@ -227,6 +227,9 @@ import { detectInstall } from "../update/index";
 import { readyProtocolMetadata } from "../remote/protocol";
 import { modelCapabilityFields } from "./models-capabilities";
 import { recordCursorSeen } from "../integrations/cursor-seen";
+import { detectCursorInstalls } from "../integrations/cursor-detect";
+import { loadCursorEffortTable } from "../integrations/cursor-effort-table";
+import { expandCursorEffortRow, knownEffortRowIds } from "./effort-row";
 
 export const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -809,13 +812,21 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     if (path === "/v1/responses/compact") return req.method === "POST";
     if (path === "/v1/alpha/search") return req.method === "POST";
     if (path === "/v1/models") return req.method === "GET";
-    // Standalone realtime voice sessions (codex-rs thread/realtime/start, WebSocket
-    // transport) — a directly-spawned `codex app-server` needs these for desktop
-    // voice the same way it needs /v1/responses. WebSocket upgrades only; plain
-    // HTTP on these paths stays rejected.
-    if (path === "/v1/realtime" || path === "/v1/live") {
-      return req.headers.get("upgrade")?.toLowerCase() === "websocket";
-    }
+    // Realtime voice — a directly-spawned `codex app-server` needs these for desktop voice
+    // the same way it needs /v1/responses. Two shapes, same trust model as /v1/responses:
+    //  - standalone sessions (codex-rs thread/realtime/start, WebSocket transport):
+    //    WebSocket upgrades on the bare /v1/realtime and /v1/live paths only;
+    //  - WebRTC calls (desktop v3 voice): POST call-create on /v1/live or
+    //    /v1/realtime/calls, then the sideband join as a WebSocket upgrade on the keyed
+    //    /v1/live/{callId}, /v1/realtime/calls/{callId}, or /v1/realtime?call_id= form
+    //    (the join reaches this listener through the injected
+    //    experimental_realtime_ws_base_url; openai/codex #35830).
+    // Plain HTTP on the upgrade paths stays rejected.
+    const isWebSocketUpgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
+    if (path === "/v1/realtime") return isWebSocketUpgrade;
+    if (path === "/v1/live") return isWebSocketUpgrade || req.method === "POST";
+    if (path === "/v1/realtime/calls") return req.method === "POST";
+    if (/^\/v1\/(?:live|realtime\/calls)\/[^/]+\/?$/.test(path)) return isWebSocketUpgrade;
     return false;
   }
 
@@ -1354,7 +1365,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           }
           throw error;
         }
-        const { accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, buildCatalogEntries, configuredNativeAliasSlugs, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeContextLimits, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiContextTier, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const { accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, buildCatalogEntries, configuredNativeAliasSlugs, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeContextLimits, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiMaxOutputTokens, nativeOpenAiContextTier, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
         const { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } = await import("../codex/catalog/native-models");
         const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
         const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
@@ -1533,6 +1544,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
               // GPT-5.6) so the client can pick per request; without a tier, the effective
               // window is the only value.
               ...nativeContextInput(metadataId),
+              maxOutputTokens: nativeOpenAiMaxOutputTokens(metadataId),
               inputModalities: nativeInputModalities(metadataId),
             }),
           });
@@ -1565,44 +1577,69 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             return disabledModels.has(id) ? [] : [{ id, metadataId }];
           })
         );
+        // The projection is opt-in. Keep the default path free of Cursor install detection,
+        // and resolve the bundle table once for the whole list rather than once per row.
+        const effortRowsEnabled = config.cursorEffortRows === true;
+        const effortRowKnownIds = effortRowsEnabled ? knownEffortRowIds(config) : undefined;
+        const privateInference = effortRowsEnabled
+          ? detectCursorInstalls().find(install => install.build === "private-inference")
+          : undefined;
+        const cursorEffortTable = effortRowsEnabled
+          ? (deps.managementApi?.loadCursorEffortTable ?? loadCursorEffortTable)(privateInference)
+          : null;
+        const expandedNativeModelRow = (id: string, metadataId = id) => {
+          const reasoningEfforts = nativeReasoningEfforts(metadataId);
+          return expandCursorEffortRow(nativeModelRow(id, metadataId), reasoningEfforts, config, {
+            knownIds: effortRowKnownIds,
+            table: cursorEffortTable,
+            supportsReasoning: reasoningEfforts.length > 0,
+          });
+        };
+        const routedRows = await Promise.all(uniqueCatalogModelsForRawPublicList(goOrdered).map(async m => {
+          // Same rule as the anthropic branch: with the global fast switch on, a client
+          // that has no Fast toggle is offered the fast identity directly. An operator
+          // alias is an explicit decision and still wins.
+          const fastModelId = cursorFastIdForListing?.(m.id, m.provider);
+          const publicId = m.alias ?? `${m.provider}/${fastModelId ?? m.id}`;
+          const isCombo = m.provider === "combo" && exactComboSlugs.has(publicId);
+          const provider = config.providers[m.provider];
+          const effective = provider
+            ? (await import("../providers/default-aliases")).effectiveModelAliases(
+                config,
+                provider,
+                knownModelIdsForProvider(m.provider, provider, config),
+              ).get(m.id)
+            : undefined;
+          const row = {
+            id: publicId,
+            object: "model",
+            created: 0,
+            // This endpoint is an OpenAI-compatible inbound contract. Some clients use
+            // owned_by as an adapter selector, so a virtual combo must name that wire
+            // adapter rather than the internal catalog authority marker.
+            owned_by: isCombo ? "openai" : (m.owned_by ?? m.provider),
+            ...(isCombo ? { is_combo: true } : {}),
+            ...(effective ? { alias_of: `${provider?.alias || m.provider}/${effective.alias}` } : {}),
+            ...grokEffortFields(m.reasoningEfforts ?? [], m.defaultReasoningEffort),
+            ...modelCapabilityFields({
+              reasoningEfforts: m.reasoningEfforts,
+              // contextWindow is already the post-cap effective value; contextCap is the raw
+              // operator knob and over-reports models whose real window sits below it.
+              contextWindow: m.contextWindow,
+              maxOutputTokens: m.maxOutputTokens,
+              inputModalities: m.inputModalities,
+            }),
+          };
+          return expandCursorEffortRow(row, m.reasoningEfforts, config, {
+            knownIds: effortRowKnownIds,
+            table: cursorEffortTable,
+            supportsReasoning: (m.reasoningEfforts ?? []).length > 0,
+          });
+        }));
         const data = [
-          ...visibleNatives.map(id => nativeModelRow(id)),
-          ...visibleAccountNatives.map(({ id, metadataId }) => nativeModelRow(id, metadataId)),
-          ...await Promise.all(uniqueCatalogModelsForRawPublicList(goOrdered).map(async m => {
-            // Same rule as the anthropic branch: with the global fast switch on, a client
-            // that has no Fast toggle is offered the fast identity directly. An operator
-            // alias is an explicit decision and still wins.
-            const fastModelId = cursorFastIdForListing?.(m.id, m.provider);
-            const publicId = m.alias ?? `${m.provider}/${fastModelId ?? m.id}`;
-            const isCombo = m.provider === "combo" && exactComboSlugs.has(publicId);
-            const provider = config.providers[m.provider];
-            const effective = provider
-              ? (await import("../providers/default-aliases")).effectiveModelAliases(
-                  config,
-                  provider,
-                  knownModelIdsForProvider(m.provider, provider, config),
-                ).get(m.id)
-              : undefined;
-            return {
-              id: publicId,
-              object: "model",
-              created: 0,
-              // This endpoint is an OpenAI-compatible inbound contract. Some clients use
-              // owned_by as an adapter selector, so a virtual combo must name that wire
-              // adapter rather than the internal catalog authority marker.
-              owned_by: isCombo ? "openai" : (m.owned_by ?? m.provider),
-              ...(isCombo ? { is_combo: true } : {}),
-              ...(effective ? { alias_of: `${provider?.alias || m.provider}/${effective.alias}` } : {}),
-              ...grokEffortFields(m.reasoningEfforts ?? [], m.defaultReasoningEffort),
-              ...modelCapabilityFields({
-                reasoningEfforts: m.reasoningEfforts,
-                // contextWindow is already the post-cap effective value; contextCap is the raw
-                // operator knob and over-reports models whose real window sits below it.
-                contextWindow: m.contextWindow,
-                inputModalities: m.inputModalities,
-              }),
-            };
-          })),
+          ...visibleNatives.flatMap(id => expandedNativeModelRow(id)),
+          ...visibleAccountNatives.flatMap(({ id, metadataId }) => expandedNativeModelRow(id, metadataId)),
+          ...routedRows.flat(),
         ];
         return jsonResponse({ object: "list", data }, 200, req, policy);
       }
