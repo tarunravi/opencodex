@@ -265,13 +265,36 @@ export function nativeContextLimits(
 }
 
 /** Apply the user levers to an authoritative value. */
+/**
+ * The ceiling a native slug may be RAISED to by a user lever, or undefined when it has no
+ * separate long window.
+ *
+ * This is what makes the dashboard's 1M opt-in work: without an opt-in ceiling a lever can only
+ * ever narrow the advertised window, so the toggle would appear to do nothing. The GPT-5.6 family
+ * shares one measured ceiling; a self-described native carries its own in
+ * `NATIVE_OPENAI_CONTEXT_OVERRIDES.maxContextWindow` (`gpt-6-astra` ships 872,000 against a
+ * 272,000 default), and reading it per-slug is what keeps the toggle honest for a model whose
+ * ceiling is not the family's.
+ */
+function longWindowOptInCeiling(slug: string): number | undefined {
+  if (NATIVE_GPT56_FAMILY.has(slug)) return NATIVE_GPT56_MAX_INPUT_TOKENS;
+  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[slug];
+  const defaultWindow = positiveInt(override?.contextWindow);
+  const longWindow = positiveInt(override?.maxContextWindow);
+  if (defaultWindow === undefined || longWindow === undefined || longWindow <= defaultWindow) {
+    return undefined;
+  }
+  return longWindow;
+}
+
 function narrowToLimits(raw: number | undefined, slug: string, input: NativeContextLimitsInput): number | undefined {
   if (raw === undefined) return undefined;
   const limits = asLimits(input);
   const overlay = positiveInt(limits.modelWindows?.[slug]) ?? positiveInt(limits.providerWindow);
   const cap = positiveInt(limits.cap);
-  if (NATIVE_GPT56_FAMILY.has(slug)) {
-    const ceiling = NATIVE_GPT56_MAX_INPUT_TOKENS;
+  const optInCeiling = longWindowOptInCeiling(slug);
+  if (optInCeiling !== undefined) {
+    const ceiling = optInCeiling;
     const chosen = overlay ?? cap ?? raw;
     const window = Math.min(chosen, ceiling);
     return overlay !== undefined && cap !== undefined ? Math.min(window, cap) : window;
