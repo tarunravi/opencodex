@@ -61,6 +61,7 @@ import {
   shouldIncludeNativeOpenAi,
 } from "./catalog/metadata";
 import {
+  accountBoundNativeDisplayLabels,
   trustedAccountBoundNativeCatalogSlug,
   visibleCodexAccountSelectors,
 } from "./catalog/account-models";
@@ -273,6 +274,7 @@ function prepareCatalog(
   const accountSelectors = shouldIncludeAccountBoundNativeOpenAi(config)
     ? visibleCodexAccountSelectors(config)
     : [];
+  const accountDisplayLabels = accountBoundNativeDisplayLabels(config);
   const accountTargets = new Map(codexAccountNamespaceEntries(config));
   const accountNativeSlugsBySelector = accountSelectors.length > 0
     ? new Map([...accountBoundNativeOpenAiSlugsBySelector(config, observedAccountNativeEntries)].map(([selector, slugs]) => {
@@ -331,6 +333,7 @@ function prepareCatalog(
       openaiContextCap,
       accountNativeSlugs,
       accountNativeSlugsBySelector,
+      accountDisplayLabels,
     }).filter(entry => trustedAccountBoundNativeCatalogSlug(entry) !== undefined);
   const gatheredProviderNames = new Set(enabledProviders.map(([name]) => name));
   const selectedModelsByProvider = new Map<string, ReadonlySet<string>>(

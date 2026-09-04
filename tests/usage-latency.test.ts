@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { summarizeUsage, unionDurationMs } from "../src/usage/summary";
+import { createUsageSummaryAccumulator, summarizeUsage, unionDurationMs } from "../src/usage/summary";
 import {
   codexTaskActivity,
   parseRolloutTaskEventLine,
@@ -279,6 +279,28 @@ describe("summarizeUsage effortGroups", () => {
 
     expect(groups).toHaveLength(2);
     expect(groups.every(group => group.requests === 1 && group.requestShare === 100)).toBe(true);
+  });
+
+  test("exact mode deduplicates one request across partitions and clones", () => {
+    const requestId = "same-logical-request";
+    const source = createUsageSummaryAccumulator();
+    source.add(entry({
+      ts: FIXED_NOW - 86_400_000,
+      requestId,
+      requestedEffort: "high",
+      effectiveEffort: "high",
+    }));
+    const cloned = source.clone();
+    cloned.add(entry({
+      ts: FIXED_NOW,
+      requestId,
+      requestedEffort: "high",
+      effectiveEffort: "high",
+    }));
+
+    const summary = cloned.summarize("all", FIXED_NOW + 1_000);
+    expect(summary.models[0]?.requests).toBe(1);
+    expect(summary.effortGroups[0]).toMatchObject({ requests: 1, modelCallMs: 20 });
   });
 });
 

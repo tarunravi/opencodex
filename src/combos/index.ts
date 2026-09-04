@@ -31,12 +31,18 @@ export {
 } from "./resolve";
 export {
   clearComboTargetCooldowns,
+  comboCooldownRetryAfterSeconds,
+  COMBO_REQUEST_RATE_COOLDOWN_MS,
   coolComboTarget,
   isComboTargetInCooldown,
+  isTransientRequestRateLimit,
   parseRetryAfterMs,
   reconcileComboTargetCooldowns,
+  remainingComboCooldownMs,
   comboFailureDecision,
+  comboFailureCooldownScope,
   type ComboFailureDecision,
+  type ComboFailureCooldownScope,
 } from "./failover";
 export {
   comboIdFromRawBody,

@@ -72,7 +72,7 @@ import {
   replaceCodexModelsCache,
 } from "../internal/catalog-writer";
 import { codexRuntimeStatePath } from "../runtime";
-import { accountBoundNativeDisplayName, CODEX_ACCOUNT_BOUND_CATALOG_KIND, trustedAccountBoundNativeCatalogSlug, visibleCodexAccountSelectors } from "./account-models";
+import { accountBoundNativeDisplayLabels, accountBoundNativeDisplayName, CODEX_ACCOUNT_BOUND_CATALOG_KIND, trustedAccountBoundNativeCatalogSlug, visibleCodexAccountSelectors } from "./account-models";
 import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "./native-models";
 
 export const MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5;
@@ -422,6 +422,8 @@ export interface ObservedCatalogEntryBuildInput {
   readonly accountNativeSlugs?: readonly string[];
   /** Per-selector account ids; unknown observations must not be copied to unrelated accounts. */
   readonly accountNativeSlugsBySelector?: ReadonlyMap<string, readonly string[]>;
+  /** Display-only account aliases keyed by the public routing selector. */
+  readonly accountDisplayLabels?: ReadonlyMap<string, string>;
 }
 
 /** Build entries with the process-observed Codex feature state. */
@@ -439,6 +441,7 @@ export function buildCatalogEntries(
   contextCap?: NativeContextLimitsInput,
   accountNativeSlugs?: readonly string[],
   accountNativeSlugsBySelector?: ReadonlyMap<string, readonly string[]>,
+  accountDisplayLabels?: ReadonlyMap<string, string>,
   keepNativeChatGptOnV1 = false,
 ): RawEntry[] {
   return buildCatalogEntriesFromObservedState({
@@ -457,6 +460,7 @@ export function buildCatalogEntries(
     openaiContextCap: contextCap,
     accountNativeSlugs,
     accountNativeSlugsBySelector,
+    accountDisplayLabels,
   });
 }
 
@@ -478,6 +482,7 @@ export function buildCatalogEntriesFromObservedState({
   openaiContextCap,
   accountNativeSlugs,
   accountNativeSlugsBySelector,
+  accountDisplayLabels,
 }: ObservedCatalogEntryBuildInput): RawEntry[] {
   // Codex's models-manager sorts by `priority` ASC and advertises the first 5 picker-visible
   // models to spawn_agent (sort_by_key(priority) + MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT=5). Catalog
@@ -584,7 +589,11 @@ export function buildCatalogEntriesFromObservedState({
       const e = JSON.parse(JSON.stringify(native)) as RawEntry;
       const catalogSlug = `${selector}/${nativeSlug}`;
       e.slug = catalogSlug;
-      e.display_name = accountBoundNativeDisplayName(selector, native);
+      e.display_name = accountBoundNativeDisplayName(
+        selector,
+        native,
+        accountDisplayLabels?.get(selector),
+      );
       // Codex ignores this OpenCodex extension; preserve the native comp_hash unchanged.
       e.opencodex_catalog_kind = CODEX_ACCOUNT_BOUND_CATALOG_KIND;
       const exactRank = rank.get(catalogSlug);
@@ -1604,6 +1613,7 @@ function writeRetainedCatalogSync({
   const accountSelectors = includeAccountBoundNativeOpenAi
     ? visibleCodexAccountSelectors(config)
     : [];
+  const accountDisplayLabels = accountBoundNativeDisplayLabels(config);
   const observedAccountNativeEntries = [
     ...(read.modelsCache?.models ?? []),
     ...(onDiskCatalog?.models ?? []).filter(entry =>
@@ -1691,6 +1701,7 @@ function writeRetainedCatalogSync({
       openaiContextCap,
       accountNativeSlugs,
       accountNativeSlugsBySelector,
+      accountDisplayLabels,
     }).filter(entry => trustedAccountBoundNativeCatalogSlug(entry) !== undefined)
     : [];
   catalog.models = mergeCatalogEntriesFromObservedState({

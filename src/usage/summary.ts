@@ -15,6 +15,8 @@ export const USAGE_RANGES = ["today", "7d", "30d", "all"] as const;
 export type UsageRange = typeof USAGE_RANGES[number];
 export const USAGE_SURFACES = ["all", "codex", "claude", "grok"] as const;
 export type UsageSurface = typeof USAGE_SURFACES[number];
+/** Maximum number of calendar buckets returned by the all-history chart. */
+export const MAX_USAGE_DAY_BUCKETS = 366;
 
 export interface UsageSummaryTotals {
   requests: number;
@@ -197,7 +199,7 @@ export interface UsageSummary {
 }
 
 /**
- * Echo of an applied provider/model projection.
+ * Echo of an applied API-key/provider/model projection.
  *
  * Present only on a filtered response so a consumer can distinguish "no rows
  * matched" from "no traffic in this window", and can tell that the totals it
@@ -286,16 +288,6 @@ export function computeEntryCost(entry: PersistedUsageEntry): EntryCostInfo {
 const DAY_MS = 86_400_000;
 export const MAX_USAGE_MODEL_BREAKDOWN_ROWS = 256;
 
-function retainedBreakdownRows<T>(
-  rows: T[],
-  aggregateOverflow: (overflow: T[]) => T,
-): T[] {
-  if (rows.length <= MAX_USAGE_MODEL_BREAKDOWN_ROWS) return rows;
-  const keep = rows.slice(0, MAX_USAGE_MODEL_BREAKDOWN_ROWS - 1);
-  keep.push(aggregateOverflow(rows.slice(MAX_USAGE_MODEL_BREAKDOWN_ROWS - 1)));
-  return keep;
-}
-
 export function parseRange(input: string | null | undefined): UsageRange {
   // `1d` normalises here rather than becoming a second union member: a second
   // member would need its own cache slot, its own grid arm and its own test
@@ -337,17 +329,16 @@ export function rangeWindow(range: UsageRange, now: number): { since: number | n
 
 function localDateKey(ts: number): string {
   const d = new Date(ts);
-  const y = d.getFullYear();
+  const y = String(d.getFullYear()).padStart(4, "0");
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
 
-function dayCountForAllRange(entries: PersistedUsageEntry[], now: number): number {
-  if (entries.length === 0) return 1;
-  const oldest = entries.reduce((min, e) => Math.min(min, e.timestamp), entries[0].timestamp);
+function dayCountForAllRange(oldest: number | null, now: number): number {
+  if (oldest === null) return 1;
   const days = Math.ceil((now - oldest) / DAY_MS) + 1;
-  return Math.max(1, days);
+  return Math.min(MAX_USAGE_DAY_BUCKETS, Math.max(1, days));
 }
 
 function blankTotals(): UsageSummaryTotals {
@@ -383,6 +374,7 @@ interface UsageAttribution {
   provider: string;
   model: string;
   resolvedModel?: string;
+  accountLogLabel?: string;
   usageStatus: UsageStatus;
   usage?: PersistedUsageEntry["usage"];
   totalTokens?: number;
@@ -402,7 +394,6 @@ function usageSpeedMode(outcome: PersistedUsageEntry["tierOutcome"]): UsageEffor
   if (outcome?.fastOutcome === "not-requested") return "standard";
   return "unknown";
 }
-
 
 /**
  * Usage row identity for model breakdowns.
@@ -430,7 +421,7 @@ function usageModelIdentity(
 }
 
 function usageModelKey(providerKey: string, model: string): string {
-  return `${providerKey}/${model}`;
+  return `${providerKey}\0${model}`;
 }
 
 function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
@@ -439,6 +430,7 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
       requestId: entry.requestId,
       provider: entry.provider,
       ...usageModelIdentity(entry.provider, entry.model, entry.resolvedModel),
+      ...(entry.accountLogLabel ? { accountLogLabel: entry.accountLogLabel } : {}),
       usageStatus: entry.usageStatus,
       status: entry.status,
       durationMs: entry.durationMs,
@@ -455,6 +447,7 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
     requestId: entry.requestId,
     provider: attempt.provider,
     ...usageModelIdentity(attempt.provider, attempt.model),
+    ...(attempt.accountLogLabel ? { accountLogLabel: attempt.accountLogLabel } : {}),
     usageStatus: attempt.usageStatus,
     status: attempt.status,
     durationMs: attempt.durationMs,
@@ -466,6 +459,127 @@ function usageAttributions(entry: PersistedUsageEntry): UsageAttribution[] {
     ...(attempt.usage ? { usage: attempt.usage } : {}),
     ...(attempt.totalTokens !== undefined ? { totalTokens: attempt.totalTokens } : {}),
   }));
+}
+
+/** Total covered milliseconds of a set of [start, end] intervals, overlaps merged. */
+export function unionDurationMs(intervals: ReadonlyArray<readonly [number, number]>): number {
+  if (!intervals.length) return 0;
+  const sorted = intervals.filter(([start, end]) => end > start).sort((a, b) => a[0] - b[0]);
+  if (!sorted.length) return 0;
+  let [start, end] = sorted[0]!;
+  let total = 0;
+  for (const [nextStart, nextEnd] of sorted.slice(1)) {
+    if (nextStart <= end) end = Math.max(end, nextEnd);
+    else { total += end - start; [start, end] = [nextStart, nextEnd]; }
+  }
+  return total + end - start;
+}
+
+function addUnionInterval(intervals: Array<[number, number]>, start: number, end: number): boolean {
+  if (end <= start) return false;
+  const last = intervals.at(-1);
+  if (!last) {
+    intervals.push([start, end]);
+    return true;
+  }
+  // Ledger suffixes are chronological in the ordinary case. Keep that path O(1)
+  // instead of rescanning every retained interval from the beginning.
+  if (start >= last[0]) {
+    if (start > last[1]) {
+      intervals.push([start, end]);
+      return true;
+    }
+    if (end > last[1]) last[1] = end;
+    return false;
+  }
+
+  const previousLength = intervals.length;
+  let low = 0;
+  let high = intervals.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (intervals[middle]![1] < start) low = middle + 1;
+    else high = middle;
+  }
+  let index = low;
+  let mergedStart = start;
+  let mergedEnd = end;
+  const first = index;
+  while (index < intervals.length && intervals[index]![0] <= mergedEnd) {
+    mergedStart = Math.min(mergedStart, intervals[index]![0]);
+    mergedEnd = Math.max(mergedEnd, intervals[index]![1]);
+    index += 1;
+  }
+  intervals.splice(first, index - first, [mergedStart, mergedEnd]);
+  return intervals.length > previousLength;
+}
+
+/**
+ * The gate for every latency rate: only a successful, fully-completed,
+ * metered row with real output can contribute to TTFT or tokens/sec.
+ */
+type UsageRateSample = Pick<
+  UsageAttribution,
+  "status" | "durationMs" | "firstOutputMs" | "streamAborted" | "terminalStatus" | "usageStatus" | "usage"
+>;
+
+function isCompletedForRates(entry: UsageRateSample): boolean {
+  return entry.status >= 200 && entry.status < 300
+    && entry.streamAborted !== true
+    && (!entry.terminalStatus || entry.terminalStatus === "completed")
+    && (entry.usageStatus === "reported" || entry.usageStatus === "estimated")
+    && (entry.usage?.outputTokens ?? 0) > 0
+    && entry.durationMs > 0;
+}
+
+function validTtft(entry: UsageRateSample): boolean {
+  return entry.firstOutputMs != null && entry.firstOutputMs <= entry.durationMs;
+}
+
+interface RateAccumulator {
+  ttftSumMs: number;
+  ttftRows: number;
+  e2eTokens: number;
+  e2eMs: number;
+  decodeTokens: number;
+  decodeMs: number;
+}
+
+function blankRates(): RateAccumulator {
+  return { ttftSumMs: 0, ttftRows: 0, e2eTokens: 0, e2eMs: 0, decodeTokens: 0, decodeMs: 0 };
+}
+
+function mergeRates(target: RateAccumulator, source: RateAccumulator | undefined): void {
+  if (!source) return;
+  target.ttftSumMs += source.ttftSumMs;
+  target.ttftRows += source.ttftRows;
+  target.e2eTokens += source.e2eTokens;
+  target.e2eMs += source.e2eMs;
+  target.decodeTokens += source.decodeTokens;
+  target.decodeMs += source.decodeMs;
+}
+
+function accumulateRates(accumulator: RateAccumulator, entry: UsageRateSample): void {
+  if (!isCompletedForRates(entry)) return;
+  const outputTokens = entry.usage!.outputTokens;
+  accumulator.e2eTokens += outputTokens;
+  accumulator.e2eMs += entry.durationMs;
+  if (!validTtft(entry)) return;
+  accumulator.ttftSumMs += entry.firstOutputMs!;
+  accumulator.ttftRows += 1;
+  const decodeMs = entry.durationMs - entry.firstOutputMs!;
+  if (decodeMs > 0) {
+    accumulator.decodeTokens += outputTokens;
+    accumulator.decodeMs += decodeMs;
+  }
+}
+
+function finalizeRates(accumulator: RateAccumulator): Pick<UsageLatency, "averageTtftMs" | "endToEndTokensPerSecond" | "decodeTokensPerSecond"> {
+  return {
+    averageTtftMs: accumulator.ttftRows > 0 ? accumulator.ttftSumMs / accumulator.ttftRows : null,
+    endToEndTokensPerSecond: accumulator.e2eMs > 0 ? accumulator.e2eTokens / (accumulator.e2eMs / 1000) : null,
+    decodeTokensPerSecond: accumulator.decodeMs > 0 ? accumulator.decodeTokens / (accumulator.decodeMs / 1000) : null,
+  };
 }
 
 function projectedComboUsage(
@@ -525,17 +639,6 @@ function projectedComboUsage(
   };
 }
 
-function foldAttributionStatuses(statuses: readonly UsageStatus[]): UsageStatus {
-  if (statuses.length > 0 && statuses.every(status => status === "unsupported")) {
-    return "unsupported";
-  }
-  if (statuses.some(status => status === "unreported" || status === "unsupported")) {
-    return "unreported";
-  }
-  if (statuses.some(status => status === "estimated")) return "estimated";
-  return statuses.length > 0 ? "reported" : "unreported";
-}
-
 function bumpStatus(totals: UsageSummaryTotals, status: UsageStatus): void {
   totals.requests += 1;
   if (isMeasuredStatus(status)) totals.measuredRequests += 1;
@@ -584,471 +687,362 @@ function addEstimatedCost(
   totals.estimatedCostUsd += costInfo.costTotal;
 }
 
-function buildDayGrid(range: UsageRange, since: number | null, now: number, entries: PersistedUsageEntry[], costMap: Map<PersistedUsageEntry, EntryCostInfo>): UsageDay[] {
-  const window = rangeWindow(range, now);
-  const days = range === "all" ? dayCountForAllRange(entries, now) : window.days;
-  const grid = new Map<string, UsageDay>();
-  // Per-day model breakdown accumulator, keyed by day then provider/model, so the 7d bar chart can
-  // render a per-model stacked bar with a hover tooltip without a second pass over the entries.
-  interface DayModelAccumulator extends UsageDayModel {
-    cacheObserved?: boolean;
-  }
-  const dayModels = new Map<string, Map<string, DayModelAccumulator>>();
-  const dayModelRequests = new Map<string, Set<string>>();
-  const bumpDayModel = (dayKey: string, attribution: UsageAttribution): void => {
-    let models = dayModels.get(dayKey);
-    if (!models) { models = new Map(); dayModels.set(dayKey, models); }
-    const providerKey = baseProviderLabel(attribution.provider);
-    const mKey = usageModelKey(providerKey, attribution.model);
-    let m = models.get(mKey);
-    if (!m) {
-      m = {
-        model: attribution.model,
-        provider: providerKey,
-        requests: 0,
-        attemptCount: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        cacheHitRate: null,
-      };
-      models.set(mKey, m);
-    }
-    const requestKey = `${dayKey}\0${mKey}`;
-    let requests = dayModelRequests.get(requestKey);
-    if (!requests) { requests = new Set(); dayModelRequests.set(requestKey, requests); }
-    requests.add(attribution.requestId);
-    m.requests = requests.size;
-    m.attemptCount += 1;
-    if (attribution.usage) {
-      m.inputTokens = (m.inputTokens ?? 0) + attribution.usage.inputTokens;
-      m.outputTokens = (m.outputTokens ?? 0) + attribution.usage.outputTokens;
-      const { read, creation, hasCacheTelemetry } = cacheTokensFromUsage(attribution.usage);
-      if (hasCacheTelemetry) m.cacheObserved = true;
-      if (typeof read === "number") m.cacheReadInputTokens = (m.cacheReadInputTokens ?? 0) + read;
-      if (typeof creation === "number") m.cacheCreationInputTokens = (m.cacheCreationInputTokens ?? 0) + creation;
-    }
-    m.totalTokens += usageDisplayTotalTokens(attribution.usage, attribution.totalTokens) ?? 0;
+const REQUEST_REPORTED = 1 << 0;
+const REQUEST_ESTIMATED = 1 << 1;
+const REQUEST_UNREPORTED = 1 << 2;
+const REQUEST_UNSUPPORTED = 1 << 3;
+const REQUEST_PRICED = 1 << 4;
+const REQUEST_UNPRICED = 1 << 5;
+const REQUEST_STATUS_MASK = REQUEST_REPORTED | REQUEST_ESTIMATED | REQUEST_UNREPORTED | REQUEST_UNSUPPORTED;
+
+type UsagePartitionSurface = Exclude<UsageSurface, "all"> | "other";
+export type UsageAccumulatorMode = "exact" | "row-unique";
+
+interface UsageRequestCounts {
+  requests: number;
+  measuredRequests: number;
+  reportedRequests: number;
+  estimatedRequests: number;
+  pricedRequests: number;
+  unpricedRequests: number;
+}
+
+interface UsageModelOverlap {
+  models: ReadonlyArray<readonly [modelKey: string, requestFacts: number]>;
+  count: number;
+}
+
+interface UsageModelAccumulator {
+  provider: string;
+  model: string;
+  resolvedModel?: string;
+  firstSeen: number;
+  attemptCount: number;
+  dayTotalTokens: number;
+  summaryTotalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheObserved: boolean;
+  modelCallMs: number;
+  rates: RateAccumulator;
+  estimatedCostUsd?: number;
+  requestCounts: UsageRequestCounts;
+  requestFacts?: Map<number, number>;
+}
+
+interface UsageEffortAccumulator {
+  provider: string;
+  model: string;
+  speedMode: UsageEffortGroup["speedMode"];
+  requestedEffort: string;
+  effectiveEffort: string;
+  firstSeen: number;
+  requests: number;
+  requestIds?: Set<number>;
+  modelCallMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  rates: RateAccumulator;
+}
+
+interface UsageLatencyAccumulator {
+  modelCallMs: number;
+  intervals: Array<[number, number]>;
+  intervalHistory?: UsageLatencyIntervalChunk;
+  rates: RateAccumulator;
+}
+
+interface UsageLatencyIntervalChunk {
+  previous?: UsageLatencyIntervalChunk;
+  intervals: ReadonlyArray<readonly [number, number]>;
+}
+
+interface UsageAccountAccumulator {
+  accountLogLabel: string;
+  ambiguous: boolean;
+  firstSeen: number;
+  requests: number;
+  requestIds?: Set<number>;
+  attemptCount: number;
+  measuredAttempts: number;
+  reportedAttempts: number;
+  estimatedAttempts: number;
+  unmeteredAttempts: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd?: number;
+  pricedAttempts: number;
+  unpricedAttempts: number;
+}
+
+interface UsagePartition {
+  date: string;
+  dayStart: number;
+  surface: UsagePartitionSurface;
+  oldestTimestamp: number | null;
+  totals: UsageSummaryTotals;
+  models: Map<string, UsageModelAccumulator>;
+  providers?: Map<string, UsageModelAccumulator>;
+  accounts: Map<string, UsageAccountAccumulator>;
+  modelOverlaps: Map<string, UsageModelOverlap>;
+  latency: UsageLatencyAccumulator;
+  effortGroups: Map<string, UsageEffortAccumulator>;
+}
+
+interface UsageDayAccumulator {
+  totals: UsageSummaryTotals;
+  models: Map<string, UsageModelAccumulator>;
+  modelOverlaps: UsageModelOverlap[];
+}
+
+interface NormalizedUsageFilter {
+  provider: string | null;
+  model: string | null;
+  apiKeyId: string | null;
+}
+
+export interface UsageSummaryAccumulator {
+  add(entry: PersistedUsageEntry): void;
+  /** Return a mutation-independent snapshot that may continue accepting rows. */
+  clone(): UsageSummaryAccumulator;
+  summarize(
+    range: UsageRange,
+    now: number,
+    surface?: UsageSurface,
+    codexActivity?: CodexTaskActivity | null,
+  ): UsageSummary & { filter?: UsageFilterEcho };
+  readonly snapshotWindow: { start: number | null; end: number | null };
+  /** Conservative O(1) retained-state estimate; excludes scan and summarize temporaries. */
+  readonly estimatedBytes: number;
+}
+
+function requestStatusFact(status: UsageStatus): number {
+  if (status === "reported") return REQUEST_REPORTED;
+  if (status === "estimated") return REQUEST_ESTIMATED;
+  if (status === "unsupported") return REQUEST_UNSUPPORTED;
+  return REQUEST_UNREPORTED;
+}
+
+function statusFromRequestFacts(facts: number): UsageStatus {
+  const statuses = facts & REQUEST_STATUS_MASK;
+  if (statuses === REQUEST_UNSUPPORTED) return "unsupported";
+  if ((statuses & (REQUEST_UNREPORTED | REQUEST_UNSUPPORTED)) !== 0) return "unreported";
+  if ((statuses & REQUEST_ESTIMATED) !== 0) return "estimated";
+  return (statuses & REQUEST_REPORTED) !== 0 ? "reported" : "unreported";
+}
+
+function blankRequestCounts(): UsageRequestCounts {
+  return {
+    requests: 0,
+    measuredRequests: 0,
+    reportedRequests: 0,
+    estimatedRequests: 0,
+    pricedRequests: 0,
+    unpricedRequests: 0,
   };
-  const startOfToday = startOfLocalDay(now);
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(startOfToday);
-    d.setDate(d.getDate() - i);
-    const key = localDateKey(d.getTime());
-    grid.set(key, { date: key, requests: 0, measuredRequests: 0, reportedRequests: 0, totalTokens: 0, estimatedCostUsd: 0, models: [] });
-  }
-  for (const entry of entries) {
-    const key = localDateKey(entry.timestamp);
-    let day = grid.get(key);
-    if (!day) {
-      day = { date: key, requests: 0, measuredRequests: 0, reportedRequests: 0, totalTokens: 0, estimatedCostUsd: 0, models: [] };
-      grid.set(key, day);
-    }
-    day.requests += 1;
-    if (isMeasuredStatus(entry.usageStatus)) day.measuredRequests += 1;
-    if (entry.usageStatus === "reported") day.reportedRequests += 1;
-    day.totalTokens += usageDisplayTotalTokens(entry.usage, entry.totalTokens) ?? 0;
-    for (const attribution of usageAttributions(entry)) bumpDayModel(key, attribution);
-    const costInfo = costMap.get(entry);
-    if (costInfo?.isPriced) {
-      if (entry.attempts?.length && costInfo.attemptEstimates) {
-        for (let i = 0; i < entry.attempts.length; i++) {
-          const attempt = entry.attempts[i];
-          const attemptEst = costInfo.attemptEstimates[i];
-          if (attemptEst) {
-            const aProviderKey = baseProviderLabel(attempt.provider);
-            const aIdentity = usageModelIdentity(attempt.provider, attempt.model);
-            const aKey = usageModelKey(aProviderKey, aIdentity.model);
-            const m = dayModels.get(key)?.get(aKey);
-            if (m) m.estimatedCostUsd = (m.estimatedCostUsd ?? 0) + attemptEst.cost.total;
-          }
-        }
-      } else if (costInfo.estimate) {
-        const providerKey = baseProviderLabel(entry.provider);
-        const identity = usageModelIdentity(entry.provider, entry.model, entry.resolvedModel);
-        const mKey = usageModelKey(providerKey, identity.model);
-        const m = dayModels.get(key)?.get(mKey);
-        if (m) m.estimatedCostUsd = (m.estimatedCostUsd ?? 0) + costInfo.estimate.cost.total;
-      }
-      day.estimatedCostUsd += costInfo.costTotal;
-    }
-  }
-  void since;
-  const out = [...grid.values()].sort((a, b) => a.date.localeCompare(b.date));
-  for (const day of out) {
-    const models = dayModels.get(day.date);
-    if (models) {
-      for (const m of models.values()) {
-        m.cacheHitRate = calculateCacheHitRate(!!m.cacheObserved, m.inputTokens ?? 0, m.cacheReadInputTokens ?? 0);
-      }
-      const sorted = [...models.values()].sort((a, b) => b.requests - a.requests);
-      const retained = retainedBreakdownRows(sorted, overflow => {
-        const requests = new Set<string>();
-        let attemptCount = 0;
-        let totalTokens = 0;
-        let inputTokens = 0;
-        let outputTokens = 0;
-        let cacheReadInputTokens = 0;
-        let cacheCreationInputTokens = 0;
-        let cacheObserved = false;
-        let estimatedCostUsd: number | undefined;
-        for (const model of overflow) {
-          attemptCount += model.attemptCount;
-          totalTokens += model.totalTokens;
-          inputTokens += model.inputTokens ?? 0;
-          outputTokens += model.outputTokens ?? 0;
-          cacheReadInputTokens += model.cacheReadInputTokens ?? 0;
-          cacheCreationInputTokens += model.cacheCreationInputTokens ?? 0;
-          if (model.cacheObserved) cacheObserved = true;
-          if (model.estimatedCostUsd !== undefined) {
-            estimatedCostUsd = (estimatedCostUsd ?? 0) + model.estimatedCostUsd;
-          }
-          const requestKey = `${day.date}\0${usageModelKey(model.provider, model.model)}`;
-          for (const requestId of dayModelRequests.get(requestKey) ?? []) requests.add(requestId);
-        }
-        const cacheHitRate = calculateCacheHitRate(cacheObserved, inputTokens, cacheReadInputTokens);
-        return {
-          model: "other",
-          provider: "other",
-          requests: requests.size,
-          attemptCount,
-          totalTokens,
-          inputTokens,
-          outputTokens,
-          cacheReadInputTokens,
-          cacheCreationInputTokens,
-          cacheHitRate,
-          ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
-        };
-      });
-      for (const model of retained) delete model.cacheObserved;
-      day.models = retained;
-    }
-  }
-  return out;
 }
 
-function buildModels(entries: PersistedUsageEntry[], totalTokens: number, costMap: Map<PersistedUsageEntry, EntryCostInfo>): UsageModel[] {
-  interface ModelAccumulator extends UsageModel {
-    cacheObserved?: boolean;
-  }
-  const byKey = new Map<string, ModelAccumulator>();
-  const statusesByKey = new Map<string, Map<string, UsageStatus[]>>();
-  const ratesByKey = new Map<string, RateAccumulator>();
-  for (const entry of entries) {
-    for (const attribution of usageAttributions(entry)) {
-      const providerKey = baseProviderLabel(attribution.provider);
-      // resolvedModel is a routing detail, not a row identity.
-      const key = usageModelKey(providerKey, attribution.model);
-      let model = byKey.get(key);
-      if (!model) {
-        model = {
-          provider: providerKey,
-          model: attribution.model,
-          ...(attribution.resolvedModel ? { resolvedModel: attribution.resolvedModel } : {}),
-          requests: 0,
-          attemptCount: 0,
-          measuredRequests: 0,
-          reportedRequests: 0,
-          estimatedRequests: 0,
-          totalTokens: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cachedInputTokens: 0,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          pricedRequests: 0,
-          unpricedRequests: 0,
-          priceCoverageRatio: 0,
-          modelCallMs: 0,
-          averageTtftMs: null,
-          endToEndTokensPerSecond: null,
-          decodeTokensPerSecond: null,
-          shareRatio: 0,
-        };
-        byKey.set(key, model);
-        ratesByKey.set(key, blankRates());
-      }
-      model.attemptCount += 1;
-      model.modelCallMs += attribution.durationMs;
-      accumulateRates(ratesByKey.get(key)!, attribution);
-      let requests = statusesByKey.get(key);
-      if (!requests) { requests = new Map(); statusesByKey.set(key, requests); }
-      const statuses = requests.get(attribution.requestId) ?? [];
-      statuses.push(attribution.usageStatus);
-      requests.set(attribution.requestId, statuses);
-      if (attribution.usage) {
-        model.inputTokens += attribution.usage.inputTokens;
-        model.outputTokens += attribution.usage.outputTokens;
-        const { read, creation, hasCacheTelemetry } = cacheTokensFromUsage(attribution.usage);
-        if (hasCacheTelemetry) model.cacheObserved = true;
-        if (typeof read === "number") {
-          model.cachedInputTokens = (model.cachedInputTokens ?? 0) + read;
-          model.cacheReadInputTokens = (model.cacheReadInputTokens ?? 0) + read;
-        }
-        if (typeof creation === "number") {
-          model.cacheCreationInputTokens = (model.cacheCreationInputTokens ?? 0) + creation;
-        }
-        model.totalTokens += usageDisplayTotalTokens(attribution.usage, attribution.totalTokens) ?? 0;
-      }
-    }
-  }
-  for (const [key, model] of byKey) {
-    const groups = statusesByKey.get(key) ?? new Map();
-    model.requests = groups.size;
-    for (const statuses of groups.values()) {
-      const status = foldAttributionStatuses(statuses);
-      if (isMeasuredStatus(status)) model.measuredRequests += 1;
-      if (status === "reported") model.reportedRequests += 1;
-      else if (status === "estimated") model.estimatedRequests += 1;
-    }
-    Object.assign(model, finalizeRates(ratesByKey.get(key) ?? blankRates()));
-  }
-  // Accumulate per-model estimated cost & price coverage by request ID
-  const pricedRequestsByModel = new Map<string, Set<string>>();
-  const unpricedRequestsByModel = new Map<string, Set<string>>();
-  for (const entry of entries) {
-    const costInfo = costMap.get(entry);
-    if (entry.attempts?.length) {
-      const attemptEstimates = costInfo?.attemptEstimates;
-      for (let i = 0; i < entry.attempts.length; i++) {
-        const attempt = entry.attempts[i];
-        const attemptEst = attemptEstimates?.[i];
-        const aProviderKey = baseProviderLabel(attempt.provider);
-        const aIdentity = usageModelIdentity(attempt.provider, attempt.model);
-        const aKey = usageModelKey(aProviderKey, aIdentity.model);
-        if (attemptEst) {
-          const m = byKey.get(aKey);
-          if (m) {
-            m.estimatedCostUsd = (m.estimatedCostUsd ?? 0) + attemptEst.cost.total;
-          }
-          let s = pricedRequestsByModel.get(aKey);
-          if (!s) { s = new Set(); pricedRequestsByModel.set(aKey, s); }
-          s.add(entry.requestId);
-        } else {
-          let s = unpricedRequestsByModel.get(aKey);
-          if (!s) { s = new Set(); unpricedRequestsByModel.set(aKey, s); }
-          s.add(entry.requestId);
-        }
-      }
-    } else {
-      const providerKey = baseProviderLabel(entry.provider);
-      const identity = usageModelIdentity(entry.provider, entry.model, entry.resolvedModel);
-      const key = usageModelKey(providerKey, identity.model);
-      const estimate = costInfo?.estimate;
-      if (estimate) {
-        const m = byKey.get(key);
-        if (m) {
-          m.estimatedCostUsd = (m.estimatedCostUsd ?? 0) + estimate.cost.total;
-        }
-        let s = pricedRequestsByModel.get(key);
-        if (!s) { s = new Set(); pricedRequestsByModel.set(key, s); }
-        s.add(entry.requestId);
-      } else {
-        let s = unpricedRequestsByModel.get(key);
-        if (!s) { s = new Set(); unpricedRequestsByModel.set(key, s); }
-        s.add(entry.requestId);
-      }
-    }
-  }
-  const models = [...byKey.values()];
-  for (const [key, m] of byKey) {
-    m.pricedRequests = pricedRequestsByModel.get(key)?.size ?? 0;
-    m.unpricedRequests = unpricedRequestsByModel.get(key)?.size ?? 0;
-    m.shareRatio = totalTokens === 0 ? 0 : m.totalTokens / totalTokens;
-    m.cacheHitRate = calculateCacheHitRate(!!m.cacheObserved, m.inputTokens, m.cacheReadInputTokens ?? 0);
-    m.priceCoverageRatio = m.requests > 0 ? m.pricedRequests / m.requests : 0;
-  }
-  const sorted = models.sort((a, b) => b.requests - a.requests);
-  const retained = retainedBreakdownRows(sorted, overflow => {
-    const statusesByRequest = new Map<string, UsageStatus[]>();
-    const overflowPricedRequests = new Set<string>();
-    const overflowUnpricedRequests = new Set<string>();
-    let cacheObserved = false;
-    const other: ModelAccumulator = {
-      provider: "other",
-      model: "other",
-      requests: 0,
-      attemptCount: 0,
-      measuredRequests: 0,
-      reportedRequests: 0,
-      estimatedRequests: 0,
-      totalTokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedInputTokens: 0,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      pricedRequests: 0,
-      unpricedRequests: 0,
-      priceCoverageRatio: 0,
-      modelCallMs: 0,
-      averageTtftMs: null,
-      endToEndTokensPerSecond: null,
-      decodeTokensPerSecond: null,
-      shareRatio: 0,
-    };
-    const otherRates = blankRates();
-    for (const model of overflow) {
-      other.attemptCount += model.attemptCount;
-      other.totalTokens += model.totalTokens;
-      other.inputTokens += model.inputTokens;
-      other.outputTokens += model.outputTokens;
-      if (model.cacheObserved) cacheObserved = true;
-      other.cachedInputTokens = (other.cachedInputTokens ?? 0) + (model.cachedInputTokens ?? 0);
-      other.cacheReadInputTokens = (other.cacheReadInputTokens ?? 0) + (model.cacheReadInputTokens ?? 0);
-      other.cacheCreationInputTokens = (other.cacheCreationInputTokens ?? 0) + (model.cacheCreationInputTokens ?? 0);
-      other.modelCallMs += model.modelCallMs;
-      mergeRates(otherRates, ratesByKey.get(usageModelKey(model.provider, model.model)));
-      if (model.estimatedCostUsd !== undefined) {
-        other.estimatedCostUsd = (other.estimatedCostUsd ?? 0) + model.estimatedCostUsd;
-      }
-      const key = usageModelKey(model.provider, model.model);
-      for (const [requestId, statuses] of statusesByKey.get(key) ?? []) {
-        const combined = statusesByRequest.get(requestId) ?? [];
-        combined.push(...statuses);
-        statusesByRequest.set(requestId, combined);
-      }
-      for (const reqId of pricedRequestsByModel.get(key) ?? []) overflowPricedRequests.add(reqId);
-      for (const reqId of unpricedRequestsByModel.get(key) ?? []) overflowUnpricedRequests.add(reqId);
-    }
-    other.requests = statusesByRequest.size;
-    other.pricedRequests = overflowPricedRequests.size;
-    other.unpricedRequests = overflowUnpricedRequests.size;
-    for (const statuses of statusesByRequest.values()) {
-      const status = foldAttributionStatuses(statuses);
-      if (isMeasuredStatus(status)) other.measuredRequests += 1;
-      if (status === "reported") other.reportedRequests += 1;
-      else if (status === "estimated") other.estimatedRequests += 1;
-    }
-    other.shareRatio = totalTokens === 0 ? 0 : other.totalTokens / totalTokens;
-    other.cacheHitRate = calculateCacheHitRate(cacheObserved, other.inputTokens, other.cacheReadInputTokens ?? 0);
-    other.priceCoverageRatio = other.requests > 0 ? other.pricedRequests / other.requests : 0;
-    Object.assign(other, finalizeRates(otherRates));
-    return other;
-  });
-  for (const model of retained) delete model.cacheObserved;
-  return retained;
+function bumpRequestCounts(counts: UsageRequestCounts, facts: number, amount = 1): void {
+  counts.requests += amount;
+  const status = statusFromRequestFacts(facts);
+  if (isMeasuredStatus(status)) counts.measuredRequests += amount;
+  if (status === "reported") counts.reportedRequests += amount;
+  else if (status === "estimated") counts.estimatedRequests += amount;
+  if ((facts & REQUEST_PRICED) !== 0) counts.pricedRequests += amount;
+  if ((facts & REQUEST_UNPRICED) !== 0) counts.unpricedRequests += amount;
 }
 
-function buildProviders(entries: PersistedUsageEntry[], totalTokens: number, costMap: Map<PersistedUsageEntry, EntryCostInfo>): UsageProvider[] {
-  interface ProviderAccumulator extends UsageProvider {
-    cacheObserved?: boolean;
+function mergeRequestCounts(target: UsageRequestCounts, source: UsageRequestCounts): void {
+  target.requests += source.requests;
+  target.measuredRequests += source.measuredRequests;
+  target.reportedRequests += source.reportedRequests;
+  target.estimatedRequests += source.estimatedRequests;
+  target.pricedRequests += source.pricedRequests;
+  target.unpricedRequests += source.unpricedRequests;
+}
+
+function mergeRequestFacts(target: Map<number, number>, source: Map<number, number>): void {
+  for (const [requestId, facts] of source) {
+    target.set(requestId, (target.get(requestId) ?? 0) | facts);
   }
-  const byKey = new Map<string, ProviderAccumulator>();
-  const statusesByKey = new Map<string, Map<string, UsageStatus[]>>();
-  for (const entry of entries) {
-    for (const attribution of usageAttributions(entry)) {
-      const providerKey = baseProviderLabel(attribution.provider);
-      let provider = byKey.get(providerKey);
-      if (!provider) {
-        provider = {
-          provider: providerKey,
-          requests: 0,
-          attemptCount: 0,
-          measuredRequests: 0,
-          reportedRequests: 0,
-          estimatedRequests: 0,
-          totalTokens: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cachedInputTokens: 0,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          pricedRequests: 0,
-          unpricedRequests: 0,
-          priceCoverageRatio: 0,
-          shareRatio: 0,
-        };
-        byKey.set(providerKey, provider);
-      }
-      provider.attemptCount += 1;
-      let requests = statusesByKey.get(providerKey);
-      if (!requests) { requests = new Map(); statusesByKey.set(providerKey, requests); }
-      const statuses = requests.get(attribution.requestId) ?? [];
-      statuses.push(attribution.usageStatus);
-      requests.set(attribution.requestId, statuses);
-      if (attribution.usage) {
-        provider.inputTokens = (provider.inputTokens ?? 0) + attribution.usage.inputTokens;
-        provider.outputTokens = (provider.outputTokens ?? 0) + attribution.usage.outputTokens;
-        const { read, creation, hasCacheTelemetry } = cacheTokensFromUsage(attribution.usage);
-        if (hasCacheTelemetry) provider.cacheObserved = true;
-        if (typeof read === "number") {
-          provider.cachedInputTokens = (provider.cachedInputTokens ?? 0) + read;
-          provider.cacheReadInputTokens = (provider.cacheReadInputTokens ?? 0) + read;
-        }
-        if (typeof creation === "number") {
-          provider.cacheCreationInputTokens = (provider.cacheCreationInputTokens ?? 0) + creation;
-        }
-        provider.totalTokens += usageDisplayTotalTokens(attribution.usage, attribution.totalTokens) ?? 0;
-      }
-    }
+}
+
+function requestCountsFor(model: UsageModelAccumulator): UsageRequestCounts {
+  if (!model.requestFacts) return model.requestCounts;
+  const counts = blankRequestCounts();
+  for (const facts of model.requestFacts.values()) bumpRequestCounts(counts, facts);
+  return counts;
+}
+
+function mergeTotals(target: UsageSummaryTotals, source: UsageSummaryTotals): void {
+  target.requests += source.requests;
+  target.attemptCount += source.attemptCount;
+  target.measuredRequests += source.measuredRequests;
+  target.reportedRequests += source.reportedRequests;
+  target.unreportedRequests += source.unreportedRequests;
+  target.unsupportedRequests += source.unsupportedRequests;
+  target.estimatedRequests += source.estimatedRequests;
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  target.cachedInputTokens += source.cachedInputTokens;
+  target.cacheReadInputTokens += source.cacheReadInputTokens;
+  target.cacheCreationInputTokens += source.cacheCreationInputTokens;
+  target.reasoningOutputTokens += source.reasoningOutputTokens;
+  target.totalTokens += source.totalTokens;
+  target.estimatedCostUsd += source.estimatedCostUsd;
+  target.pricedRequests += source.pricedRequests;
+  target.unpricedRequests += source.unpricedRequests;
+  target.unmeteredRequests += source.unmeteredRequests;
+}
+
+function blankModelAccumulator(
+  provider: string,
+  model: string,
+  resolvedModel: string | undefined,
+  firstSeen: number,
+  mode: UsageAccumulatorMode,
+): UsageModelAccumulator {
+  return {
+    provider,
+    model,
+    ...(resolvedModel ? { resolvedModel } : {}),
+    firstSeen,
+    attemptCount: 0,
+    dayTotalTokens: 0,
+    summaryTotalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheObserved: false,
+    modelCallMs: 0,
+    rates: blankRates(),
+    requestCounts: blankRequestCounts(),
+    ...(mode === "exact" ? { requestFacts: new Map() } : {}),
+  };
+}
+
+function cloneModelAccumulator(source: UsageModelAccumulator): UsageModelAccumulator {
+  return {
+    ...source,
+    rates: { ...source.rates },
+    requestCounts: { ...source.requestCounts },
+    ...(source.requestFacts ? { requestFacts: new Map(source.requestFacts) } : {}),
+  };
+}
+
+function mergeModelAccumulator(target: UsageModelAccumulator, source: UsageModelAccumulator): void {
+  if (source.firstSeen < target.firstSeen) {
+    target.firstSeen = source.firstSeen;
+    target.resolvedModel = source.resolvedModel;
   }
-  for (const [key, provider] of byKey) {
-    const groups = statusesByKey.get(key) ?? new Map();
-    provider.requests = groups.size;
-    for (const statuses of groups.values()) {
-      const status = foldAttributionStatuses(statuses);
-      if (isMeasuredStatus(status)) provider.measuredRequests += 1;
-      if (status === "reported") provider.reportedRequests += 1;
-      else if (status === "estimated") provider.estimatedRequests += 1;
-    }
+  target.attemptCount += source.attemptCount;
+  target.dayTotalTokens += source.dayTotalTokens;
+  target.summaryTotalTokens += source.summaryTotalTokens;
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  target.cacheReadInputTokens += source.cacheReadInputTokens;
+  target.cacheCreationInputTokens += source.cacheCreationInputTokens;
+  target.cacheObserved ||= source.cacheObserved;
+  target.modelCallMs += source.modelCallMs;
+  mergeRates(target.rates, source.rates);
+  if (source.estimatedCostUsd !== undefined) {
+    target.estimatedCostUsd = (target.estimatedCostUsd ?? 0) + source.estimatedCostUsd;
   }
-  const pricedRequestsByProvider = new Map<string, Set<string>>();
-  const unpricedRequestsByProvider = new Map<string, Set<string>>();
-  for (const entry of entries) {
-    const costInfo = costMap.get(entry);
-    if (entry.attempts?.length) {
-      const attemptEstimates = costInfo?.attemptEstimates;
-      for (let i = 0; i < entry.attempts.length; i++) {
-        const attempt = entry.attempts[i];
-        const attemptEst = attemptEstimates?.[i];
-        const aProviderKey = baseProviderLabel(attempt.provider);
-        if (attemptEst) {
-          const p = byKey.get(aProviderKey);
-          if (p) {
-            p.estimatedCostUsd = (p.estimatedCostUsd ?? 0) + attemptEst.cost.total;
-          }
-          let s = pricedRequestsByProvider.get(aProviderKey);
-          if (!s) { s = new Set(); pricedRequestsByProvider.set(aProviderKey, s); }
-          s.add(entry.requestId);
-        } else {
-          let s = unpricedRequestsByProvider.get(aProviderKey);
-          if (!s) { s = new Set(); unpricedRequestsByProvider.set(aProviderKey, s); }
-          s.add(entry.requestId);
-        }
-      }
-    } else {
-      const providerKey = baseProviderLabel(entry.provider);
-      const estimate = costInfo?.estimate;
-      if (estimate) {
-        const p = byKey.get(providerKey);
-        if (p) {
-          p.estimatedCostUsd = (p.estimatedCostUsd ?? 0) + estimate.cost.total;
-        }
-        let s = pricedRequestsByProvider.get(providerKey);
-        if (!s) { s = new Set(); pricedRequestsByProvider.set(providerKey, s); }
-        s.add(entry.requestId);
-      } else {
-        let s = unpricedRequestsByProvider.get(providerKey);
-        if (!s) { s = new Set(); unpricedRequestsByProvider.set(providerKey, s); }
-        s.add(entry.requestId);
-      }
-    }
+  if (target.requestFacts && source.requestFacts) mergeRequestFacts(target.requestFacts, source.requestFacts);
+  else mergeRequestCounts(target.requestCounts, source.requestCounts);
+}
+
+function cloneEffortAccumulator(source: UsageEffortAccumulator): UsageEffortAccumulator {
+  return {
+    ...source,
+    rates: { ...source.rates },
+    ...(source.requestIds ? { requestIds: new Set(source.requestIds) } : {}),
+  };
+}
+
+function mergeEffortAccumulator(target: UsageEffortAccumulator, source: UsageEffortAccumulator): void {
+  target.firstSeen = Math.min(target.firstSeen, source.firstSeen);
+  if (target.requestIds && source.requestIds) {
+    for (const requestId of source.requestIds) target.requestIds.add(requestId);
+  } else {
+    target.requests += source.requests;
   }
-  const providers = [...byKey.values()];
-  for (const [key, p] of byKey) {
-    p.pricedRequests = pricedRequestsByProvider.get(key)?.size ?? 0;
-    p.unpricedRequests = unpricedRequestsByProvider.get(key)?.size ?? 0;
-    p.shareRatio = totalTokens === 0 ? 0 : p.totalTokens / totalTokens;
-    p.cacheHitRate = calculateCacheHitRate(!!p.cacheObserved, p.inputTokens ?? 0, p.cacheReadInputTokens ?? 0);
-    p.priceCoverageRatio = p.requests > 0 ? p.pricedRequests / p.requests : 0;
+  target.modelCallMs += source.modelCallMs;
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  mergeRates(target.rates, source.rates);
+}
+
+function mergeEffortMaps(
+  target: Map<string, UsageEffortAccumulator>,
+  source: Map<string, UsageEffortAccumulator>,
+): void {
+  for (const [key, group] of source) {
+    const current = target.get(key);
+    if (current) mergeEffortAccumulator(current, group);
+    else target.set(key, cloneEffortAccumulator(group));
   }
-  const sorted = providers.sort((a, b) => b.requests - a.requests);
-  for (const provider of sorted) delete provider.cacheObserved;
-  return sorted;
+}
+
+function mergeModelMaps(
+  target: Map<string, UsageModelAccumulator>,
+  source: Map<string, UsageModelAccumulator>,
+): void {
+  for (const [key, model] of source) {
+    const current = target.get(key);
+    if (current) mergeModelAccumulator(current, model);
+    else target.set(key, cloneModelAccumulator(model));
+  }
+}
+
+function cloneAccountAccumulator(source: UsageAccountAccumulator): UsageAccountAccumulator {
+  return {
+    ...source,
+    ...(source.requestIds ? { requestIds: new Set(source.requestIds) } : {}),
+  };
+}
+
+function mergeAccountAccumulator(target: UsageAccountAccumulator, source: UsageAccountAccumulator): void {
+  target.firstSeen = Math.min(target.firstSeen, source.firstSeen);
+  if (target.requestIds && source.requestIds) {
+    for (const requestId of source.requestIds) target.requestIds.add(requestId);
+  } else {
+    target.requests += source.requests;
+  }
+  target.attemptCount += source.attemptCount;
+  target.measuredAttempts += source.measuredAttempts;
+  target.reportedAttempts += source.reportedAttempts;
+  target.estimatedAttempts += source.estimatedAttempts;
+  target.unmeteredAttempts += source.unmeteredAttempts;
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  target.cacheReadInputTokens += source.cacheReadInputTokens;
+  target.cacheCreationInputTokens += source.cacheCreationInputTokens;
+  target.reasoningOutputTokens += source.reasoningOutputTokens;
+  target.totalTokens += source.totalTokens;
+  if (source.estimatedCostUsd !== undefined) {
+    target.estimatedCostUsd = (target.estimatedCostUsd ?? 0) + source.estimatedCostUsd;
+  }
+  target.pricedAttempts += source.pricedAttempts;
+  target.unpricedAttempts += source.unpricedAttempts;
+}
+
+function usagePartitionSurface(entry: PersistedUsageEntry): UsagePartitionSurface {
+  if (entry.surface === undefined) return "codex";
+  if (entry.surface === "claude" || entry.surface === "claude-desktop") return "claude";
+  if (entry.surface === "grok") return "grok";
+  return "other";
+}
+
+function usageSurfaceMatches(partition: UsagePartitionSurface, surface: UsageSurface): boolean {
+  return surface === "all" || partition === surface;
 }
 
 const LEGACY_AMBIGUOUS_ACCOUNT_LABEL = "legacy-ambiguous";
@@ -1061,40 +1055,542 @@ function legacyCodexAccountLabel(provider: string): string | null {
 
 /**
  * An explicitly stamped label of EITHER family is authoritative for any provider (#2699).
- *
- * No `o`-label branch is needed here: `isCodexUsageAccountLogLabel` now accepts both families,
- * and adding a second predicate call would be a no-op guarded by a comment claiming otherwise.
- *
- * The legacy fallback stays openai-only on purpose. It infers an account from the PROVIDER
- * string, and inferring for a non-Codex row would merge unrelated accounts under one label --
- * so an unlabeled xai row is dropped from the account table rather than guessed at.
+ * The legacy fallback stays openai-only so unrelated unlabeled providers are not guessed.
  */
 function accountLabelForAttribution(provider: string, explicit: unknown): string | null {
   if (isCodexUsageAccountLogLabel(explicit)) return explicit;
   return legacyCodexAccountLabel(provider);
 }
 
-function buildAccounts(entries: PersistedUsageEntry[], costMap: Map<PersistedUsageEntry, EntryCostInfo>): UsageAccount[] {
-  const byLabel = new Map<string, UsageAccount>();
-  const requestIds = new Map<string, Set<string>>();
+function filterMatchesAttribution(
+  filter: NormalizedUsageFilter,
+  provider: string,
+  model: string,
+): boolean {
+  if (filter.provider !== null && baseProviderLabel(provider).toLowerCase() !== filter.provider) return false;
+  if (filter.model !== null && model.toLowerCase() !== filter.model) return false;
+  return true;
+}
 
-  const add = (input: {
-    requestId: string;
-    provider: string;
-    accountLogLabel?: string;
-    usageStatus: UsageStatus;
-    usage?: PersistedUsageEntry["usage"];
-    totalTokens?: number;
-    estimate: AttemptCostEstimate | CostEstimate | null;
-  }): void => {
-    const label = accountLabelForAttribution(input.provider, input.accountLogLabel);
-    if (!label) return;
-    let row = byLabel.get(label);
-    if (!row) {
-      row = {
+function projectedEntryForFilter(
+  entry: PersistedUsageEntry,
+  filter: NormalizedUsageFilter,
+): { entry: PersistedUsageEntry; comboOverlap: boolean } | null {
+  if (filter.apiKeyId !== null && entry.apiKeyId !== filter.apiKeyId) return null;
+  if (!entry.attempts?.length) {
+    const identity = usageModelIdentity(entry.provider, entry.model, entry.resolvedModel);
+    return filterMatchesAttribution(filter, entry.provider, identity.model)
+      ? { entry, comboOverlap: false }
+      : null;
+  }
+  const attempts = entry.attempts.filter(attempt => {
+    const identity = usageModelIdentity(attempt.provider, attempt.model);
+    return filterMatchesAttribution(filter, attempt.provider, identity.model);
+  });
+  if (attempts.length === 0) return null;
+  const { usage: _parentUsage, totalTokens: _parentTotalTokens, ...withoutParentUsage } = entry;
+  return {
+    entry: { ...withoutParentUsage, attempts, ...projectedComboUsage(attempts) },
+    comboOverlap: entry.attempts.length > 1,
+  };
+}
+
+function overflowModelAccumulator(
+  models: UsageModelAccumulator[],
+  overlaps: readonly UsageModelOverlap[],
+): UsageModelAccumulator {
+  const mode: UsageAccumulatorMode = models[0]?.requestFacts ? "exact" : "row-unique";
+  const other = blankModelAccumulator("other", "other", undefined, models[0]?.firstSeen ?? 0, mode);
+  for (const model of models) mergeModelAccumulator(other, model);
+  if (mode === "row-unique" && overlaps.length > 0) {
+    const overflowKeys = new Set(models.map(model => usageModelKey(model.provider, model.model)));
+    for (const overlap of overlaps) {
+      const retained = overlap.models.filter(([modelKey]) => overflowKeys.has(modelKey));
+      if (retained.length < 2) continue;
+      let combinedFacts = 0;
+      for (const [, facts] of retained) {
+        bumpRequestCounts(other.requestCounts, facts, -overlap.count);
+        combinedFacts |= facts;
+      }
+      bumpRequestCounts(other.requestCounts, combinedFacts, overlap.count);
+    }
+  }
+  other.provider = "other";
+  other.model = "other";
+  delete other.resolvedModel;
+  return other;
+}
+
+function retainedModelAccumulators(
+  models: UsageModelAccumulator[],
+  overlaps: readonly UsageModelOverlap[],
+): UsageModelAccumulator[] {
+  if (models.length <= MAX_USAGE_MODEL_BREAKDOWN_ROWS) return models;
+  return [
+    ...models.slice(0, MAX_USAGE_MODEL_BREAKDOWN_ROWS - 1),
+    overflowModelAccumulator(models.slice(MAX_USAGE_MODEL_BREAKDOWN_ROWS - 1), overlaps),
+  ];
+}
+
+function buildDayModels(
+  models: Map<string, UsageModelAccumulator>,
+  overlaps: readonly UsageModelOverlap[],
+): UsageDayModel[] {
+  const sorted = [...models.values()].sort((a, b) =>
+    requestCountsFor(b).requests - requestCountsFor(a).requests || a.firstSeen - b.firstSeen
+  );
+  return retainedModelAccumulators(sorted, overlaps).map(model => ({
+    model: model.model,
+    provider: model.provider,
+    requests: requestCountsFor(model).requests,
+    attemptCount: model.attemptCount,
+    totalTokens: model.dayTotalTokens,
+    inputTokens: model.inputTokens,
+    outputTokens: model.outputTokens,
+    cacheReadInputTokens: model.cacheReadInputTokens,
+    cacheCreationInputTokens: model.cacheCreationInputTokens,
+    cacheHitRate: calculateCacheHitRate(model.cacheObserved, model.inputTokens, model.cacheReadInputTokens),
+    ...(model.estimatedCostUsd !== undefined ? { estimatedCostUsd: model.estimatedCostUsd } : {}),
+  }));
+}
+
+function buildUsageModels(
+  models: Map<string, UsageModelAccumulator>,
+  totalTokens: number,
+  overlaps: readonly UsageModelOverlap[],
+): UsageModel[] {
+  const sorted = [...models.values()].sort((a, b) =>
+    requestCountsFor(b).requests - requestCountsFor(a).requests || a.firstSeen - b.firstSeen
+  );
+  return retainedModelAccumulators(sorted, overlaps).map(model => {
+    const counts = requestCountsFor(model);
+    const requests = counts.requests;
+    return {
+      provider: model.provider,
+      model: model.model,
+      ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+      requests,
+      attemptCount: model.attemptCount,
+      measuredRequests: counts.measuredRequests,
+      reportedRequests: counts.reportedRequests,
+      estimatedRequests: counts.estimatedRequests,
+      totalTokens: model.summaryTotalTokens,
+      inputTokens: model.inputTokens,
+      outputTokens: model.outputTokens,
+      cachedInputTokens: model.cacheReadInputTokens,
+      cacheReadInputTokens: model.cacheReadInputTokens,
+      cacheCreationInputTokens: model.cacheCreationInputTokens,
+      cacheHitRate: calculateCacheHitRate(model.cacheObserved, model.inputTokens, model.cacheReadInputTokens),
+      priceCoverageRatio: requests > 0 ? counts.pricedRequests / requests : 0,
+      pricedRequests: counts.pricedRequests,
+      unpricedRequests: counts.unpricedRequests,
+      modelCallMs: model.modelCallMs,
+      ...finalizeRates(model.rates),
+      shareRatio: totalTokens === 0 ? 0 : model.summaryTotalTokens / totalTokens,
+      ...(model.estimatedCostUsd !== undefined ? { estimatedCostUsd: model.estimatedCostUsd } : {}),
+    };
+  });
+}
+
+function buildEffortGroups(
+  groups: Map<string, UsageEffortAccumulator>,
+  totalRequests: number,
+): UsageEffortGroup[] {
+  const requestCount = (group: UsageEffortAccumulator): number =>
+    group.requestIds?.size ?? group.requests;
+  const exactRequestIds = new Set<number>();
+  let exact = false;
+  for (const group of groups.values()) {
+    if (!group.requestIds) continue;
+    exact = true;
+    for (const requestId of group.requestIds) exactRequestIds.add(requestId);
+  }
+  const requestDenominator = exact ? exactRequestIds.size : totalRequests;
+  return [...groups.values()]
+    .sort((a, b) => requestCount(b) - requestCount(a) || a.firstSeen - b.firstSeen)
+    .map(group => {
+      const requests = requestCount(group);
+      return {
+        provider: group.provider,
+        model: group.model,
+        speedMode: group.speedMode,
+        requestedEffort: group.requestedEffort,
+        effectiveEffort: group.effectiveEffort,
+        requests,
+        requestShare: requestDenominator === 0 ? 0 : requests / requestDenominator * 100,
+        modelCallMs: group.modelCallMs,
+        inputTokens: group.inputTokens,
+        outputTokens: group.outputTokens,
+        ...finalizeRates(group.rates),
+      };
+    });
+}
+
+function buildUsageProviders(
+  models: Map<string, UsageModelAccumulator>,
+  totalTokens: number,
+): UsageProvider[] {
+  const providers = new Map<string, UsageModelAccumulator>();
+  for (const model of models.values()) {
+    const current = providers.get(model.provider);
+    if (current) mergeModelAccumulator(current, model);
+    else providers.set(model.provider, cloneModelAccumulator(model));
+  }
+  return [...providers.values()]
+    .sort((a, b) => requestCountsFor(b).requests - requestCountsFor(a).requests || a.firstSeen - b.firstSeen)
+    .map(provider => {
+      const counts = requestCountsFor(provider);
+      const requests = counts.requests;
+      return {
+        provider: provider.provider,
+        requests,
+        attemptCount: provider.attemptCount,
+        measuredRequests: counts.measuredRequests,
+        reportedRequests: counts.reportedRequests,
+        estimatedRequests: counts.estimatedRequests,
+        totalTokens: provider.summaryTotalTokens,
+        inputTokens: provider.inputTokens,
+        outputTokens: provider.outputTokens,
+        cachedInputTokens: provider.cacheReadInputTokens,
+        cacheReadInputTokens: provider.cacheReadInputTokens,
+        cacheCreationInputTokens: provider.cacheCreationInputTokens,
+        cacheHitRate: calculateCacheHitRate(provider.cacheObserved, provider.inputTokens, provider.cacheReadInputTokens),
+        priceCoverageRatio: requests > 0 ? counts.pricedRequests / requests : 0,
+        pricedRequests: counts.pricedRequests,
+        unpricedRequests: counts.unpricedRequests,
+        shareRatio: totalTokens === 0 ? 0 : provider.summaryTotalTokens / totalTokens,
+        ...(provider.estimatedCostUsd !== undefined ? { estimatedCostUsd: provider.estimatedCostUsd } : {}),
+      };
+    });
+}
+
+function buildUsageAccounts(accounts: Map<string, UsageAccountAccumulator>): UsageAccount[] {
+  return [...accounts.values()]
+    .sort((a, b) => b.totalTokens - a.totalTokens || a.firstSeen - b.firstSeen)
+    .map(account => ({
+      accountLogLabel: account.accountLogLabel,
+      ambiguous: account.ambiguous,
+      requests: account.requestIds?.size ?? account.requests,
+      attemptCount: account.attemptCount,
+      measuredAttempts: account.measuredAttempts,
+      reportedAttempts: account.reportedAttempts,
+      estimatedAttempts: account.estimatedAttempts,
+      unmeteredAttempts: account.unmeteredAttempts,
+      inputTokens: account.inputTokens,
+      outputTokens: account.outputTokens,
+      cacheReadInputTokens: account.cacheReadInputTokens,
+      cacheCreationInputTokens: account.cacheCreationInputTokens,
+      reasoningOutputTokens: account.reasoningOutputTokens,
+      totalTokens: account.totalTokens,
+      usageCoverageRatio: account.attemptCount === 0 ? 0 : account.measuredAttempts / account.attemptCount,
+      ...(account.estimatedCostUsd !== undefined ? { estimatedCostUsd: account.estimatedCostUsd } : {}),
+      pricedAttempts: account.pricedAttempts,
+      unpricedAttempts: account.unpricedAttempts,
+      priceCoverageRatio: account.measuredAttempts === 0 ? 0 : account.pricedAttempts / account.measuredAttempts,
+    }));
+}
+
+// Retained-size estimates intentionally favor over-counting. They are updated only when
+// retained structures grow, so memory-budget checks stay O(1) even on very large ledgers.
+const ESTIMATED_ACCUMULATOR_BASE_BYTES = 2_048;
+const ESTIMATED_PARTITION_BYTES = 1_024;
+const ESTIMATED_BREAKDOWN_BYTES = 1_024;
+const ESTIMATED_EXACT_REQUEST_ID_BYTES = 1_024;
+const ESTIMATED_REQUEST_FACT_BYTES = 512;
+const ESTIMATED_ACCOUNT_REQUEST_BYTES = 256;
+const ESTIMATED_EFFORT_REQUEST_BYTES = 256;
+const ESTIMATED_OVERLAP_BYTES = 128;
+const ESTIMATED_OVERLAP_MODEL_BYTES = 256;
+const ESTIMATED_LATENCY_INTERVAL_BYTES = 128;
+const ESTIMATED_LATENCY_CHUNK_BYTES = 128;
+
+class StreamingUsageSummaryAccumulator implements UsageSummaryAccumulator {
+  private readonly partitions = new Map<string, UsagePartition>();
+  private readonly requestIds: Map<string, number> | null;
+  private readonly filter: NormalizedUsageFilter | null;
+  private readonly mode: UsageAccumulatorMode;
+  private nextRequestId = 0;
+  private nextOrdinal = 0;
+  private snapshotStart: number | null = null;
+  private snapshotEnd: number | null = null;
+  private comboOverlap = false;
+  private estimatedRetainedBytes = ESTIMATED_ACCUMULATOR_BASE_BYTES;
+
+  constructor(options?: {
+    filter?: { provider?: string | null; model?: string | null; apiKeyId?: string | null };
+    mode?: UsageAccumulatorMode;
+  }) {
+    const provider = normalizeFilterValue(options?.filter?.provider);
+    const model = normalizeFilterValue(options?.filter?.model);
+    const apiKeyId = normalizeExactFilterValue(options?.filter?.apiKeyId);
+    this.filter = provider === null && model === null && apiKeyId === null
+      ? null
+      : { provider, model, apiKeyId };
+    this.mode = options?.mode ?? "exact";
+    this.requestIds = this.mode === "exact" ? new Map() : null;
+  }
+
+  get snapshotWindow(): { start: number | null; end: number | null } {
+    return { start: this.snapshotStart, end: this.snapshotEnd };
+  }
+
+  get estimatedBytes(): number {
+    return this.estimatedRetainedBytes;
+  }
+
+  clone(): UsageSummaryAccumulator {
+    const cloned = new StreamingUsageSummaryAccumulator({
+      ...(this.filter ? { filter: this.filter } : {}),
+      mode: this.mode,
+    });
+    cloned.nextRequestId = this.nextRequestId;
+    cloned.nextOrdinal = this.nextOrdinal;
+    cloned.snapshotStart = this.snapshotStart;
+    cloned.snapshotEnd = this.snapshotEnd;
+    cloned.comboOverlap = this.comboOverlap;
+    if (this.requestIds && cloned.requestIds) {
+      for (const [requestId, key] of this.requestIds) cloned.requestIds.set(requestId, key);
+    }
+    for (const [key, partition] of this.partitions) {
+      let intervalHistory = partition.latency.intervalHistory;
+      if (partition.latency.intervals.length > 0) {
+        intervalHistory = {
+          ...(intervalHistory ? { previous: intervalHistory } : {}),
+          intervals: partition.latency.intervals,
+        };
+        partition.latency.intervalHistory = intervalHistory;
+        partition.latency.intervals = [];
+        this.estimatedRetainedBytes += ESTIMATED_LATENCY_CHUNK_BYTES;
+      }
+      const models = new Map<string, UsageModelAccumulator>();
+      for (const [modelKey, model] of partition.models) {
+        models.set(modelKey, cloneModelAccumulator(model));
+      }
+      const providers = partition.providers
+        ? new Map([...partition.providers].map(([providerKey, provider]) => [providerKey, cloneModelAccumulator(provider)]))
+        : undefined;
+      const accounts = new Map<string, UsageAccountAccumulator>();
+      for (const [label, account] of partition.accounts) {
+        accounts.set(label, cloneAccountAccumulator(account));
+      }
+      const effortGroups = new Map<string, UsageEffortAccumulator>();
+      for (const [effortKey, group] of partition.effortGroups) {
+        effortGroups.set(effortKey, cloneEffortAccumulator(group));
+      }
+      cloned.partitions.set(key, {
+        ...partition,
+        totals: { ...partition.totals },
+        models,
+        ...(providers ? { providers } : {}),
+        accounts,
+        latency: {
+          modelCallMs: partition.latency.modelCallMs,
+          intervals: [],
+          ...(intervalHistory ? { intervalHistory } : {}),
+          rates: { ...partition.latency.rates },
+        },
+        effortGroups,
+        modelOverlaps: new Map(
+          [...partition.modelOverlaps].map(([signature, overlap]) => [signature, { ...overlap }]),
+        ),
+      });
+    }
+    cloned.estimatedRetainedBytes = this.estimatedRetainedBytes;
+    return cloned;
+  }
+
+  private requestKey(requestId: string): number {
+    if (!this.requestIds) throw new Error("row-unique accumulators do not retain request ids");
+    const existing = this.requestIds.get(requestId);
+    if (existing !== undefined) return existing;
+    const key = this.nextRequestId++;
+    this.requestIds.set(requestId, key);
+    this.estimatedRetainedBytes += ESTIMATED_EXACT_REQUEST_ID_BYTES + requestId.length * 2;
+    return key;
+  }
+
+  private partitionFor(entry: PersistedUsageEntry): UsagePartition {
+    const date = localDateKey(entry.timestamp);
+    const dayStart = startOfLocalDay(entry.timestamp);
+    const surface = usagePartitionSurface(entry);
+    const key = `${date}\0${surface}`;
+    let partition = this.partitions.get(key);
+    if (!partition) {
+      partition = {
+        date,
+        dayStart,
+        surface,
+        oldestTimestamp: null,
+        totals: blankTotals(),
+        models: new Map(),
+        ...(this.mode === "row-unique" ? { providers: new Map() } : {}),
+        accounts: new Map(),
+        modelOverlaps: new Map(),
+        latency: { modelCallMs: 0, intervals: [], rates: blankRates() },
+        effortGroups: new Map(),
+      };
+      this.partitions.set(key, partition);
+      this.estimatedRetainedBytes += ESTIMATED_PARTITION_BYTES;
+    }
+    if (Number.isFinite(entry.timestamp)) {
+      partition.oldestTimestamp = partition.oldestTimestamp === null
+        ? entry.timestamp
+        : Math.min(partition.oldestTimestamp, entry.timestamp);
+    }
+    return partition;
+  }
+
+  private addAttributionMetrics(
+    breakdown: UsageModelAccumulator,
+    attribution: UsageAttribution,
+    estimate: AttemptCostEstimate | CostEstimate | null,
+  ): void {
+    breakdown.attemptCount += 1;
+    breakdown.modelCallMs += attribution.durationMs;
+    accumulateRates(breakdown.rates, attribution);
+    if (attribution.usage) {
+      breakdown.inputTokens += attribution.usage.inputTokens;
+      breakdown.outputTokens += attribution.usage.outputTokens;
+      const { read, creation, hasCacheTelemetry } = cacheTokensFromUsage(attribution.usage);
+      breakdown.cacheObserved ||= hasCacheTelemetry;
+      if (typeof read === "number") breakdown.cacheReadInputTokens += read;
+      if (typeof creation === "number") breakdown.cacheCreationInputTokens += creation;
+      breakdown.summaryTotalTokens += usageDisplayTotalTokens(attribution.usage, attribution.totalTokens) ?? 0;
+    }
+    breakdown.dayTotalTokens += usageDisplayTotalTokens(attribution.usage, attribution.totalTokens) ?? 0;
+    if (estimate) breakdown.estimatedCostUsd = (breakdown.estimatedCostUsd ?? 0) + estimate.cost.total;
+  }
+
+  private addEffortAttribution(
+    partition: UsagePartition,
+    attribution: UsageAttribution,
+    ordinal: number,
+  ): string {
+    const provider = baseProviderLabel(attribution.provider);
+    const model = attribution.resolvedModel ?? attribution.model;
+    const requestedEffort = attribution.requestedEffort ?? "not-recorded";
+    const effectiveEffort = attribution.effectiveEffort ?? "not-recorded";
+    const key = `${provider}\0${model}\0${attribution.speedMode}\0${requestedEffort}\0${effectiveEffort}`;
+    let group = partition.effortGroups.get(key);
+    if (!group) {
+      group = {
+        provider,
+        model,
+        speedMode: attribution.speedMode,
+        requestedEffort,
+        effectiveEffort,
+        firstSeen: ordinal,
+        requests: 0,
+        ...(this.mode === "exact" ? { requestIds: new Set() } : {}),
+        modelCallMs: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        rates: blankRates(),
+      };
+      partition.effortGroups.set(key, group);
+      this.estimatedRetainedBytes += ESTIMATED_BREAKDOWN_BYTES + key.length * 2;
+    }
+    group.modelCallMs += attribution.durationMs;
+    group.inputTokens += attribution.usage?.inputTokens ?? 0;
+    group.outputTokens += attribution.usage?.outputTokens ?? 0;
+    accumulateRates(group.rates, attribution);
+    return key;
+  }
+
+  private addModelAttribution(
+    partition: UsagePartition,
+    attribution: UsageAttribution,
+    estimate: AttemptCostEstimate | CostEstimate | null,
+    ordinal: number,
+  ): string {
+    const provider = baseProviderLabel(attribution.provider);
+    const key = usageModelKey(provider, attribution.model);
+    let model = partition.models.get(key);
+    if (!model) {
+      model = blankModelAccumulator(provider, attribution.model, attribution.resolvedModel, ordinal, this.mode);
+      partition.models.set(key, model);
+      this.estimatedRetainedBytes += ESTIMATED_BREAKDOWN_BYTES + key.length * 2;
+    }
+    this.addAttributionMetrics(model, attribution, estimate);
+    return key;
+  }
+
+  private addProviderAttribution(
+    partition: UsagePartition,
+    attribution: UsageAttribution,
+    estimate: AttemptCostEstimate | CostEstimate | null,
+    ordinal: number,
+  ): string {
+    const providerKey = baseProviderLabel(attribution.provider);
+    const providers = partition.providers;
+    if (!providers) return providerKey;
+    let provider = providers.get(providerKey);
+    if (!provider) {
+      provider = blankModelAccumulator(providerKey, "", undefined, ordinal, "row-unique");
+      providers.set(providerKey, provider);
+      this.estimatedRetainedBytes += ESTIMATED_BREAKDOWN_BYTES + providerKey.length * 2;
+    }
+    this.addAttributionMetrics(provider, attribution, estimate);
+    return providerKey;
+  }
+
+  private addBreakdownRequest(
+    breakdown: UsageModelAccumulator,
+    facts: number,
+    requestKey: number | null,
+  ): void {
+    if (breakdown.requestFacts) {
+      if (requestKey === null) throw new Error("exact accumulators require request identity");
+      const previous = breakdown.requestFacts.get(requestKey);
+      breakdown.requestFacts.set(requestKey, (previous ?? 0) | facts);
+      if (previous === undefined) this.estimatedRetainedBytes += ESTIMATED_REQUEST_FACT_BYTES;
+      return;
+    }
+    bumpRequestCounts(breakdown.requestCounts, facts);
+  }
+
+  private addEffortRequest(group: UsageEffortAccumulator, requestKey: number | null): void {
+    if (group.requestIds) {
+      if (requestKey === null) throw new Error("exact accumulators require request identity");
+      const previousSize = group.requestIds.size;
+      group.requestIds.add(requestKey);
+      if (group.requestIds.size !== previousSize) {
+        this.estimatedRetainedBytes += ESTIMATED_EFFORT_REQUEST_BYTES;
+      }
+      return;
+    }
+    group.requests += 1;
+  }
+
+  private addAccountRequest(account: UsageAccountAccumulator, requestKey: number | null): void {
+    if (account.requestIds) {
+      if (requestKey === null) throw new Error("exact accumulators require request identity");
+      const previousSize = account.requestIds.size;
+      account.requestIds.add(requestKey);
+      if (account.requestIds.size !== previousSize) {
+        this.estimatedRetainedBytes += ESTIMATED_ACCOUNT_REQUEST_BYTES;
+      }
+      return;
+    }
+    account.requests += 1;
+  }
+
+  private addAccountAttribution(
+    partition: UsagePartition,
+    attribution: UsageAttribution,
+    estimate: AttemptCostEstimate | CostEstimate | null,
+    ordinal: number,
+  ): string | null {
+    const label = accountLabelForAttribution(attribution.provider, attribution.accountLogLabel);
+    if (!label) return null;
+    let account = partition.accounts.get(label);
+    if (!account) {
+      account = {
         accountLogLabel: label,
         ambiguous: label === LEGACY_AMBIGUOUS_ACCOUNT_LABEL,
+        firstSeen: ordinal,
         requests: 0,
+        ...(this.mode === "exact" ? { requestIds: new Set() } : {}),
         attemptCount: 0,
         measuredAttempts: 0,
         reportedAttempts: 0,
@@ -1106,236 +1602,253 @@ function buildAccounts(entries: PersistedUsageEntry[], costMap: Map<PersistedUsa
         cacheCreationInputTokens: 0,
         reasoningOutputTokens: 0,
         totalTokens: 0,
-        usageCoverageRatio: 0,
         pricedAttempts: 0,
         unpricedAttempts: 0,
-        priceCoverageRatio: 0,
       };
-      byLabel.set(label, row);
-      requestIds.set(label, new Set());
+      partition.accounts.set(label, account);
+      this.estimatedRetainedBytes += ESTIMATED_BREAKDOWN_BYTES + label.length * 2;
     }
-    requestIds.get(label)!.add(input.requestId);
-    row.requests = requestIds.get(label)!.size;
-    row.attemptCount += 1;
-    const measured = input.usage !== undefined && isMeasuredStatus(input.usageStatus);
-    if (!measured) {
-      row.unmeteredAttempts += 1;
-      return;
+    account.attemptCount += 1;
+    if (!attribution.usage || !isMeasuredStatus(attribution.usageStatus)) {
+      account.unmeteredAttempts += 1;
+      return label;
     }
-
-    row.measuredAttempts += 1;
-    if (input.usageStatus === "reported") row.reportedAttempts += 1;
-    else if (input.usageStatus === "estimated") row.estimatedAttempts += 1;
-    row.inputTokens += input.usage!.inputTokens;
-    row.outputTokens += input.usage!.outputTokens;
-    const { read, creation } = cacheTokensFromUsage(input.usage);
-    if (typeof read === "number") row.cacheReadInputTokens += read;
-    if (typeof creation === "number") row.cacheCreationInputTokens += creation;
-    if (typeof input.usage!.reasoningOutputTokens === "number") {
-      row.reasoningOutputTokens += input.usage!.reasoningOutputTokens;
+    account.measuredAttempts += 1;
+    if (attribution.usageStatus === "reported") account.reportedAttempts += 1;
+    else if (attribution.usageStatus === "estimated") account.estimatedAttempts += 1;
+    account.inputTokens += attribution.usage.inputTokens;
+    account.outputTokens += attribution.usage.outputTokens;
+    const { read, creation } = cacheTokensFromUsage(attribution.usage);
+    if (typeof read === "number") account.cacheReadInputTokens += read;
+    if (typeof creation === "number") account.cacheCreationInputTokens += creation;
+    if (typeof attribution.usage.reasoningOutputTokens === "number") {
+      account.reasoningOutputTokens += attribution.usage.reasoningOutputTokens;
     }
-    row.totalTokens += usageDisplayTotalTokens(input.usage, input.totalTokens) ?? 0;
-    if (input.estimate) {
-      row.pricedAttempts += 1;
-      row.estimatedCostUsd = (row.estimatedCostUsd ?? 0) + input.estimate.cost.total;
+    account.totalTokens += usageDisplayTotalTokens(attribution.usage, attribution.totalTokens) ?? 0;
+    if (estimate) {
+      account.pricedAttempts += 1;
+      account.estimatedCostUsd = (account.estimatedCostUsd ?? 0) + estimate.cost.total;
     } else {
-      row.unpricedAttempts += 1;
+      account.unpricedAttempts += 1;
     }
-  };
+    return label;
+  }
 
-  for (const entry of entries) {
-    const costInfo = costMap.get(entry);
-    if (entry.attempts?.length) {
-      for (let i = 0; i < entry.attempts.length; i++) {
-        const attempt = entry.attempts[i];
-        const attemptEst = costInfo?.attemptEstimates?.[i] ?? null;
-        add({
-          requestId: entry.requestId,
-          provider: attempt.provider,
-          ...(attempt.accountLogLabel ? { accountLogLabel: attempt.accountLogLabel } : {}),
-          usageStatus: attempt.usageStatus,
-          ...(attempt.usage ? { usage: attempt.usage } : {}),
-          ...(attempt.totalTokens !== undefined ? { totalTokens: attempt.totalTokens } : {}),
-          estimate: attemptEst,
-        });
+  add(sourceEntry: PersistedUsageEntry): void {
+    if (Number.isFinite(sourceEntry.timestamp)) {
+      this.snapshotStart = this.snapshotStart === null
+        ? sourceEntry.timestamp
+        : Math.min(this.snapshotStart, sourceEntry.timestamp);
+      this.snapshotEnd = this.snapshotEnd === null
+        ? sourceEntry.timestamp
+        : Math.max(this.snapshotEnd, sourceEntry.timestamp);
+    }
+    const projected = this.filter ? projectedEntryForFilter(sourceEntry, this.filter) : { entry: sourceEntry, comboOverlap: false };
+    if (!projected) return;
+    this.comboOverlap ||= projected.comboOverlap;
+    const entry = projected.entry;
+    const partition = this.partitionFor(entry);
+    const costInfo = computeEntryCost(entry);
+    bumpStatus(partition.totals, entry.usageStatus);
+    partition.totals.attemptCount += entry.attempts?.length ?? 1;
+    addTokens(partition.totals, entry);
+    addEstimatedCost(partition.totals, entry, costInfo);
+    partition.latency.modelCallMs += entry.durationMs;
+    if (Number.isFinite(entry.timestamp) && Number.isFinite(entry.durationMs) && entry.durationMs > 0) {
+      if (addUnionInterval(partition.latency.intervals, entry.timestamp, entry.timestamp + entry.durationMs)) {
+        this.estimatedRetainedBytes += ESTIMATED_LATENCY_INTERVAL_BYTES;
       }
-      continue;
     }
-    add({
-      requestId: entry.requestId,
-      provider: entry.provider,
-      ...(entry.accountLogLabel ? { accountLogLabel: entry.accountLogLabel } : {}),
-      usageStatus: entry.usageStatus,
-      ...(entry.usage ? { usage: entry.usage } : {}),
-      ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
-      estimate: costInfo?.estimate ?? null,
-    });
-  }
+    accumulateRates(partition.latency.rates, entry);
 
-  for (const row of byLabel.values()) {
-    row.usageCoverageRatio = row.attemptCount === 0 ? 0 : row.measuredAttempts / row.attemptCount;
-    row.priceCoverageRatio = row.measuredAttempts === 0 ? 0 : row.pricedAttempts / row.measuredAttempts;
-  }
-  return [...byLabel.values()].sort((a, b) => b.totalTokens - a.totalTokens);
-}
-
-/** Total covered milliseconds of a set of [start, end] intervals, overlaps merged. */
-export function unionDurationMs(intervals: ReadonlyArray<readonly [number, number]>): number {
-  if (!intervals.length) return 0;
-  const sorted = intervals.filter(([start, end]) => end > start).sort((a, b) => a[0] - b[0]);
-  if (!sorted.length) return 0;
-  let [start, end] = sorted[0]!;
-  let total = 0;
-  for (const [nextStart, nextEnd] of sorted.slice(1)) {
-    if (nextStart <= end) end = Math.max(end, nextEnd);
-    else { total += end - start; [start, end] = [nextStart, nextEnd]; }
-  }
-  return total + end - start;
-}
-
-/**
- * The gate for every latency RATE: only a successful, fully-completed, metered
- * row with real output can honestly contribute to TTFT or tokens/sec. Rows that
- * fail the gate still count toward requests and modelCallMs.
- */
-type UsageRateSample = Pick<
-  UsageAttribution,
-  "status" | "durationMs" | "firstOutputMs" | "streamAborted" | "terminalStatus" | "usageStatus" | "usage"
->;
-
-function isCompletedForRates(entry: UsageRateSample): boolean {
-  return entry.status >= 200 && entry.status < 300
-    && entry.streamAborted !== true
-    && (!entry.terminalStatus || entry.terminalStatus === "completed")
-    && (entry.usageStatus === "reported" || entry.usageStatus === "estimated")
-    && (entry.usage?.outputTokens ?? 0) > 0
-    && entry.durationMs > 0;
-}
-
-/** firstOutputMs === 0 is a valid TTFT — never truthiness-check it. */
-function validTtft(entry: UsageRateSample): boolean {
-  return entry.firstOutputMs != null && entry.firstOutputMs <= entry.durationMs;
-}
-
-interface RateAccumulator {
-  ttftSumMs: number;
-  ttftRows: number;
-  e2eTokens: number;
-  e2eMs: number;
-  decodeTokens: number;
-  decodeMs: number;
-}
-
-function blankRates(): RateAccumulator {
-  return { ttftSumMs: 0, ttftRows: 0, e2eTokens: 0, e2eMs: 0, decodeTokens: 0, decodeMs: 0 };
-}
-
-function mergeRates(target: RateAccumulator, source: RateAccumulator | undefined): void {
-  if (!source) return;
-  target.ttftSumMs += source.ttftSumMs;
-  target.ttftRows += source.ttftRows;
-  target.e2eTokens += source.e2eTokens;
-  target.e2eMs += source.e2eMs;
-  target.decodeTokens += source.decodeTokens;
-  target.decodeMs += source.decodeMs;
-}
-
-function accumulateRates(acc: RateAccumulator, entry: UsageRateSample): void {
-  if (!isCompletedForRates(entry)) return;
-  const outputTokens = entry.usage!.outputTokens;
-  acc.e2eTokens += outputTokens;
-  acc.e2eMs += entry.durationMs;
-  if (!validTtft(entry)) return;
-  acc.ttftSumMs += entry.firstOutputMs!;
-  acc.ttftRows += 1;
-  const decodeMs = entry.durationMs - entry.firstOutputMs!;
-  if (decodeMs > 0) {
-    acc.decodeTokens += outputTokens;
-    acc.decodeMs += decodeMs;
-  }
-}
-
-/** Token-weighted rates: sum of tokens over sum of ms, never a mean of per-request rates. */
-function finalizeRates(acc: RateAccumulator): Pick<UsageLatency, "averageTtftMs" | "endToEndTokensPerSecond" | "decodeTokensPerSecond"> {
-  return {
-    averageTtftMs: acc.ttftRows > 0 ? acc.ttftSumMs / acc.ttftRows : null,
-    endToEndTokensPerSecond: acc.e2eMs > 0 ? acc.e2eTokens / (acc.e2eMs / 1000) : null,
-    decodeTokensPerSecond: acc.decodeMs > 0 ? acc.decodeTokens / (acc.decodeMs / 1000) : null,
-  };
-}
-
-function buildLatency(entries: PersistedUsageEntry[], activity: CodexTaskActivity | null): UsageLatency {
-  let modelCallMs = 0;
-  const intervals: Array<[number, number]> = [];
-  const rates = blankRates();
-  for (const entry of entries) {
-    modelCallMs += entry.durationMs;
-    intervals.push([entry.timestamp, entry.timestamp + entry.durationMs]);
-    accumulateRates(rates, entry);
-  }
-  return {
-    modelCallMs,
-    apiActiveMs: unionDurationMs(intervals),
-    activeWallMs: activity ? activity.activeWallMs : null,
-    activeTurns: activity?.activeTurns ?? 0,
-    completedTurns: activity?.completedTurns ?? 0,
-    ...finalizeRates(rates),
-  };
-}
-
-const NOT_RECORDED_EFFORT = "not-recorded";
-
-function buildEffortGroups(entries: PersistedUsageEntry[]): UsageEffortGroup[] {
-  const byKey = new Map<string, { group: UsageEffortGroup; rates: RateAccumulator; requestIds: Set<string> }>();
-  const allRequestIds = new Set<string>();
-  for (const entry of entries) {
-    for (const attribution of usageAttributions(entry)) {
-      allRequestIds.add(attribution.requestId);
-      const provider = baseProviderLabel(attribution.provider);
-      const model = attribution.resolvedModel ?? attribution.model;
-      const requestedEffort = attribution.requestedEffort ?? NOT_RECORDED_EFFORT;
-      const effectiveEffort = attribution.effectiveEffort ?? NOT_RECORDED_EFFORT;
-      const speedMode = attribution.speedMode;
-      const key = `${provider}\0${model}\0${speedMode}\0${requestedEffort}\0${effectiveEffort}`;
-      let slot = byKey.get(key);
-      if (!slot) {
-        slot = {
-          group: {
-            provider,
-            model,
-            speedMode,
-            requestedEffort,
-            effectiveEffort,
-            requests: 0,
-            requestShare: 0,
-            modelCallMs: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            averageTtftMs: null,
-            endToEndTokensPerSecond: null,
-            decodeTokensPerSecond: null,
-          },
-          rates: blankRates(),
-          requestIds: new Set(),
-        };
-        byKey.set(key, slot);
+    const requestKey = this.mode === "exact" ? this.requestKey(entry.requestId) : null;
+    const attributions = usageAttributions(entry);
+    const modelFacts = new Map<string, number>();
+    const providerFacts = new Map<string, number>();
+    const accountLabels = new Set<string>();
+    const effortKeys = new Set<string>();
+    for (let index = 0; index < attributions.length; index++) {
+      const attribution = attributions[index]!;
+      const estimate = entry.attempts?.length
+        ? costInfo.attemptEstimates?.[index] ?? null
+        : costInfo.estimate;
+      const ordinal = this.nextOrdinal++;
+      const facts = requestStatusFact(attribution.usageStatus)
+        | (estimate ? REQUEST_PRICED : REQUEST_UNPRICED);
+      const modelKey = this.addModelAttribution(partition, attribution, estimate, ordinal);
+      modelFacts.set(modelKey, (modelFacts.get(modelKey) ?? 0) | facts);
+      effortKeys.add(this.addEffortAttribution(partition, attribution, ordinal));
+      if (this.mode === "row-unique") {
+        const providerKey = this.addProviderAttribution(partition, attribution, estimate, ordinal);
+        providerFacts.set(providerKey, (providerFacts.get(providerKey) ?? 0) | facts);
       }
-      slot.requestIds.add(attribution.requestId);
-      slot.group.modelCallMs += attribution.durationMs;
-      slot.group.inputTokens += attribution.usage?.inputTokens ?? 0;
-      slot.group.outputTokens += attribution.usage?.outputTokens ?? 0;
-      accumulateRates(slot.rates, attribution);
+      const accountLabel = this.addAccountAttribution(partition, attribution, estimate, ordinal);
+      if (accountLabel) accountLabels.add(accountLabel);
+    }
+    for (const [modelKey, facts] of modelFacts) {
+      this.addBreakdownRequest(partition.models.get(modelKey)!, facts, requestKey);
+    }
+    if (partition.providers) {
+      for (const [providerKey, facts] of providerFacts) {
+        this.addBreakdownRequest(partition.providers.get(providerKey)!, facts, null);
+      }
+    }
+    for (const label of accountLabels) {
+      this.addAccountRequest(partition.accounts.get(label)!, requestKey);
+    }
+    for (const effortKey of effortKeys) {
+      this.addEffortRequest(partition.effortGroups.get(effortKey)!, requestKey);
+    }
+    if (this.mode === "row-unique" && modelFacts.size > 1) {
+      const models = [...modelFacts].sort(([a], [b]) => a.localeCompare(b));
+      const signature = JSON.stringify(models);
+      const overlap = partition.modelOverlaps.get(signature);
+      if (overlap) {
+        overlap.count += 1;
+      } else {
+        partition.modelOverlaps.set(signature, { models, count: 1 });
+        this.estimatedRetainedBytes += ESTIMATED_OVERLAP_BYTES
+          + models.length * ESTIMATED_OVERLAP_MODEL_BYTES
+          + signature.length * 2;
+      }
     }
   }
-  const totalRequests = allRequestIds.size;
-  const groups: UsageEffortGroup[] = [];
-  for (const { group, rates, requestIds } of byKey.values()) {
-    group.requests = requestIds.size;
-    group.requestShare = totalRequests === 0 ? 0 : group.requests / totalRequests * 100;
-    Object.assign(group, finalizeRates(rates));
-    groups.push(group);
+
+  summarize(
+    range: UsageRange,
+    now: number,
+    surface: UsageSurface = "all",
+    codexActivity: CodexTaskActivity | null = null,
+  ): UsageSummary & { filter?: UsageFilterEcho } {
+    const { since, days: fixedDays } = rangeWindow(range, now);
+    const totals = blankTotals();
+    const models = new Map<string, UsageModelAccumulator>();
+    const providers = new Map<string, UsageModelAccumulator>();
+    const accounts = new Map<string, UsageAccountAccumulator>();
+    const dayAccumulators = new Map<string, UsageDayAccumulator>();
+    const modelOverlaps: UsageModelOverlap[] = [];
+    const latency: UsageLatencyAccumulator = { modelCallMs: 0, intervals: [], rates: blankRates() };
+    const effortGroups = new Map<string, UsageEffortAccumulator>();
+    let oldestTimestamp: number | null = null;
+
+    for (const partition of this.partitions.values()) {
+      if (!usageSurfaceMatches(partition.surface, surface)) continue;
+      if (since !== null && partition.dayStart < since) continue;
+      mergeTotals(totals, partition.totals);
+      mergeModelMaps(models, partition.models);
+      if (partition.providers) mergeModelMaps(providers, partition.providers);
+      modelOverlaps.push(...partition.modelOverlaps.values());
+      latency.modelCallMs += partition.latency.modelCallMs;
+      for (let history = partition.latency.intervalHistory; history; history = history.previous) {
+        for (const interval of history.intervals) latency.intervals.push([interval[0], interval[1]]);
+      }
+      latency.intervals.push(...partition.latency.intervals);
+      mergeRates(latency.rates, partition.latency.rates);
+      mergeEffortMaps(effortGroups, partition.effortGroups);
+      for (const [label, account] of partition.accounts) {
+        const current = accounts.get(label);
+        if (current) mergeAccountAccumulator(current, account);
+        else accounts.set(label, cloneAccountAccumulator(account));
+      }
+      if (partition.oldestTimestamp !== null) {
+        oldestTimestamp = oldestTimestamp === null
+          ? partition.oldestTimestamp
+          : Math.min(oldestTimestamp, partition.oldestTimestamp);
+      }
+      let day = dayAccumulators.get(partition.date);
+      if (!day) {
+        day = { totals: blankTotals(), models: new Map(), modelOverlaps: [] };
+        dayAccumulators.set(partition.date, day);
+      }
+      mergeTotals(day.totals, partition.totals);
+      mergeModelMaps(day.models, partition.models);
+      day.modelOverlaps.push(...partition.modelOverlaps.values());
+    }
+    finalizeCoverage(totals);
+
+    const dayCount = range === "all" ? dayCountForAllRange(oldestTimestamp, now) : fixedDays;
+    const startOfToday = startOfLocalDay(now);
+    const firstVisibleDay = new Date(startOfToday);
+    firstVisibleDay.setDate(firstVisibleDay.getDate() - dayCount + 1);
+    const firstVisibleDate = localDateKey(firstVisibleDay.getTime());
+    const lastVisibleDate = localDateKey(startOfToday);
+    for (let offset = dayCount - 1; offset >= 0; offset--) {
+      const date = new Date(startOfToday);
+      date.setDate(date.getDate() - offset);
+      const key = localDateKey(date.getTime());
+      if (!dayAccumulators.has(key)) {
+        dayAccumulators.set(key, { totals: blankTotals(), models: new Map(), modelOverlaps: [] });
+      }
+    }
+    const days = [...dayAccumulators]
+      // All-history totals, models, providers, and accounts still cover every
+      // retained row. Only the chart buckets are bounded so one malformed or
+      // ancient timestamp cannot synthesize an enormous JSON response.
+      .filter(([date]) => range !== "all"
+        || (date >= firstVisibleDate && date <= lastVisibleDate))
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, day]): UsageDay => ({
+        date,
+        requests: day.totals.requests,
+        measuredRequests: day.totals.measuredRequests,
+        reportedRequests: day.totals.reportedRequests,
+        totalTokens: day.totals.totalTokens,
+        estimatedCostUsd: day.totals.estimatedCostUsd,
+        models: buildDayModels(day.models, day.modelOverlaps),
+      }));
+
+    const summary: UsageSummary = {
+      range,
+      surface,
+      since,
+      generatedAt: now,
+      summary: totals,
+      days,
+      models: buildUsageModels(models, totals.totalTokens, modelOverlaps),
+      providers: buildUsageProviders(this.mode === "row-unique" ? providers : models, totals.totalTokens),
+      accounts: buildUsageAccounts(accounts),
+      latency: {
+        modelCallMs: latency.modelCallMs,
+        apiActiveMs: unionDurationMs(latency.intervals),
+        activeWallMs: codexActivity?.activeWallMs ?? null,
+        activeTurns: codexActivity?.activeTurns ?? 0,
+        completedTurns: codexActivity?.completedTurns ?? 0,
+        ...finalizeRates(latency.rates),
+      },
+      effortGroups: buildEffortGroups(effortGroups, totals.requests),
+    };
+    if (!this.filter) return summary;
+    const matches = (provider: string, model: string): boolean =>
+      filterMatchesAttribution(this.filter!, provider, model);
+    const retainedModels = summary.models.filter(row => matches(row.provider, row.model));
+    const retainedProviders = new Set(retainedModels.map(row => row.provider));
+    return {
+      ...summary,
+      days: summary.days.map(day => ({
+        ...day,
+        models: day.models.filter(row => matches(row.provider, row.model)),
+      })),
+      models: retainedModels,
+      providers: summary.providers.filter(row => retainedProviders.has(row.provider)),
+      accounts: this.filter.provider === null && this.filter.model === null
+        ? summary.accounts
+        : [],
+      filter: {
+        provider: this.filter.provider,
+        model: this.filter.model,
+        apiKeyId: this.filter.apiKeyId,
+        matched: summary.summary.requests > 0,
+        comboOverlap: this.comboOverlap,
+      },
+    };
   }
-  return groups.sort((a, b) => b.requests - a.requests);
+}
+
+export function createUsageSummaryAccumulator(options?: {
+  filter?: { provider?: string | null; model?: string | null; apiKeyId?: string | null };
+  mode?: UsageAccumulatorMode;
+}): UsageSummaryAccumulator {
+  return new StreamingUsageSummaryAccumulator(options);
 }
 
 export function summarizeUsage(
@@ -1345,42 +1858,9 @@ export function summarizeUsage(
   surface: UsageSurface = "all",
   codexActivity?: CodexTaskActivity | null,
 ): UsageSummary {
-  const { since } = rangeWindow(range, now);
-  const filteredEntries = entries.filter(entry => {
-    if (since !== null && entry.timestamp < since) return false;
-    if (surface === "claude") return entry.surface === "claude" || entry.surface === "claude-desktop";
-    if (surface === "grok") return entry.surface === "grok";
-    // Codex = the historical unlabelled bucket. Before the grok tag existed every
-    // non-Claude turn landed here, and `surface !== "claude"` also swallowed
-    // claude-desktop — disjoint predicates fix both.
-    if (surface === "codex") return entry.surface === undefined;
-    return true;
-  });
-  const costMap = new Map<PersistedUsageEntry, EntryCostInfo>();
-  for (const entry of filteredEntries) {
-    costMap.set(entry, computeEntryCost(entry));
-  }
-  const totals = blankTotals();
-  for (const entry of filteredEntries) {
-    bumpStatus(totals, entry.usageStatus);
-    totals.attemptCount += entry.attempts?.length ?? 1;
-    addTokens(totals, entry);
-    addEstimatedCost(totals, entry, costMap.get(entry)!);
-  }
-  finalizeCoverage(totals);
-  return {
-    range,
-    surface,
-    since,
-    generatedAt: now,
-    summary: totals,
-    days: buildDayGrid(range, since, now, filteredEntries, costMap),
-    models: buildModels(filteredEntries, totals.totalTokens, costMap),
-    providers: buildProviders(filteredEntries, totals.totalTokens, costMap),
-    accounts: buildAccounts(filteredEntries, costMap),
-    latency: buildLatency(filteredEntries, codexActivity ?? null),
-    effortGroups: buildEffortGroups(filteredEntries),
-  };
+  const accumulator = createUsageSummaryAccumulator();
+  for (const entry of entries) accumulator.add(entry);
+  return accumulator.summarize(range, now, surface, codexActivity);
 }
 
 function normalizeFilterValue(input: string | null | undefined): string | null {
@@ -1396,12 +1876,9 @@ function normalizeExactFilterValue(input: string | null | undefined): string | n
 /**
  * Narrow an already-summarised window to one provider and/or model.
  *
- * Deliberately a projection over a finished summary rather than a parameter to
- * {@link summarizeUsage}. The management route caches summaries under
- * `range:surface` and warms that key space as a cross-product; a filtered
- * summary that reached either would be served to the next UNFILTERED caller,
- * the dashboard included. Keeping the filter outside the producer makes that
- * mistake unrepresentable rather than merely discouraged.
+ * The compatibility wrapper feeds source rows through a filter-bound streaming
+ * accumulator. The management route can use the same accumulator directly and
+ * still keep filtered results outside its unfiltered `range:surface` cache.
  *
  * Totals are recomputed from the retained rows. For combo traffic a request is
  * counted once per participating model, so a filtered request count can exceed
@@ -1423,87 +1900,28 @@ export function projectUsageSummary<T extends UsageSummary>(
   const model = normalizeFilterValue(filter.model);
   const apiKeyId = normalizeExactFilterValue(filter.apiKeyId);
   if (provider === null && model === null && apiKeyId === null) return summary;
-
-  // Re-summarise from the entries the summary was built from, rather than
-  // projecting over its rows.
-  //
-  // Projecting rows looked cheaper and was wrong in three ways that only show
-  // up together: breakdown rows past MAX_USAGE_MODEL_BREAKDOWN_ROWS are
-  // collapsed into a synthetic "other" row, so a provider living only in that
-  // tail is unfindable and reports matched:false despite real usage; a
-  // provider row is a whole-provider aggregate, so a model filter kept the
-  // provider's OTHER models in providers[] while models[] and the totals
-  // excluded them, contradicting itself inside one response; and a model row
-  // carries a single optional cost, so priced/unpriced/unmetered counts could
-  // only be guessed per model rather than counted per request.
-  //
-  // Key ownership is the outer slice: no provider/model attribution or bucket
-  // construction may observe rows belonging to another client key.
-  const keyFilteredEntries = apiKeyId === null
-    ? entries ?? []
-    : (entries ?? []).filter(entry => entry.apiKeyId === apiKeyId);
-
-  // The entries are already in hand on every path that filters, so the honest
-  // computation is also the simple one.
-  const matches = (rowProvider: string, rowModel: string): boolean => {
-    if (provider !== null && baseProviderLabel(rowProvider).toLowerCase() !== provider) return false;
-    if (model !== null && rowModel.toLowerCase() !== model) return false;
-    return true;
+  const accumulator = createUsageSummaryAccumulator({ filter: { provider, model, apiKeyId } });
+  for (const entry of entries ?? []) accumulator.add(entry);
+  const codexActivity = summary.latency.activeWallMs === null ? null : {
+    activeWallMs: summary.latency.activeWallMs,
+    activeTurns: summary.latency.activeTurns,
+    completedTurns: summary.latency.completedTurns,
   };
-
-  // Narrow to matching ATTRIBUTIONS, not matching entries.
-  //
-  // Keeping a whole combo entry because one of its attempts matched drags the
-  // other attempts' tokens and cost into the filtered totals: a two-attempt
-  // combo filtered to its cheap model reported the expensive model's spend
-  // too. Rewriting the entry down to its matching attempts is what makes the
-  // filtered numbers mean what the flag says.
-  let comboOverlap = false;
-  const filtered: PersistedUsageEntry[] = [];
-  for (const entry of keyFilteredEntries) {
-    if (!entry.attempts?.length) {
-      const identity = usageModelIdentity(entry.provider, entry.model, entry.resolvedModel);
-      if (matches(entry.provider, identity.model)) filtered.push(entry);
-      continue;
-    }
-    const attempts = entry.attempts.filter(a => {
-      const identity = usageModelIdentity(a.provider, a.model);
-      return matches(a.provider, identity.model);
-    });
-    if (attempts.length === 0) continue;
-    if (entry.attempts.length > 1) comboOverlap = true;
-    const { usage: _parentUsage, totalTokens: _parentTotalTokens, ...withoutParentUsage } = entry;
-    filtered.push({ ...withoutParentUsage, attempts, ...projectedComboUsage(attempts) });
-  }
-
-  const projected = summarizeUsage(filtered, summary.range, summary.generatedAt, summary.surface);
-  const matched = projected.summary.requests > 0;
-  const models = projected.models.filter(row => matches(row.provider, row.model));
-  const retainedProviders = new Set(models.map(row => row.provider));
+  const projected = accumulator.summarize(
+    summary.range,
+    summary.generatedAt,
+    summary.surface,
+    codexActivity,
+  );
   return {
     ...summary,
     summary: projected.summary,
-    days: projected.days.map(day => ({ ...day, models: day.models.filter(row => matches(row.provider, row.model)) })),
-    models,
-    providers: projected.providers.filter(row => retainedProviders.has(row.provider)),
-    // Account rows are not provider-partitioned in a way this projection could
-    // honestly re-derive, and unfiltered account totals sitting beside filtered
-    // model totals would invite exactly the wrong reading — so a provider or model
-    // filter drops them.
-    //
-    // An apiKeyId-only filter is different: it selects whole entries, so the account
-    // rows projected from those entries are exactly the accounts that key used. They
-    // are honest under that filter and are kept.
-    accounts: provider === null && model === null ? projected.accounts : [],
-    // Row-derived latency reflects the retained rows; Codex task time is not
-    // partitionable by provider/model, so the parent summary's values carry over.
-    latency: {
-      ...projected.latency,
-      activeWallMs: summary.latency.activeWallMs,
-      activeTurns: summary.latency.activeTurns,
-      completedTurns: summary.latency.completedTurns,
-    },
+    days: projected.days,
+    models: projected.models,
+    providers: projected.providers,
+    accounts: projected.accounts,
+    latency: projected.latency,
     effortGroups: projected.effortGroups,
-    filter: { provider, model, apiKeyId, matched, comboOverlap },
+    filter: projected.filter,
   };
 }
