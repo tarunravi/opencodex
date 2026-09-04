@@ -845,7 +845,6 @@ function UsageWorkspaceBody({
       meta: data ? `${data.summary.requests}` : "—",
       body: data ? (
         <>
-          <UsageProfileHero summary={data.summary} days={data.days} host={host} locale={locale} t={t} />
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
           <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
           <UsageInsightsRow data={data} activeDays={activeDays} locale={locale} t={t} />
@@ -1025,20 +1024,19 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
               })()}
             </Notice>
           )}
-      <UsageWorkspaceBody
-        data={data}
-        heatmap={heatmap}
-        weekBars={weekBars}
-        activeDays={activeDays}
-        filteredModels={filteredModels}
-        modelQuery={modelQuery}
-        onModelQuery={setModelQuery}
-        sortedProviders={sortedProviders}
-        range={range}
-        host={host}
-        locale={locale}
-        t={t}
-      />
+          <UsageWorkspaceBody
+            data={data}
+            heatmap={heatmap}
+            weekBars={weekBars}
+            activeDays={activeDays}
+            filteredModels={filteredModels}
+            modelQuery={modelQuery}
+            onModelQuery={setModelQuery}
+            sortedProviders={sortedProviders}
+            range={range}
+            locale={locale}
+            t={t}
+          />
         </>
       )}
     </>
