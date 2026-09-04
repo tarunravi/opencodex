@@ -81,7 +81,7 @@ import { createAdmissionGate, ResourceAdmissionError, type AdmissionMetrics } fr
 
 import { CODEX_CUSTOM_MODEL_CATALOG_KIND, JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
 import type { CatalogModel } from "./parsing";
-import { disabledNativeSlugs, hasComboTargets, isNativeOpenAiCapabilityAliasModel, NATIVE_GPT56_MAX_INPUT_TOKENS, nativeContextLimits, nativeOpenAiAliasPresentation, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiAutoCompactTokenLimit, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, nativeOpenAiMaxOutputTokens, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
+import { disabledNativeSlugs, hasComboTargets, hasNativeOpenAiCapabilityMetadata, NATIVE_GPT56_MAX_INPUT_TOKENS, nativeContextLimits, nativeOpenAiCapabilityDisplayName, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiAutoCompactTokenLimit, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, nativeOpenAiMaxOutputTokens, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
 import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 import type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
@@ -2190,7 +2190,7 @@ async function gatherRoutedModelsUncached(
     const codexForwardNativeCapabilityAlias = cm.provider === OPENAI_CODEX_PROVIDER_ID
       && providerForCanonicalCheck !== undefined
       && isCanonicalOpenAiForwardProvider(providerForCanonicalCheck)
-      && isNativeOpenAiCapabilityAliasModel(cm.modelId);
+      && hasNativeOpenAiCapabilityMetadata(cm.modelId);
     const customNativeLimits = {
       ...nativeContextLimits(config),
       ...(typeof cm.contextWindow === "number" && cm.contextWindow > 0
@@ -2253,7 +2253,7 @@ async function gatherRoutedModelsUncached(
       ...(cm.displayName
         ? { displayName: cm.displayName }
         : codexForwardNativeCapabilityAlias
-          ? { displayName: nativeOpenAiAliasPresentation(cm.modelId)?.displayName ?? cm.modelId } : {}),
+          ? { displayName: nativeOpenAiCapabilityDisplayName(cm.modelId) ?? cm.modelId } : {}),
       ...(customContextWindow !== undefined ? { contextWindow: customContextWindow } : {}),
       ...(customMaxInputTokens !== undefined ? { maxInputTokens: customMaxInputTokens } : {}),
       ...(customMaxOutputTokens !== undefined ? { maxOutputTokens: customMaxOutputTokens } : {}),

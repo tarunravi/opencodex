@@ -8,14 +8,22 @@ export const NATIVE_DAYBREAK_BLUE_MODEL = "gpt-daybreak-blue-latest";
  * Registered preemptively so an entitled account can route it the moment it ships, before any
  * codex-rs catalog carries it. Unlike Daybreak it is NOT wire-normalized to a serving id —
  * the leaked slug IS the wire id.
+ */
+/**
+ * SHIPPED as of 2026-09-03: openai/codex `ed391d4dd` (#42607, bundled model catalog) and
+ * `1f7b99922` (#42619, Amazon Bedrock catalogs). The registration is no longer speculative —
+ * `src/codex/data/upstream-models.json` now pins the real row, so this slug is SELF-DESCRIBED
+ * and must not borrow another model's capability metadata.
  *
- * Deliberately NOT account-gated (owner decision, 2026-09-04). Entitlement gating hides a slug
- * until an authenticated `/models` roster carries it, and no roster carries this one yet, so
- * gating made the row invisible on every install — including the accounts meant to try it. The
- * row is listed unconditionally instead: selecting it dispatches `gpt-6-astra` upstream and
- * surfaces the real upstream status (404 while the slug is unreleased) rather than silently
- * omitting the model. Add it back to `ACCOUNT_GATED_NATIVE_OPENAI_MODELS` once an entitled
- * roster actually reports it and per-account availability becomes the honest answer.
+ * Still NOT wire-normalized: unlike Daybreak the slug IS the wire id.
+ *
+ * Deliberately NOT account-gated (owner decision, 2026-09-04, reaffirmed during rollout).
+ * Upstream `available_in_plans` lists 23 plans including `free`, but the model is rolling out,
+ * so a given account's Codex surface may still answer
+ * `"The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account."`
+ * — the same refusal Daybreak returns. Gating on an entitlement roster would hide the row until
+ * that roster catches up; listing it means the request dispatches and the real upstream status
+ * is what the user sees. Evidence: devlog/_plan/260904_astra_release_alignment/021.
  */
 export const NATIVE_GPT6_ASTRA_MODEL = "gpt-6-astra";
 
@@ -41,8 +49,20 @@ export const ACCOUNT_GATED_NATIVE_OPENAI_MODELS: ReadonlySet<string> = new Set([
  */
 const NATIVE_OPENAI_CAPABILITY_SOURCES: Readonly<Record<string, string>> = Object.freeze({
   [NATIVE_DAYBREAK_BLUE_MODEL]: "gpt-5.6-sol",
-  [NATIVE_GPT6_ASTRA_MODEL]: "gpt-5.6-sol",
 });
+
+/**
+ * Native slugs that carry their OWN pinned upstream row rather than an alias's borrowed one.
+ *
+ * Membership authorizes `upstreamNativeEntryForSlug` to return the pinned entry directly. It is
+ * an explicit list, not a structural `PINNED_UPSTREAM_MODELS.has(slug)` predicate: the pin also
+ * holds `gpt-5.5`, `gpt-5.4` and `gpt-5.4-mini`, and admitting those into
+ * `UPSTREAM_NATIVE_ENTRIES` would newly authorize replacing their persisted catalog rows during
+ * sync — an invariant that map's own comment reserves for the GPT-5.6 family.
+ */
+export const SELF_DESCRIBED_NATIVE_OPENAI_MODELS: ReadonlySet<string> = new Set([
+  NATIVE_GPT6_ASTRA_MODEL,
+]);
 
 /**
  * Native ids whose capability metadata is inherited from another pinned native row.
@@ -65,6 +85,21 @@ export function isNativeOpenAiCapabilityAliasModel(slug: string): boolean {
   return Object.hasOwn(NATIVE_OPENAI_CAPABILITY_SOURCES, slug);
 }
 
+/**
+ * Native slugs whose Codex-forward CUSTOM row inherits authoritative native metadata.
+ *
+ * Two shapes qualify and the distinction matters only to `upstreamNativeEntryForSlug`:
+ * a capability ALIAS borrows another model's pinned row, while a SELF-DESCRIBED native has its
+ * own. Every consumer that asks "does this custom row get real native capabilities and a real
+ * product label" wants both, which is why they call this rather than the alias check —
+ * `gpt-6-astra` stopped being an alias when its own row was pinned, and gating on
+ * `isNativeOpenAiCapabilityAliasModel` alone would have silently demoted it to a bare-slug label
+ * with no inherited ladder.
+ */
+export function hasNativeOpenAiCapabilityMetadata(slug: string): boolean {
+  return isNativeOpenAiCapabilityAliasModel(slug) || SELF_DESCRIBED_NATIVE_OPENAI_MODELS.has(slug);
+}
+
 export function nativeOpenAiCapabilitySourceSlug(slug: string): string {
   return NATIVE_OPENAI_CAPABILITY_SOURCES[slug] ?? slug;
 }
@@ -78,11 +113,6 @@ export const NATIVE_OPENAI_ALIAS_PRESENTATION: Readonly<Record<string, { display
   [NATIVE_DAYBREAK_BLUE_MODEL]: {
     displayName: "Daybreak Blue",
     description: "Frontier general-purpose model with safeguards for defensive cybersecurity work.",
-  },
-  [NATIVE_GPT6_ASTRA_MODEL]: {
-    displayName: "GPT-6 Astra",
-    // Provisional until the official announcement names the product.
-    description: "Next-generation OpenAI model (preemptively registered from the leaked API identifier; presentation provisional).",
   },
 });
 
