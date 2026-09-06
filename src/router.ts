@@ -408,6 +408,10 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
       && registryEntry.supportsOpenAiWebSearchToolFields !== undefined
       ? { supportsOpenAiWebSearchToolFields: registryEntry.supportsOpenAiWebSearchToolFields }
       : {}),
+    ...(provider.supportsSearchContentTypesOnNonPreviewTools === undefined
+      && registryEntry.supportsSearchContentTypesOnNonPreviewTools !== undefined
+      ? { supportsSearchContentTypesOnNonPreviewTools: registryEntry.supportsSearchContentTypesOnNonPreviewTools }
+      : {}),
     ...(provider.supportsResponsesCustomTools === undefined && registryEntry.supportsResponsesCustomTools !== undefined
       ? { supportsResponsesCustomTools: registryEntry.supportsResponsesCustomTools }
       : {}),

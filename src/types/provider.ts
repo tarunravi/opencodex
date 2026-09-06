@@ -758,6 +758,8 @@ export interface OcxProviderConfig {
    * passthrough compatibility for OpenAI and unclassified gateways.
    */
   supportsOpenAiWebSearchToolFields?: boolean;
+  /** Whether the Responses upstream accepts `search_content_types` outside `web_search_preview`. */
+  supportsSearchContentTypesOnNonPreviewTools?: boolean;
   /**
    * Opt xAI Responses destinations into the provider-hosted `x_search` declaration when a live
    * `web_search` tool survives final request normalization. Disabled by default. This is separate

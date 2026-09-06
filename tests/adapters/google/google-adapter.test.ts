@@ -727,8 +727,8 @@ describe("google adapter — direct -tiered wire renames", () => {
     };
     const systemText = envelope.request.systemInstruction?.parts?.[0]?.text ?? "";
 
-    expect(envelope.model).toBe("gemini-3.7-flash-tiered");
-    expect(systemText).toContain("powered by the gemini-3.7-flash-tiered");
+    expect(envelope.model).toBe("gemini-3.8-flash-tiered");
+    expect(systemText).toContain("powered by the gemini-3.8-flash-tiered");
     expect(systemText).not.toContain("powered by the gemini-3.6-flash.");
   });
 

@@ -37,6 +37,7 @@ const turnGate = createAdmissionGate("active_turns", MAX_ACTIVE_TURNS);
 export interface ActiveTurnLease extends AdmissionLease {
   attach(lease: AdmissionLease): void;
   bindAbortController(ac: AbortController): void;
+  unbindAbortController(ac: AbortController): void;
   beginCodexAccountSelection(): CodexAccountSelectionAdmission;
   isTransferred(): boolean;
 }
@@ -210,6 +211,12 @@ export function tryAdmitTurn(sessionLaneId?: string): ActiveTurnLease | null {
       controllers.add(ac);
       activeTurns.set(ac, lease);
     },
+    unbindAbortController(ac) {
+      if (activeTurns.get(ac) !== lease) return;
+      activeTurns.delete(ac);
+      controllers.delete(ac);
+      if (controllers.size === 0) lease.release();
+    },
     beginCodexAccountSelection() {
       const mainProfileDraining = nativeMainDrainOwners.size > 0;
       let selectionActive = !mainProfileDraining;
@@ -300,7 +307,7 @@ export function unregisterTurn(ac: AbortController): void {
     turnReleaseMisses += 1;
     return;
   }
-  lease.release();
+  lease.unbindAbortController(ac);
 }
 export function isDraining(): boolean { return shutdownDraining || temporaryDrainOwners.size > 0; }
 export function getActiveTurnCount(): number { return turnGate.metrics().active; }

@@ -21,12 +21,14 @@ import {
   buildOpencodeV2ProviderBlock,
   cmdOpencode,
   fetchOpencodeProxyModels,
+  fetchOpencodeVisibleModels,
   isOpencodeRuntimeConfigError,
   mergeOpencodeRuntimeConfig,
   opencodeApiKey,
   opencodeCatalogFromProxyRows,
   opencodeGlobalConfigPath,
   opencodeLaunchNativeSlugs,
+  opencodeManagementApiKey,
   opencodeModelKey,
   opencodeNotFoundHint,
   opencodeProviderOverridePath,
@@ -126,6 +128,35 @@ describe("ocx opencode provider block", () => {
       { provider: "local", id: "tiny", contextWindow: 8_192 },
     ]);
     expect(block.models["local/tiny"]?.limit).toEqual({ context: 8_192, output: 8_192 });
+  });
+
+  test("declared effort levels become OpenCode variants", () => {
+    const block = buildOpencodeProviderBlockFromCatalog(10100, [{
+      namespaced: "xai/grok-4.6",
+      provider: "xai",
+      id: "grok-4.6",
+      reasoningEfforts: ["low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "high",
+    }]);
+    expect(Object.keys(block.models["xai/grok-4.6"]?.variants ?? {})).toEqual([
+      "low", "medium", "high", "xhigh",
+    ]);
+    expect(block.models["xai/grok-4.6"]?.variants?.high).toEqual({
+      reasoningEffort: "high",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+    });
+  });
+
+  test("keeps ultra selectable while sending the Responses-compatible max value", () => {
+    const block = buildOpencodeProviderBlockFromCatalog(10100, [{
+      namespaced: "gpt-5.6-sol",
+      native: true,
+      provider: "openai",
+      id: "gpt-5.6-sol",
+      reasoningEfforts: ["low", "max", "ultra"],
+    }]);
+    expect(block.models["gpt-5.6-sol"]?.variants?.ultra).toMatchObject({ reasoningEffort: "max" });
   });
 
   test("native slugs pick up authoritative context windows from the resolver", () => {
@@ -492,6 +523,21 @@ describe("ocx opencode proxy model catalog", () => {
     })).rejects.toThrow("Management API timed out while fetching /api/models.");
   });
 
+  test("fetchOpencodeVisibleModels reads the filtered public list", async () => {
+    const fetched = await fetchOpencodeVisibleModels(
+      { port: 10100, hostname: "127.0.0.1", pid: 1 },
+      "sk-data",
+      {
+        fetchImpl: async (url, init) => {
+          expect(String(url)).toBe("http://127.0.0.1:10100/v1/models");
+          expect(new Headers(init?.headers).get("X-OpenCodex-API-Key")).toBe("sk-data");
+          return Response.json({ data: [{ id: "xai/grok-4.6", reasoning_effort: "high" }] });
+        },
+      },
+    );
+    expect(fetched).toEqual([{ id: "xai/grok-4.6", reasoning_effort: "high" }]);
+  });
+
   test("opencodeCatalogFromProxyRows omits disabled and direct-mode native rows", () => {
     const directConfig = cfg({
       providers: {
@@ -526,6 +572,17 @@ describe("ocx opencode proxy model catalog", () => {
       "gpt-5.6-sol",
       "kiro/glm-5",
     ]);
+
+    const visible = opencodeCatalogFromProxyRows(rows, poolConfig, [
+      {
+        id: "kiro/glm-5",
+        reasoning_effort: "high",
+        reasoning_efforts: [{ value: "low" }, { value: "high", default: true }],
+      },
+    ]);
+    expect(visible.map(m => m.namespaced)).toEqual(["kiro/glm-5"]);
+    expect(visible[0]?.reasoningEfforts).toEqual(["low", "high"]);
+    expect(visible[0]?.defaultReasoningEffort).toBe("high");
   });
 });
 
@@ -719,6 +776,30 @@ describe("ocx opencode admission key", () => {
 
   test("falls back to a placeholder on an open loopback proxy", () => {
     expect(opencodeApiKey(cfg(), {})).toBe("ocx");
+  });
+});
+
+describe("ocx opencode management key", () => {
+  test("uses the OpenCodex admin token for catalog discovery", () => {
+    const config = cfg({ apiKeys: [{ id: "1", name: "main", key: "sk-data", createdAt: "2026-01-01" }] });
+    const adminToken = `ocx_admin_${"a".repeat(43)}`;
+    expect(opencodeManagementApiKey(config, {
+      OPENCODEX_ADMIN_AUTH_TOKEN: adminToken,
+      OPENCODEX_API_AUTH_TOKEN: "sk-data-env",
+    })).toBe(adminToken);
+  });
+
+  test("loads the admin token from the active OpenCodex home", () => {
+    const config = cfg({ apiKeys: [{ id: "1", name: "main", key: "sk-data", createdAt: "2026-01-01" }] });
+    const home = mkdtempSync(join(tmpdir(), "ocx-opencode-admin-"));
+    const adminToken = `ocx_admin_${"b".repeat(43)}`;
+    writeFileSync(join(home, "admin-api-token"), `${adminToken}\n`, { mode: 0o600 });
+    expect(opencodeManagementApiKey(config, { OPENCODEX_HOME: home })).toBe(adminToken);
+  });
+
+  test("falls back to the data-plane key when no admin token is configured", () => {
+    const config = cfg({ apiKeys: [{ id: "1", name: "main", key: "sk-data", createdAt: "2026-01-01" }] });
+    expect(opencodeManagementApiKey(config, { OPENCODEX_API_AUTH_TOKEN: "sk-data-env" })).toBe("sk-data-env");
   });
 });
 

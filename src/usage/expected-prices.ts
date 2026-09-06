@@ -294,6 +294,13 @@ export const EXPECTED_PRICE_OVERLAYS: readonly ExpectedPriceOverlay[] = [
   { provider: "google-antigravity", modelId: "gemini-3.8-flash-medium", cost4: GEMINI_38_FLASH, source: `derived: gemini-3.8-flash ${GEMINI_38_PRICING}`, verifiedAt: "2026-09-03", status: "verified-derived" },
   { provider: "google-antigravity", modelId: "gemini-3.8-flash-high", cost4: GEMINI_38_FLASH, source: `derived: gemini-3.8-flash ${GEMINI_38_PRICING}`, verifiedAt: "2026-09-03", status: "verified-derived" },
   { provider: "google-antigravity", modelId: "gemini-3.7-flash", cost4: GEMINI_37_FLASH, source: `derived: Gemini 3.7 Flash promotional rate through 2026-12-31 ${GEMINI_37_PRICING}`, verifiedAt: "2026-08-14", status: "verified-derived" },
+  // Retained after the 3.7 retirement: historical usage.jsonl rows still carry these
+  // tier ids, and dropping the rows would silently zero the cost of requests made
+  // while 3.7 was live. Same rate as the base — tiers never had separate pricing.
+  { provider: "google-antigravity", modelId: "gemini-3.7-flash-low", cost4: GEMINI_37_FLASH, source: `derived: gemini-3.7-flash ${GEMINI_37_PRICING}`, verifiedAt: "2026-08-14", status: "verified-derived" },
+  { provider: "google-antigravity", modelId: "gemini-3.7-flash-medium", cost4: GEMINI_37_FLASH, source: `derived: gemini-3.7-flash ${GEMINI_37_PRICING}`, verifiedAt: "2026-08-14", status: "verified-derived" },
+  { provider: "google-antigravity", modelId: "gemini-3.7-flash-high", cost4: GEMINI_37_FLASH, source: `derived: gemini-3.7-flash ${GEMINI_37_PRICING}`, verifiedAt: "2026-08-14", status: "verified-derived" },
+  { provider: "google-antigravity", modelId: "gemini-3.7-flash-tiered", cost4: GEMINI_37_FLASH, source: `wire id for gemini-3.7-flash ${GEMINI_37_PRICING}`, verifiedAt: "2026-08-14", status: "verified-derived" },
   // Retained after the 3.6 retirement: historical usage.jsonl rows still carry these
   // ids, and dropping the row would silently zero the cost of requests already made.
   { provider: "google-antigravity", modelId: "gemini-3.6-flash", cost4: GEMINI_36_FLASH, source: `collapsed base ID ${GEMINI_PRICING}`, verifiedAt: "2026-07-22", status: "verified" },

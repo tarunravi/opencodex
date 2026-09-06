@@ -586,6 +586,9 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (prov.supportsOpenAiWebSearchToolFields === undefined && entry.supportsOpenAiWebSearchToolFields !== undefined) {
     prov.supportsOpenAiWebSearchToolFields = entry.supportsOpenAiWebSearchToolFields;
   }
+  if (prov.supportsSearchContentTypesOnNonPreviewTools === undefined && entry.supportsSearchContentTypesOnNonPreviewTools !== undefined) {
+    prov.supportsSearchContentTypesOnNonPreviewTools = entry.supportsSearchContentTypesOnNonPreviewTools;
+  }
   if (prov.supportsResponsesCustomTools === undefined && entry.supportsResponsesCustomTools !== undefined) {
     prov.supportsResponsesCustomTools = entry.supportsResponsesCustomTools;
   }

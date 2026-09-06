@@ -171,6 +171,47 @@ describe("Responses buildRequest web_search capability", () => {
   });
 });
 
+describe("Responses search_content_types compatibility", () => {
+  test("removes the field from non-preview tools, including cached declarations", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-responses",
+      baseUrl: "https://responses.example.com/v1",
+      authMode: "key",
+      apiKey: "test-gateway-key",
+      supportsSearchContentTypesOnNonPreviewTools: false,
+    };
+    const request = createResponsesPassthroughAdapter(provider).buildRequest({
+      modelId: "test-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "test-model",
+        input: [{
+          type: "additional_tools",
+          tools: [{ type: "function", name: "cached", search_content_types: ["text"] }],
+        }],
+        tools: [
+          { type: "function", name: "fn", search_content_types: ["text"] },
+          { type: "web_search", search_content_types: ["text"] },
+          { type: "web_search_preview", search_content_types: ["text"] },
+        ],
+      },
+    }, { headers: new Headers() });
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+
+    expect(body.tools).toEqual([
+      { type: "function", name: "fn", parameters: { type: "object" } },
+      { type: "web_search" },
+      { type: "web_search_preview", search_content_types: ["text"] },
+    ]);
+    expect(body.input).toEqual([{
+      type: "additional_tools",
+      tools: [{ type: "function", name: "cached", parameters: { type: "object" } }],
+    }]);
+  });
+});
+
 // The request path resolves a saved provider row through routedProviderConfig(), NOT through
 // enrichProviderFromRegistry(). Until this backfill existed, a saved xai row reached the
 // Responses adapter with supportsOpenAiWebSearchToolFields === undefined, so the #2262

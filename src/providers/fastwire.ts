@@ -9,7 +9,9 @@ import { MODEL_ADAPTER_OVERRIDE_ALLOWED } from "../types";
 import { sanitizeLogMetadataString } from "../lib/redact";
 import type { InboundWire, ModelWireDefault, ProviderAuthKind } from "./registry";
 
-const SERVICE_TIER_ADAPTERS = new Set(["openai-chat", "openai-responses"]);
+// Cursor Grok Fast is translated by the cursor adapter into Cursor fast=true model params,
+// not an OpenAI service_tier field, but it is still a Codex Fast speed tier for catalog purposes.
+const SERVICE_TIER_ADAPTERS = new Set(["openai-chat", "openai-responses", "cursor"]);
 const FAST_WIRE_ADAPTERS: Readonly<Record<FastWire["kind"], ReadonlySet<string>>> = {
   "service-tier": SERVICE_TIER_ADAPTERS,
   // Anthropic fast mode: top-level `speed: "fast"` plus the declared beta, serialized and
