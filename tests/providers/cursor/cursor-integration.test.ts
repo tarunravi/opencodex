@@ -9,14 +9,14 @@ import {
   disableCursorMcp,
   enableCursorMcp,
   readCursorMcpState,
-} from "../../src/integrations/cursor-config";
+} from "../../../src/integrations/cursor-config";
 import {
   createCursorMcpServer,
   cursorMcpToolDefinitions,
   handleCursorMcpToolCall,
   resolveCursorMcpAdmissionKey,
   resolveCursorMcpOptions,
-} from "../../src/integrations/cursor-mcp";
+} from "../../../src/integrations/cursor-mcp";
 
 let tmpBase = "";
 let mcpPath = "";

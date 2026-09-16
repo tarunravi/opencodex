@@ -711,7 +711,7 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
     } satisfies NativeStatusListEnvelope);
   }
 
-  if (url.pathname === "/api/native-integrations/cursor" && req.method === "GET") {
+  if (url.pathname === "/api/native-integrations/cursor-mcp" && req.method === "GET") {
     return jsonResponse(cursorStatus(deps), 200, req, config);
   }
 

@@ -37,6 +37,7 @@ const BRAND_LITERALS_LOWER = new Set(
 
 /** Single-token technical units / abbreviations shown next to numbers. */
 const TECHNICAL_UNITS = new Set([
+  "s",
   "ms",
   "k",
   "1M",

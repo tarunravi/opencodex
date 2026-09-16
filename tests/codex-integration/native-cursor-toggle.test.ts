@@ -17,7 +17,7 @@ function cursorState(overrides: Partial<CursorMcpConfigState> = {}): CursorMcpCo
 }
 
 async function dispatch(method: string, body: unknown, deps: ManagementContext["deps"]): Promise<Response> {
-  const url = new URL("http://127.0.0.1:10100/api/native-integrations/cursor");
+  const url = new URL(`http://127.0.0.1:10100/api/native-integrations/${method === "GET" ? "cursor-mcp" : "cursor"}`);
   const req = new Request(url, {
     method,
     ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
@@ -35,6 +35,10 @@ async function dispatch(method: string, body: unknown, deps: ManagementContext["
 }
 
 describe("native Cursor MCP toggle", () => {
+  test("leaves the upstream Cursor status route to its owning handler", async () => {
+    const url = new URL("http://127.0.0.1:10100/api/native-integrations/cursor");
+    expect(await handleNativeIntegrationRoutes({ req: new Request(url), url, config, deps: {} } as ManagementContext)).toBeNull();
+  });
   test("GET reports the owned entry as current without a second desired-state flag", async () => {
     const response = await dispatch("GET", undefined, {
       readCursorMcpState: () => cursorState({ enabled: true, kind: "current" }),

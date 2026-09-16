@@ -319,6 +319,11 @@ describe("streaming latency attribution", () => {
 });
 
 describe("summarizeTaskEvents", () => {
+  test("a live turn starting after a historical upper bound does not count as active", () => {
+    expect(summarizeTaskEvents([{ kind: "started", id: "future", start: 300, end: 300, live: true }], { cutoff: 100, now: 200 }))
+      .toEqual({ activeWallMs: 0, completedTurns: 0, activeTurns: 0 });
+  });
+
   test("started/complete/started unions to 180s with 1 completed and 1 active turn", () => {
     const now = FIXED_NOW;
     const events: CodexTaskEvent[] = [

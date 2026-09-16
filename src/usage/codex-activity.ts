@@ -118,7 +118,7 @@ export function summarizeTaskEvents(
   for (const [id, event] of starts) {
     if (terminals.has(id)) continue;
     if (event.live === false) continue;
-    if (event.start < cutoff) continue;
+    if (event.start < cutoff || event.start > now) continue;
     intervals.push([event.start, now]);
     activeTurns++;
   }
