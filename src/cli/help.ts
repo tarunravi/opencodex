@@ -39,6 +39,7 @@ Usage:
   ocx service [sub]           Run as a background service (default: install/update/start)
   ocx codex-shim <sub>        Auto-start proxy when \`codex\` launches (install|status|uninstall|remove)
   ocx tray <sub>              Windows status tray (install|start|stop|status|uninstall)
+  ocx menubar <sub>           macOS status menu (install|start|stop|status|uninstall)
   ocx ensure                  Ensure the proxy is running and Codex config/cache are current
   ocx connect <url>           Connect this machine to a remote OpenCodex hub (credential via stdin)
   ocx remote-workspace <sub>  Pair/run an OCX-only remote execution computer

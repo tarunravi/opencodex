@@ -281,10 +281,12 @@ test("exact account disables affect only the matching OpenAI and Codex discovery
       };
     expect(catalog.models.find(model => model.slug === "gpt-5.5")?.visibility).toBe("hide");
     expect(catalog.models.find(model => model.slug === "desktop/gpt-5.5"))
-      .toMatchObject({ display_name: "desktop / 5.5", visibility: "list" });
-    expect(catalog.models.find(model => model.slug === "team/gpt-5.5")?.visibility).toBe("hide");
+      .toMatchObject({ display_name: "desktop · GPT-5.5", visibility: "list" });
+    expect(catalog.models.find(model => model.slug === "team/gpt-5.5"))
+      .toMatchObject({ display_name: "Private Display Name · GPT-5.5", visibility: "hide" });
     expect(catalog.models.some(model => model.slug.startsWith("removed/"))).toBe(false);
-    for (const privateValue of ["stored-side-account", "private@example.test", "Private Display Name"]) {
+    expect(JSON.stringify(plain)).not.toContain("Private Display Name");
+    for (const privateValue of ["stored-side-account", "private@example.test"]) {
       expect(JSON.stringify(catalog)).not.toContain(privateValue);
       expect(JSON.stringify(plain)).not.toContain(privateValue);
     }

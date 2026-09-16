@@ -62,7 +62,7 @@ import {
   replaceActiveCodexCatalog,
   replaceCodexModelsCache,
 } from "../internal/catalog-writer";
-import { visibleCodexAccountSelectors } from "./account-models";
+import { accountBoundNativeDisplayLabels, visibleCodexAccountSelectors } from "./account-models";
 import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS, NATIVE_OPENAI_MODELS, NATIVE_RESERVE_MODEL } from "./native-models";
 import { createReserveCatalogProjection, RESERVE_LUNA_METADATA_SOURCE, RESERVE_SOURCE_CATALOG_FIELD } from "./reserve";
 import {
@@ -424,6 +424,7 @@ function writeRetainedCatalogSync({
   const wsEnabled = websocketsEnabled(config);
   const multiAgentV2Enabled = isMultiAgentV2Enabled();
   const goEntries = buildCatalogEntriesFromObservedState({
+      accountDisplayLabels: accountBoundNativeDisplayLabels(config),
     template: template ? JSON.parse(JSON.stringify(template)) : null,
     gptSlugs: [],
     goModels: orderedGoModels,
@@ -470,6 +471,7 @@ function writeRetainedCatalogSync({
   // providers are configured yet (fresh install / catalog bootstrap tests).
   const accountBoundEntries = includeAccountBoundNativeOpenAi && accountSelectors.length > 0
     ? buildCatalogEntriesFromObservedState({
+      accountDisplayLabels: accountBoundNativeDisplayLabels(config),
       template: template ? JSON.parse(JSON.stringify(template)) : null,
       gptSlugs: availableAccountNativeSlugs,
       goModels: [],

@@ -63,6 +63,7 @@ import {
 } from "./catalog/metadata";
 import {
   trustedAccountBoundNativeCatalogSlug,
+  accountBoundNativeDisplayLabels,
   visibleCodexAccountSelectors,
 } from "./catalog/account-models";
 import {
@@ -306,6 +307,7 @@ function prepareCatalog(
   );
   const catalogModels = nativeCatalogModels;
   const routedEntries = buildCatalogEntriesFromObservedState({
+      accountDisplayLabels: accountBoundNativeDisplayLabels(config),
     template: template ? JSON.parse(JSON.stringify(template)) : null,
     gptSlugs: [],
     goModels: ordered,
@@ -323,6 +325,7 @@ function prepareCatalog(
   const accountBoundEntries = accountSelectors.length === 0
     ? []
     : buildCatalogEntriesFromObservedState({
+      accountDisplayLabels: accountBoundNativeDisplayLabels(config),
       template: template ? JSON.parse(JSON.stringify(template)) : null,
       gptSlugs: availableAccountNativeSlugs,
       goModels: [],

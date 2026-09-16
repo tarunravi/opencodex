@@ -669,6 +669,8 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       undefined,
       undefined,
       undefined,
+      false,
+      [],
       labels,
     );
     const team = rows.find(row => row.slug === "team/gpt-5.5");

@@ -195,7 +195,7 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
       ...(normalizedNativeAlias ? { nativeAlias: true } : {}),
       ...(normalizedDisplayName ? { displayName: normalizedDisplayName } : {}),
       ...(normalizedImageInput === "disabled" ? { imageInput: "disabled" as const } : {}),
-      ...(normalizedCooldownMs !== null ? { cooldownMs: normalizedCooldownMs } : {}),
+      ...(normalizedCooldownMs !== undefined && normalizedCooldownMs !== null ? { cooldownMs: normalizedCooldownMs } : {}),
     };
     const oldPublicModel = previous ? comboPublicModelId(sourceId, previous) : null;
     const newPublicModel = comboPublicModelId(id, normalized);

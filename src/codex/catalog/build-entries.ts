@@ -48,6 +48,7 @@ import { deriveEntry, finishUpstreamNativeEntry, isExactComboCatalogEntry } from
 import { PICKER_ORDER_PRIORITY_BASE, SPAWN_PRIORITY_FIELD } from "./subagent-roster";
 
 export interface ObservedCatalogEntryBuildInput {
+  readonly accountDisplayLabels?: ReadonlyMap<string, string>;
   readonly template: RawEntry | null;
   readonly gptSlugs: readonly string[];
   readonly goModels: readonly CatalogModel[];
@@ -88,8 +89,10 @@ export function buildCatalogEntries(
   accountNativeSlugsBySelector?: ReadonlyMap<string, readonly string[]>,
   keepNativeChatGptOnV1 = false,
   modelPickerOrder: readonly string[] = [],
+  accountDisplayLabels: ReadonlyMap<string, string> = new Map(),
 ): RawEntry[] {
   const entries = buildCatalogEntriesFromObservedState({
+    accountDisplayLabels,
     template,
     gptSlugs,
     goModels,
@@ -113,6 +116,7 @@ export function buildCatalogEntries(
 
 /** Build entries solely from caller-observed inputs, with no feature-state filesystem read. */
 export function buildCatalogEntriesFromObservedState({
+  accountDisplayLabels,
   template,
   gptSlugs,
   goModels,
@@ -236,7 +240,7 @@ export function buildCatalogEntriesFromObservedState({
       const catalogSlug = `${selector}/${nativeSlug}`;
       if (nativeSlug === NATIVE_RESERVE_MODEL && disabledNativeAccountSlugs.has(catalogSlug)) continue;
       e.slug = catalogSlug;
-      e.display_name = accountBoundNativeDisplayName(selector, native);
+      e.display_name = accountBoundNativeDisplayName(selector, native, accountDisplayLabels?.get(selector));
       // Codex ignores this OpenCodex extension; preserve the native comp_hash unchanged.
       e.opencodex_catalog_kind = CODEX_ACCOUNT_BOUND_CATALOG_KIND;
       const exactRank = rank.get(catalogSlug);
