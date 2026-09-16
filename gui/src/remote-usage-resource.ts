@@ -1,3 +1,4 @@
+import type { UsageResponse } from "./usage-report";
 import { useCallback, useState } from "react";
 import { useDataSurface } from "./data-surface";
 
@@ -6,7 +7,7 @@ export type Surface = "all" | "codex" | "claude" | "grok";
 interface RemoteReport {
   id: string;
   name: string;
-  usage?: { summary: {
+  usage?: { details?: UsageResponse; summary: {
     requests: number;
     inputTokens: number;
     outputTokens: number;

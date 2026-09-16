@@ -104,7 +104,7 @@ to save an incomplete snapshot; choose another order or repair the history befor
 
 ### Remote OpenCodex usage
 
-**Usage** starts with the **Machine** filter set to **All**, followed by **Mac** and each configured remote in configuration order. All shows a labeled Mac report and separate remote summaries; selecting a machine shows only its report. Disconnected machines stay selectable and display their connection error. Range and client filters apply to the selected reports. Remote summaries do not include the Mac charts.
+**Usage** starts with the **Machine** filter set to **All**, followed by **Mac** and each configured remote in configuration order. All shows separately labeled full reports for Mac and each remote; selecting a machine shows only its report. Disconnected machines stay selectable and display their connection error. Range and client filters apply to the selected reports. Each machine uses the same overview, model breakdown, provider table, coverage, daily activity, and available performance charts. Remote daily charts use the dates reported by that proxy. Missing performance telemetry remains unavailable; older summary-only servers display a totals-only notice.
 
 **Remote OpenCodex** also displays each remote proxy's requests, tokens, and estimated cost separately.
 Relayed requests can also appear in the local ledger, so these totals are never added to local usage.

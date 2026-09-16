@@ -53,4 +53,4 @@ Cline uses the existing file-integration page, tabs, status badge and rollback d
 
 Account quota surfaces use [safe probe diagnostics](transports/inventory.md#account-quota-failure-diagnostics) separately from quota validity, credential health and routing authority.
 
-The Usage machine filter defaults to All and preserves separate local and remote reports; its shared resource and failure behavior follow the [remote usage contract](gui-and-management-api.md#remote-usage-reports).
+The Usage machine filter defaults to All and preserves separate local and remote reports; its shared resource and failure behavior follow the [remote usage contract](gui-and-management-api.md#remote-usage-reports). The contract includes bounded full-report projection and a shared per-machine dashboard renderer.

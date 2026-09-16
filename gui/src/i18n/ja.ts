@@ -11,6 +11,7 @@ export const ja: Record<TKey, string> = {
   "usage.machine.label": "マシン",
   "usage.machine.all": "すべて",
   "usage.machine.mac": "Mac",
+  "remoteUsage.summaryOnly": "This remote only supplied totals; detailed usage is unavailable.",
   "remoteUsage.title": "Remote OpenCodex",
   "remoteUsage.subtitle": "Usage recorded on each remote proxy. Totals stay separate because relayed requests may also appear locally.",
   "remoteUsage.empty": "No remote proxies configured.",

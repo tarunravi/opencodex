@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import type { UsageResponse } from "../usage-report";
 import { useI18n } from "../i18n/shared";
 import { useRemoteUsage, type RemoteUsagePanelProps, type Range, type Surface } from "../remote-usage-resource";
 import { DataSurfaceSkeleton } from "../components/data-surface";
@@ -12,11 +13,12 @@ export function RemoteUsagePanel(props: RemoteUsagePanelProps) {
   return <RemoteUsageResults resource={resource} range={props.range} compact={props.compact} />;
 }
 
-export function RemoteUsageResults({ resource, range, compact = false, machineId }: {
+export function RemoteUsageResults({ resource, range, compact = false, machineId, renderUsage }: {
   resource: ReturnType<typeof useRemoteUsage>;
   range?: Range;
   compact?: boolean;
   machineId?: string;
+  renderUsage?: (report: UsageResponse, name: string) => ReactNode;
 }) {
   const { t, locale } = useI18n();
   const titleId = useId();
@@ -55,8 +57,10 @@ export function RemoteUsageResults({ resource, range, compact = false, machineId
           <h4>{remote.name}</h4>
           {remote.error || !remote.usage ? <p className="notice notice-warn">{t(remote.error === "unsupported_window" ? "remoteUsage.unsupportedWindow" : remote.error === "unauthorized" ? "remoteUsage.unauthorized" : remote.error === "invalid_response" ? "remoteUsage.invalidResponse" : "remoteUsage.offline")}</p> : <>
             {!unavailable && <p className="muted">{t("remoteUsage.online")}</p>}
-            {(remote.usage.historyTruncated || remote.usage.usageIncomplete) && <p className="notice notice-warn">{t("remoteUsage.partial")}</p>}
+            {(!renderUsage || !remote.usage.details) && (remote.usage.historyTruncated || remote.usage.usageIncomplete) && <p className="notice notice-warn">{t("remoteUsage.partial")}</p>}
             {range === "today" && remote.usage.timeZone && <p className="muted">{t("remoteUsage.timeZone", { zone: remote.usage.timeZone })}</p>}
+            {renderUsage && remote.usage.details ? renderUsage(remote.usage.details, remote.name) : <>
+            {renderUsage && <p className="muted">{t("remoteUsage.summaryOnly")}</p>}
             <div className="usage-cards usage-cards-3x2">
               {([
                 ["usage.card.requests", remote.usage.summary.requests.toLocaleString(locale)],
@@ -67,6 +71,7 @@ export function RemoteUsageResults({ resource, range, compact = false, machineId
               ] as const).map(([key, value]) => <div className="stat" key={key}><div className="muted">{t(key)}</div><div className="stat-value">{value}</div></div>)}
               {remote.usage.summary.estimatedCostUsd !== undefined && <div className="stat"><div className="muted">{t("usage.cost.total")}</div><div className="stat-value">{formatEstimatedUsdValue(remote.usage.summary.estimatedCostUsd, locale)}</div></div>}
             </div>
+            </>}
           </>}
         </section>
       ))}

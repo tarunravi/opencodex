@@ -427,4 +427,4 @@ The combo may advance to its next eligible unattempted target before output comm
 
 Regression coverage: `tests/responses/responses-forward-prompt-envelope.test.ts`, `tests/routing/router-combo-failover-classification.test.ts`, and `tests/server/server-combo-failover-e2e.test.ts`.
 
-The dashboard reads separate remote proxy reports through the [remote usage contract](gui-and-management-api.md#remote-usage-reports); local accounting and inference behavior remain unchanged.
+The dashboard reads separate remote proxy reports through the [remote usage contract](gui-and-management-api.md#remote-usage-reports); local accounting and inference behavior remain unchanged. The contract includes bounded full-report projection and a shared per-machine dashboard renderer.

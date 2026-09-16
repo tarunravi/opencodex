@@ -2,6 +2,7 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { getConfigDir } from "../config/paths";
 import type { UsageRange, UsageSurface } from "./summary";
+import { projectRemoteUsageDetails } from "./remote-report";
 import { parseUsageTimeWindow } from "./time-range";
 
 export interface UsageRemote {
@@ -28,7 +29,7 @@ export type RemoteUsageError = "unavailable" | "unauthorized" | "invalid_respons
 export interface RemoteUsageResult {
   id: string;
   name: string;
-  usage?: { summary: RemoteUsageTotals; historyTruncated?: boolean; usageIncomplete?: boolean; timeZone?: string };
+  usage?: { summary: RemoteUsageTotals; details?: Record<string, unknown>; historyTruncated?: boolean; usageIncomplete?: boolean; timeZone?: string };
   error?: RemoteUsageError;
 }
 export interface RemoteUsageResponse {
@@ -150,6 +151,10 @@ async function collectOne(remote: UsageRemote, query: RemoteUsageQuery, timeoutM
       if (typeof body[key] === "boolean") usage[key] = body[key];
     }
     if (typeof body.timeZone === "string" && /^[A-Za-z0-9_+./-]{1,80}$/.test(body.timeZone)) usage.timeZone = body.timeZone;
+    try {
+      const details = projectRemoteUsageDetails(body);
+      if (details) usage.details = details;
+    } catch { return { ...result, error: "invalid_response" }; }
     return { ...result, usage };
   } catch {
     return { ...result, error: signal.aborted ? "timeout" : "unavailable" };

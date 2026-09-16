@@ -86,7 +86,11 @@ const remotes = [
 ];
 async function settle() {
   await act(async () => {
-    for (const gate of requests) gate.resolve(Response.json(gate.url.includes("/remotes?") ? { remotes } : report(gate, "local-only-model")));
+    for (const gate of requests) {
+      const details = { ...report(gate, "remote-only-model", "2030-01-01"), latency: { modelCallMs: 2500, apiActiveMs: 2000, activeWallMs: null, activeTurns: 0, completedTurns: 2, averageTtftMs: 100, endToEndTokensPerSecond: 20, decodeTokensPerSecond: null } };
+      details.providers = [{ provider: "remote-only-provider", requests: 1, measuredRequests: 1, reportedRequests: 1, estimatedRequests: 0, totalTokens: 30, shareRatio: 1 }] as never[];
+      gate.resolve(Response.json(gate.url.includes("/remotes?") ? { remotes: [{ ...remotes[0], usage: { ...remotes[0].usage, details } }, remotes[1]] } : report(gate, "local-only-model")));
+    }
   });
 }
 async function options() {
@@ -106,12 +110,24 @@ test("All defaults first; machine reports stay separate and reserved remote IDs 
   expect(items[0].getAttribute("aria-selected")).toBe("true");
   await act(async () => { items[0].click(); });
   expect(container.querySelector('section[aria-label="Mac"]')?.textContent).toContain("local-only-model");
-  expect(container.querySelector('section[aria-label="Devbox one"]')?.textContent).toContain("12");
+  expect(container.querySelector('section[aria-label="Devbox one"]')?.textContent).toContain("remote-only-model");
+  expect(container.querySelector('section[aria-label="Devbox one"]')?.textContent).toContain("Remote Only Provider");
+  const ids = [...container.querySelectorAll("[id]")].map(element => element.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(container.querySelectorAll('section[aria-label="Devbox one"] .heatmap-cell').length).toBeGreaterThan(350);
+  const active = container.querySelector<HTMLElement>('section[aria-label="Devbox one"] .heatmap-grid .heatmap-cell:not(.heatmap-cell-0)');
+  expect(active).not.toBeNull();
+  await act(async () => { active!.dispatchEvent(new testWindow.MouseEvent("mouseover", { bubbles: true })); });
+  expect(container.querySelector(".heatmap-tip-date")?.textContent).toBe("2030-01-01");
   await select("Mac");
   expect(container.textContent).toContain("local-only-model");
   expect(container.querySelector('section[aria-label="Devbox one"]')).toBeNull();
   expect(document.querySelector(".toast-notice")).toBeNull();
   await select("Devbox one");
+  expect(container.textContent).toContain("Average TTFT");
+  expect(container.textContent).toContain("remote-only-model");
+  expect(container.textContent).toContain("Remote Only Provider");
+  expect(container.textContent).not.toContain("Local proxy");
   expect(container.textContent).not.toContain("Local token accounting");
   expect(container.textContent).not.toContain("local-only-model");
   expect(container.querySelector('section[aria-label="Mac"]')).toBeNull();

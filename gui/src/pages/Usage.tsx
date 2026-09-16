@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useId, useRef, useState, type ReactNode } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
 import { RemoteUsageResults } from "./RemoteUsage";
 import { useRemoteUsage } from "../remote-usage-resource";
-import type { UsageReadMetadata } from "../usage-summary-resource";
+import type { UsageSummaryTotals, UsageDay, UsageModel, UsageProvider, UsageLatency, UsageEffortGroup, UsageResponse } from "../usage-report";
 import { UsageIncompleteNotice } from "../components/usage-incomplete-notice";
 import { formatProviderDisplayName } from "../provider-icons";
 import { formatTokens } from "../format-tokens";
@@ -24,125 +24,7 @@ const REMOTE_MACHINE_PREFIX = "remote:";
 type Range = "all" | "30d" | "7d";
 type UsageSurface = "all" | "codex" | "claude" | "grok";
 
-interface UsageSummaryTotals {
-  requests: number;
-  measuredRequests: number;
-  reportedRequests: number;
-  unreportedRequests: number;
-  unsupportedRequests: number;
-  estimatedRequests: number;
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
-  reasoningOutputTokens: number;
-  totalTokens: number;
-  coverageRatio: number;
-  estimatedCostUsd?: number;
-  pricedRequests?: number;
-  unpricedRequests?: number;
-  unmeteredRequests?: number;
-}
-
-interface UsageDay {
-  date: string;
-  requests: number;
-  measuredRequests: number;
-  reportedRequests: number;
-  totalTokens: number;
-  models: UsageDayModel[];
-}
-
-interface UsageDayModel {
-  model: string;
-  provider: string;
-  requests: number;
-  totalTokens: number;
-}
-
-interface UsageModel {
-  provider: string;
-  model: string;
-  resolvedModel?: string;
-  requests: number;
-  measuredRequests: number;
-  reportedRequests: number;
-  estimatedRequests: number;
-  totalTokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  modelCallMs?: number;
-  averageTtftMs?: number | null;
-  endToEndTokensPerSecond?: number | null;
-  decodeTokensPerSecond?: number | null;
-  shareRatio: number;
-}
-
-interface UsageProvider {
-  provider: string;
-  requests: number;
-  measuredRequests: number;
-  reportedRequests: number;
-  estimatedRequests: number;
-  totalTokens: number;
-  shareRatio: number;
-}
-
 class UsageWindowMismatchError extends Error {}
-
-interface UsageLatency {
-  modelCallMs: number;
-  apiActiveMs: number;
-  activeWallMs: number | null;
-  activeTurns: number;
-  completedTurns: number;
-  averageTtftMs: number | null;
-  endToEndTokensPerSecond: number | null;
-  decodeTokensPerSecond: number | null;
-}
-
-interface UsageEffortGroup {
-  provider: string;
-  model: string;
-  speedMode: "fast" | "standard" | "downgraded" | "unknown";
-  requestedEffort: string;
-  effectiveEffort: string;
-  requests: number;
-  requestShare: number;
-  modelCallMs: number;
-  inputTokens: number;
-  outputTokens: number;
-  averageTtftMs: number | null;
-  endToEndTokensPerSecond: number | null;
-  decodeTokensPerSecond: number | null;
-}
-
-interface UsageResponse extends UsageReadMetadata {
-  range: Range;
-  surface: UsageSurface;
-  since: number | null;
-  until?: number;
-  customWindow?: boolean;
-  generatedAt: number;
-  summary: UsageSummaryTotals;
-  days: UsageDay[];
-  models: UsageModel[];
-  providers: UsageProvider[];
-  historyTruncated: boolean;
-  truncatedPrefixBytes: number;
-  entriesTruncated: boolean;
-  entriesDropped: number;
-  // Optional because a dashboard can talk to a proxy that predates latency analytics.
-  latency?: UsageLatency;
-  effortGroups?: UsageEffortGroup[];
-  // Bounds of the rows the bounded reader loaded, before any range or surface filtering.
-  // Describes the read, not the query, and is never a completeness claim (#1497).
-  // Optional because a dashboard can talk to a proxy that predates these fields.
-  snapshotWindowStart?: number | null;
-  snapshotWindowEnd?: number | null;
-  error?: string;
-}
 
 function formatPct(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
@@ -229,7 +111,7 @@ function isoDay(date: Date): string {
  * end yesterday: today stays "live" until it ends without activity, so an
  * inactive today does not zero out an ongoing run.
  */
-function computeStreaks(days: UsageDay[]): { current: number; longest: number } {
+function computeStreaks(days: UsageDay[], currentDay?: string | null): { current: number; longest: number } {
   const active = new Set(days.filter(d => d.requests > 0).map(d => d.date));
   if (active.size === 0) return { current: 0, longest: 0 };
 
@@ -244,7 +126,8 @@ function computeStreaks(days: UsageDay[]): { current: number; longest: number } 
     if (run > longest) longest = run;
   }
 
-  const cursor = new Date();
+  if (currentDay === null) return { current: 0, longest };
+  const cursor = currentDay ? new Date(currentDay + "T12:00:00") : new Date();
   cursor.setHours(0, 0, 0, 0);
   if (!active.has(isoDay(cursor))) cursor.setDate(cursor.getDate() - 1);
   let current = 0;
@@ -271,16 +154,20 @@ function UsageProfileHero({
   summary,
   days,
   host,
+  remote = false,
+  currentDay,
   locale,
   t,
 }: {
   summary: UsageSummaryTotals;
   days: UsageDay[];
   host: string;
+  remote?: boolean;
+  currentDay?: string | null;
   locale: Locale;
   t: TFn;
 }) {
-  const streaks = useMemo(() => computeStreaks(days), [days]);
+  const streaks = useMemo(() => computeStreaks(days, currentDay), [days, currentDay]);
   const peak = useMemo(() => peakDayTokens(days), [days]);
   const name = t("usage.profile.name");
   // Initials from the (possibly localized) display name: first letter of each
@@ -295,7 +182,7 @@ function UsageProfileHero({
     { label: t("usage.stat.lifetimeTokens"), value: formatTokens(summary.totalTokens, locale) },
     { label: t("usage.stat.peakDay"), value: formatTokens(peak, locale) },
     { label: t("usage.stat.requests"), value: summary.requests.toLocaleString(locale) },
-    { label: t("usage.stat.currentStreak"), value: t("usage.stat.daysValue", { days: streaks.current }) },
+    ...(currentDay !== null ? [{ label: t("usage.stat.currentStreak"), value: t("usage.stat.daysValue", { days: streaks.current }) }] : []),
     { label: t("usage.stat.longestStreak"), value: t("usage.stat.daysValue", { days: streaks.longest }) },
   ];
   return (
@@ -305,7 +192,7 @@ function UsageProfileHero({
       <div className="profile-sub">
         <span className="profile-handle mono">{host}</span>
         <span className="profile-sub-dot" aria-hidden="true">·</span>
-        <span className="profile-badge">{t("usage.profile.badge")}</span>
+        <span className="profile-badge">{t(remote ? "remoteUsage.title" : "usage.profile.badge")}</span>
       </div>
       <div className="profile-stats" role="group" aria-label={t("usage.title")}>
         {stats.map(stat => (
@@ -330,6 +217,8 @@ function UsageInsightsRow({
   locale: Locale;
   t: TFn;
 }) {
+  const insightsId = useId();
+  const topModelsId = useId();
   const topModels = useMemo(
     () => [...data.models].toSorted((a, b) => b.totalTokens - a.totalTokens).slice(0, 5),
     [data.models],
@@ -349,8 +238,8 @@ function UsageInsightsRow({
   }
   return (
     <div className="usage-insights-row">
-      <section className="usage-insights-col" aria-labelledby="usage-insights-title">
-        <h4 id="usage-insights-title" className="usage-insights-title">{t("usage.section.insights")}</h4>
+      <section className="usage-insights-col" aria-labelledby={insightsId}>
+        <h4 id={insightsId} className="usage-insights-title">{t("usage.section.insights")}</h4>
         <div className="usage-insight-list">
           {insights.map(insight => (
             <div key={insight.label} className="usage-insight-row">
@@ -360,8 +249,8 @@ function UsageInsightsRow({
           ))}
         </div>
       </section>
-      <section className="usage-insights-col" aria-labelledby="usage-topmodels-title">
-        <h4 id="usage-topmodels-title" className="usage-insights-title">{t("usage.section.topModels")}</h4>
+      <section className="usage-insights-col" aria-labelledby={topModelsId}>
+        <h4 id={topModelsId} className="usage-insights-title">{t("usage.section.topModels")}</h4>
         <div className="usage-topmodels-list">
           {topModels.map(model => (
             <div key={`${model.provider}/${model.model}`} className="usage-topmodel">
@@ -385,7 +274,7 @@ interface HeatmapCell {
   dayOfWeek: number;
 }
 
-function buildHeatmap(days: UsageDay[], customWindow = false): { weeks: HeatmapCell[][]; months: { label: string; col: number }[]; buckets: number[] } {
+function buildHeatmap(days: UsageDay[], customWindow = false, referenceDay?: string): { weeks: HeatmapCell[][]; months: { label: string; col: number }[]; buckets: number[] } {
   const buckets = quantileBuckets(days.map(d => d.totalTokens));
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   if (customWindow) {
@@ -425,7 +314,7 @@ function buildHeatmap(days: UsageDay[], customWindow = false): { weeks: HeatmapC
   }
   const dayMap = new Map(days.map(d => [d.date, d]));
 
-  const today = new Date();
+  const today = referenceDay ? new Date(referenceDay + "T12:00:00") : new Date();
   today.setHours(0, 0, 0, 0);
   const start = new Date(today);
   start.setDate(start.getDate() - 364);
@@ -647,6 +536,7 @@ function UsageHeatmapPanel({
   locale: Locale;
   t: TFn;
 }) {
+  const titleId = useId();
   const heatmapRef = useRef<HTMLDivElement | null>(null);
   const [hoverCell, setHoverCell] = useState<{ weekIndex: number; dayIndex: number; x: number; y: number } | null>(null);
 
@@ -661,12 +551,12 @@ function UsageHeatmapPanel({
   }, [heatmap, range]);
 
   return (
-    <section className="panel" style={{ marginTop: 16 }} aria-labelledby="usage-heatmap-title">
-      <h3 id="usage-heatmap-title" className="panel-title">{t("usage.section.heatmap")}</h3>
+    <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
+      <h3 id={titleId} className="panel-title">{t("usage.section.heatmap")}</h3>
       {range === "7d" ? (
         <WeekDayBars weekBars={weekBars} locale={locale} t={t} />
       ) : (
-        <div className="heatmap" ref={heatmapRef} role="img" aria-labelledby="usage-heatmap-title">
+        <div className="heatmap" ref={heatmapRef} role="img" aria-labelledby={titleId}>
           <div className="heatmap-months" style={{ gridTemplateColumns: `28px repeat(${heatmap.weeks.length}, calc(var(--hm-cell) + var(--hm-gap)))` }}>
             <span className="heatmap-day-spacer" />
             {heatmap.months.map(month => (
@@ -742,6 +632,7 @@ function UsagePerformancePanel({
   locale: Locale;
   t: TFn;
 }) {
+  const titleId = useId();
   const groups = effortGroups ?? [];
   const cards: { label: string; value: string; hint?: string }[] = [];
   if (latency) {
@@ -775,8 +666,8 @@ function UsagePerformancePanel({
   // An older proxy omits both fields; the panel disappears rather than rendering empty chrome.
   if (cards.length === 0 && groups.length === 0) return null;
   return (
-    <section className="panel" style={{ marginTop: 16 }} aria-labelledby="usage-performance-title">
-      <h3 id="usage-performance-title" className="panel-title">{t("usage.section.performance")}</h3>
+    <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
+      <h3 id={titleId} className="panel-title">{t("usage.section.performance")}</h3>
       {cards.length > 0 && (
         <div className="usage-cards usage-cards-3x2" role="group" aria-label={t("usage.section.performance")}>
           {cards.map(card => (
@@ -880,7 +771,7 @@ function UsageModelsTable({
 }) {
   const searchLabel = t("usage.search.models");
   const sectionLabel = t("usage.section.models");
-  const titleId = "usage-models-title";
+  const titleId = useId();
   const searchInput = (
     <input
       className="input"
@@ -957,7 +848,7 @@ function UsageProvidersTable({
   workspace?: boolean;
 }) {
   const sectionLabel = t("usage.section.providers");
-  const titleId = "usage-providers-title";
+  const titleId = useId();
   const table = (
     <div className="tbl-wrap">
       <table className="tbl">
@@ -1011,7 +902,7 @@ function UsageCoveragePanel({
   workspace?: boolean;
 }) {
   const sectionLabel = t("usage.section.coverage");
-  const titleId = "usage-coverage-title";
+  const titleId = useId();
   const body = (
     <>
       <div className="usage-cards usage-cards-3x2">
@@ -1056,6 +947,7 @@ function UsageWorkspaceBody({
   sortedProviders,
   range,
   host,
+  remote = false,
   locale,
   t,
 }: {
@@ -1069,9 +961,11 @@ function UsageWorkspaceBody({
   sortedProviders: UsageProvider[];
   range: Range | null;
   host: string;
+  remote?: boolean;
   locale: Locale;
   t: TFn;
 }) {
+  const scope = useId();
   const empty = !!data && data.summary.requests === 0;
   const sections = [
     {
@@ -1080,7 +974,7 @@ function UsageWorkspaceBody({
       meta: data ? `${data.summary.requests}` : "—",
       body: data ? (
         <>
-          <UsageProfileHero summary={data.summary} days={data.days} host={host} locale={locale} t={t} />
+          <UsageProfileHero currentDay={remote ? (range ? data.days.at(-1)?.date ?? null : null) : undefined} summary={data.summary} days={data.days} host={host} remote={remote} locale={locale} t={t} />
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
           <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
           <UsagePerformancePanel latency={data.latency} effortGroups={data.effortGroups} locale={locale} t={t} />
@@ -1120,13 +1014,13 @@ function UsageWorkspaceBody({
           section existed at a time, so the report could not be read by scrolling at all.
         */}
         <SectionTabs
-          scope="usage"
+          scope={scope}
           ariaLabel={t("usage.workspace.sections")}
           items={sections.map(s => ({ id: s.id, label: s.label, meta: s.meta }))}
         />
         <section className="usage-workspace-main" aria-label={t("usage.workspace.report")}>
           {empty ? <EmptyState title={t("usage.empty")} /> : sections.map(s => (
-            <div key={s.id} id={sectionAnchorId("usage", s.id)} className="usw-body usw-section-block">
+            <div key={s.id} id={sectionAnchorId(scope, s.id)} className="usw-body usw-section-block">
               {s.body}
             </div>
           ))}
@@ -1156,13 +1050,57 @@ function writeHeldUsage(apiBase: string, range: Range, surface: UsageSurface, co
   writeSessionListCache(key, value);
 }
 
+function UsageReport({ data, range, host, remote = false }: { data: UsageResponse | null; range: Range | null; host: string; remote?: boolean }) {
+  const { t, locale } = useI18n();
+  const [modelQuery, setModelQuery] = useState("");
+  const customWindow = range === null;
+  const heatmap = useMemo(() => buildHeatmap(data?.days ?? [], !!customWindow, remote ? data?.days.at(-1)?.date : undefined), [data?.days, customWindow, remote]);
+  const weekBars = useMemo(() => remote ? (data?.days ?? []).slice(-7) : lastSevenDays(data?.days ?? []), [data?.days, remote]);
+  const activeDays = useMemo(() => (data?.days ?? []).filter(d => d.requests > 0).length, [data?.days]);
+  const filteredModels = useMemo(() => {
+    const q = modelQuery.trim().toLowerCase();
+    const models = data?.models ?? [];
+    const sorted = models.toSorted((a, b) => b.totalTokens - a.totalTokens);
+    if (!q) return sorted.slice(0, 100);
+    return sorted.filter(m =>
+      m.model.toLowerCase().includes(q) ||
+      m.provider.toLowerCase().includes(q) ||
+      (m.resolvedModel ?? "").toLowerCase().includes(q),
+    ).slice(0, 100);
+  }, [data?.models, modelQuery]);
+
+  const sortedProviders = useMemo(() =>
+    (data?.providers ?? []).toSorted((a, b) => b.totalTokens - a.totalTokens),
+    [data?.providers],
+  );
+  return <>
+    <UsageIncompleteNotice data={data} />
+    {data?.historyTruncated && (
+      <p className="usage-history-note muted" role="note">
+        {(() => {
+          // Both bounds must be renderable before the detailed wording is used: an older
+          // proxy omits the fields entirely, and a hand-edited row can carry a timestamp
+          // outside Date's range. Either way the generic string is the honest fallback.
+          const start = renderableInstant(data.snapshotWindowStart);
+          const end = renderableInstant(data.snapshotWindowEnd);
+          return start !== null && end !== null
+            ? t("usage.historyTruncatedWindow", { start, end })
+            : t("usage.historyTruncated");
+        })()}
+      </p>
+    )}
+  <UsageWorkspaceBody data={data} heatmap={heatmap} weekBars={weekBars} activeDays={activeDays}
+    filteredModels={filteredModels} modelQuery={modelQuery} onModelQuery={setModelQuery} sortedProviders={sortedProviders}
+    range={range} host={host} locale={locale} t={t} remote={remote} />
+  </>;
+}
+
 export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBase: string; connected?: boolean; apiKeyId?: string }) {
   const { t, locale } = useI18n();
   const [selection, setSelection] = useState({ apiBase, value: "all" });
   const [range, setRange] = useState<Range>("30d");
   const [surface, setSurface] = useState<UsageSurface>("all");
   const [scope, setScope] = useState<UsageScope>("machine");
-  const [modelQuery, setModelQuery] = useState("");
   const [draftWindow, setDraftWindow] = useState({ since: "", until: "" });
   const [customWindow, setCustomWindow] = useState<UsageTimeWindow | null>(null);
   const [rangeError, setRangeError] = useState<UsageRangeError | null>(null);
@@ -1219,25 +1157,6 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
   const { state } = resource;
   const data = state.data ?? cached ?? null;
 
-  const heatmap = useMemo(() => buildHeatmap(data?.days ?? [], !!customWindow), [data?.days, customWindow]);
-  const weekBars = useMemo(() => lastSevenDays(data?.days ?? []), [data?.days]);
-  const activeDays = useMemo(() => (data?.days ?? []).filter(d => d.requests > 0).length, [data?.days]);
-  const filteredModels = useMemo(() => {
-    const q = modelQuery.trim().toLowerCase();
-    const models = data?.models ?? [];
-    const sorted = models.toSorted((a, b) => b.totalTokens - a.totalTokens);
-    if (!q) return sorted.slice(0, 100);
-    return sorted.filter(m =>
-      m.model.toLowerCase().includes(q) ||
-      m.provider.toLowerCase().includes(q) ||
-      (m.resolvedModel ?? "").toLowerCase().includes(q),
-    ).slice(0, 100);
-  }, [data?.models, modelQuery]);
-
-  const sortedProviders = useMemo(() =>
-    (data?.providers ?? []).toSorted((a, b) => b.totalTokens - a.totalTokens),
-    [data?.providers],
-  );
   const host = useMemo(() => apiHost(apiBase), [apiBase]);
 
   return (
@@ -1364,39 +1283,11 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
       ) : (
         <>
           {state.showError && <Notice tone="err">{t(connected ? "usage.hubOffline" : "usage.loadError")}</Notice>}
-          <UsageIncompleteNotice data={data} />
-          {data?.historyTruncated && (
-            <p className="usage-history-note muted" role="note">
-              {(() => {
-                // Both bounds must be renderable before the detailed wording is used: an older
-                // proxy omits the fields entirely, and a hand-edited row can carry a timestamp
-                // outside Date's range. Either way the generic string is the honest fallback.
-                const start = renderableInstant(data.snapshotWindowStart);
-                const end = renderableInstant(data.snapshotWindowEnd);
-                return start !== null && end !== null
-                  ? t("usage.historyTruncatedWindow", { start, end })
-                  : t("usage.historyTruncated");
-              })()}
-            </p>
-          )}
-          <UsageWorkspaceBody
-            data={data}
-            heatmap={heatmap}
-            weekBars={weekBars}
-            activeDays={activeDays}
-            filteredModels={filteredModels}
-            modelQuery={modelQuery}
-            onModelQuery={setModelQuery}
-            sortedProviders={sortedProviders}
-            range={customWindow ? null : range}
-            host={host}
-            locale={locale}
-            t={t}
-          />
+          <UsageReport data={data} range={customWindow ? null : range} host={host} />
         </>
       )}
       </section>}
-      {machine !== "local" && <RemoteUsageResults key={machine} resource={remoteResource} range={range} machineId={machine.startsWith(REMOTE_MACHINE_PREFIX) ? machine.slice(REMOTE_MACHINE_PREFIX.length) : undefined} />}
+      {machine !== "local" && <RemoteUsageResults renderUsage={(report, name) => <UsageReport data={report} range={customWindow ? null : range} host={name} remote />} key={machine} resource={remoteResource} range={range} machineId={machine.startsWith(REMOTE_MACHINE_PREFIX) ? machine.slice(REMOTE_MACHINE_PREFIX.length) : undefined} />}
     </>
   );
 }

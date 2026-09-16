@@ -9,6 +9,7 @@ export const zhTW: Record<TKey, string> = {
   "usage.machine.label": "機器",
   "usage.machine.all": "全部",
   "usage.machine.mac": "Mac",
+  "remoteUsage.summaryOnly": "This remote only supplied totals; detailed usage is unavailable.",
   "remoteUsage.title": "Remote OpenCodex",
   "remoteUsage.subtitle": "Usage recorded on each remote proxy. Totals stay separate because relayed requests may also appear locally.",
   "remoteUsage.empty": "No remote proxies configured.",

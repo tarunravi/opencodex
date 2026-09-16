@@ -641,8 +641,8 @@ The raw provider editor round-trips `autoReviewModel` and `autoReviewModelOverri
 `src/usage/remote-instances.ts` reads owner-only `usage-remotes.json` and concurrently queries at most
 eight loopback SSH forwards with independent five-second deadlines. `GET /api/usage/remotes` stays behind
 the existing management admission gate in `src/server/management/logs-usage-routes.ts`. Only validated
-numeric totals, partial-history metadata, and sanitized per-remote status reach the browser; neither
-credentials nor destinations do. HTTP-success error envelopes remain failures. Local and remote counters
+accounting fields (totals, daily/model/provider rows, optional latency/effort groups, and read metadata) and sanitized per-remote status reach the browser; neither
+credentials, account labels, payloads, nor destinations do. `src/usage/remote-report.ts` validates and projects these fields without dropping rows or inventing missing metrics. HTTP-success error envelopes remain failures. Local and remote counters
 stay separate because relayed requests can appear in both ledgers. `gui/src/pages/RemoteUsage.tsx` owns
-the shared remote resource and cards. Usage defaults its machine selector to All, followed by Mac and the configured remote roster; it renders local and remote reports separately. Selecting a remote hides all local charts, while Mac hides remote errors. Only roster identities survive a range-load failure; previous-window totals never do. An unsupported explicit
+remote result/error presentation; `gui/src/remote-usage-resource.ts` owns fetching. Usage defaults its machine selector to All, followed by Mac and the configured remote roster; it renders each machine with the same full Usage report component, separate search state, and unique navigation/ARIA targets. Remote preset calendar grids anchor to the final source day bucket instead of the browser clock. Selecting a remote hides all local charts, while Mac hides remote errors. Only roster identities survive a range-load failure; previous-window totals never do. An unsupported explicit
 time window is never silently replaced by the remote default. The CLI verb is deferred in the route registry.

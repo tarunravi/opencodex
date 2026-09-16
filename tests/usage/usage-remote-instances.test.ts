@@ -111,3 +111,45 @@ describe("remote usage", () => {
     expect(result.remotes[1]?.error).toBe("unavailable");
   });
 });
+
+import { projectRemoteUsageDetails } from "../../src/usage/remote-report";
+const counts = { requests: 2, measuredRequests: 2, reportedRequests: 2, estimatedRequests: 0, totalTokens: 30 };
+const fullReport = () => ({
+  range: "7d", surface: "all", generatedAt: 1000, since: 100,
+  summary: { ...counts, unreportedRequests: 0, unsupportedRequests: 0, inputTokens: 10, outputTokens: 20, cachedInputTokens: 0, reasoningOutputTokens: 0, coverageRatio: 1 },
+  days: [{ date: "2026-09-17", ...counts, models: [{ model: "remote-model", provider: "remote-provider", requests: 2, totalTokens: 30 }] }],
+  models: [{ ...counts, model: "remote-model", provider: "remote-provider", inputTokens: 10, outputTokens: 20, shareRatio: 1, averageTtftMs: null }],
+  providers: [{ ...counts, provider: "remote-provider", shareRatio: 1 }],
+  latency: { modelCallMs: 100, activeWallMs: null, averageTtftMs: null },
+  effortGroups: [{ model: "remote-model", provider: "remote-provider", speedMode: "fast", requestedEffort: "high", effectiveEffort: "high", requests: 2, requestShare: 1, modelCallMs: 100, inputTokens: 10, outputTokens: 20 }],
+  historyTruncated: true, usageIncomplete: true, usageIncompleteReason: "oversized_rows", snapshotWindowStart: 50, snapshotWindowEnd: 1000,
+});
+
+test("full remote report projects every dashboard section but no payload or account data", () => {
+  const input = { ...fullReport(), token: "secret", accounts: [{ accountLogLabel: "private" }], config: { token: "secret" } };
+  Object.assign(input.models[0], { payload: "private", accountId: "private" });
+  const output = projectRemoteUsageDetails(input)!;
+  expect(output.days).toMatchObject([{ date: "2026-09-17", models: input.days[0].models }]);
+  expect(output.models).toEqual(fullReport().models);
+  expect(output.providers).toEqual(input.providers);
+  expect(output.latency).toEqual(input.latency);
+  expect(output.effortGroups).toEqual(input.effortGroups);
+  expect(output.snapshotWindowEnd).toBe(1000);
+  expect(output.usageIncompleteReason).toBe("oversized_rows");
+  expect(JSON.stringify(output)).not.toMatch(/secret|private|account|payload|config/);
+  expect(output.latency).not.toHaveProperty("decodeTokensPerSecond");
+});
+
+test("invalid nested details fail instead of dropping rows or fabricating zero metrics", () => {
+  for (const value of ["2", -1, NaN]) {
+    const input = fullReport();
+    Object.assign(input.models[0], { requests: value });
+    expect(() => projectRemoteUsageDetails(input)).toThrow("invalid_response");
+  }
+  expect(() => projectRemoteUsageDetails({ ...fullReport(), models: null })).toThrow();
+  const legacy = fullReport();
+  delete (legacy as { latency?: unknown }).latency;
+  delete (legacy as { effortGroups?: unknown }).effortGroups;
+  expect(projectRemoteUsageDetails(legacy)).not.toHaveProperty("latency");
+  expect(projectRemoteUsageDetails({ summary: {} })).toBeUndefined();
+});
