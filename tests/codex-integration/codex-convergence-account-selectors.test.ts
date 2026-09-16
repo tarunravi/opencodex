@@ -1121,11 +1121,11 @@ test("retained sync and convergence produce identical canonical bytes in either 
     ))).toBe(pickerEnabled);
     if (pickerEnabled) {
       expect(models.find(entry => entry.slug === "desktop/gpt-5.5")).toMatchObject({
-        display_name: "desktop / 5.5",
+        display_name: "desktop · GPT-5.5",
         opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
       });
       expect(models.find(entry => entry.slug === "team/gpt-5.5")).toMatchObject({
-        display_name: "team / 5.5",
+        display_name: "Private Side Account · GPT-5.5",
         opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
       });
     }
