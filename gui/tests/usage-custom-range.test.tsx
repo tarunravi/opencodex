@@ -36,6 +36,7 @@ beforeEach(() => {
   apiBase = `http://usage-custom-${++sequence}`;
   requests = [];
   globalThis.fetch = ((input: RequestInfo | URL) => new Promise<Response>(resolve => {
+    if (String(input).includes("/api/usage/remotes?")) { resolve(Response.json({ remotes: [] })); return; }
     requests.push({ url: String(input), resolve });
   })) as typeof fetch;
 });

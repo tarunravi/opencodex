@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
-import { RemoteUsagePanel } from "./RemoteUsage";
+import { RemoteUsageResults } from "./RemoteUsage";
+import { useRemoteUsage } from "../remote-usage-resource";
 import type { UsageReadMetadata } from "../usage-summary-resource";
 import { UsageIncompleteNotice } from "../components/usage-incomplete-notice";
 import { formatProviderDisplayName } from "../provider-icons";
@@ -9,7 +10,7 @@ import { formatUptime } from "../formatUptime";
 import { catalogValue } from "../i18n/catalogs";
 import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
-import { EmptyState, Notice, Tooltip } from "../ui";
+import { EmptyState, Notice, Select, Tooltip } from "../ui";
 import { IconChevron } from "../icons";
 import { modelLabel } from "../model-display";
 import { useDataSurface } from "../data-surface";
@@ -17,6 +18,8 @@ import { DataSurfaceSkeleton } from "../components/data-surface";
 import { SectionTabs } from "../components/section-tabs";
 import { sectionAnchorId } from "../section-anchors";
 import { parseUsageTimeRange, type UsageRangeError, type UsageTimeWindow } from "../usage-time-range";
+
+const REMOTE_MACHINE_PREFIX = "remote:";
 
 type Range = "all" | "30d" | "7d";
 type UsageSurface = "all" | "codex" | "claude" | "grok";
@@ -1155,6 +1158,7 @@ function writeHeldUsage(apiBase: string, range: Range, surface: UsageSurface, co
 
 export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBase: string; connected?: boolean; apiKeyId?: string }) {
   const { t, locale } = useI18n();
+  const [selection, setSelection] = useState({ apiBase, value: "all" });
   const [range, setRange] = useState<Range>("30d");
   const [surface, setSurface] = useState<UsageSurface>("all");
   const [scope, setScope] = useState<UsageScope>("machine");
@@ -1165,6 +1169,12 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
   const [rangeOpen, setRangeOpen] = useState(false);
   const since = customWindow?.since;
   const until = customWindow?.until;
+  const remoteResource = useRemoteUsage({ apiBase, range, surface, since, until });
+  const machines = remoteResource.machines;
+  const selectedMachine = selection.apiBase === apiBase ? selection.value : "all";
+  const machine = selectedMachine.startsWith(REMOTE_MACHINE_PREFIX) && remoteResource.state.data && !remoteResource.state.data.error
+    && !machines.some(remote => REMOTE_MACHINE_PREFIX + remote.id === selectedMachine) ? "all" : selectedMachine;
+  const showLocal = machine === "all" || machine === "local";
 
   const clearCustomWindow = () => {
     setCustomWindow(null);
@@ -1234,6 +1244,11 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
     <>
       <div className="page-head usage-head">
         <h2 id="usage-page-title">{t("usage.title")}</h2>
+        <Select label={t("usage.machine.label")} value={machine} onChange={value => setSelection({ apiBase, value })} options={[
+          { value: "all", label: t("usage.machine.all") },
+          { value: "local", label: t(connected ? "usage.scope.machine" : "usage.machine.mac") },
+          ...machines.map(remote => ({ value: REMOTE_MACHINE_PREFIX + remote.id, label: remote.name })),
+        ]} />
         <UsageFilters surface={surface} range={customWindow ? null : range} onSurface={setSurface} onRange={selectRange} t={t} />
       </div>
       <p className="page-sub">{t("usage.subtitle")}</p>
@@ -1323,7 +1338,7 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
         not already imply — while still being a line about topology that a user who never
         enabled remote hub has to read past.
       */}
-      {connected && (
+      {connected && showLocal && (
         <div className="usage-source-row">
           <span>{t("usage.source.connected")}</span>
           <div className="usage-scope-control" role="group" aria-label={t("usage.scope.label")}>
@@ -1333,8 +1348,8 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
         </div>
       )}
 
-      <RemoteUsagePanel compact apiBase={apiBase} range={range} surface={surface} since={customWindow?.since} until={customWindow?.until} />
-
+      {showLocal && <section aria-label={t(connected ? "usage.scope.machine" : "usage.machine.mac")}>
+      <h3>{t(connected ? scope === "hub" ? "usage.scope.hub" : "usage.scope.machine" : "usage.machine.mac")}</h3>
       {state.showSkeleton && !data ? (
         <DataSurfaceSkeleton label={t("usage.loading")} rows={5} />
       ) : state.kind === "failed-cold" ? (
@@ -1380,6 +1395,8 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
           />
         </>
       )}
+      </section>}
+      {machine !== "local" && <RemoteUsageResults key={machine} resource={remoteResource} range={range} machineId={machine.startsWith(REMOTE_MACHINE_PREFIX) ? machine.slice(REMOTE_MACHINE_PREFIX.length) : undefined} />}
     </>
   );
 }

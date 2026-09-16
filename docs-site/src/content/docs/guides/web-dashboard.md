@@ -104,9 +104,11 @@ to save an incomplete snapshot; choose another order or repair the history befor
 
 ### Remote OpenCodex usage
 
-**Remote OpenCodex** displays each remote proxy's requests, tokens, and estimated cost separately.
+**Usage** starts with the **Machine** filter set to **All**, followed by **Mac** and each configured remote in configuration order. All shows a labeled Mac report and separate remote summaries; selecting a machine shows only its report. Disconnected machines stay selectable and display their connection error. Range and client filters apply to the selected reports. Remote summaries do not include the Mac charts.
+
+**Remote OpenCodex** also displays each remote proxy's requests, tokens, and estimated cost separately.
 Relayed requests can also appear in the local ledger, so these totals are never added to local usage.
-The Usage page keeps its local report and shows a small dismissible warning when remote reports fail.
+Remote failures leave the Mac report usable; choosing Mac hides remote warnings.
 Remote reports refresh every minute while the page is visible; the remote page also has a refresh button.
 An unavailable report is an error, not a zero total. Today uses each remote proxy's time zone.
 Explicit time windows require a remote version that echoes those bounds; older versions show an

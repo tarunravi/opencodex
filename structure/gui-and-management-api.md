@@ -644,5 +644,5 @@ the existing management admission gate in `src/server/management/logs-usage-rout
 numeric totals, partial-history metadata, and sanitized per-remote status reach the browser; neither
 credentials nor destinations do. HTTP-success error envelopes remain failures. Local and remote counters
 stay separate because relayed requests can appear in both ledgers. `gui/src/pages/RemoteUsage.tsx` owns
-remote cards and filters; the Usage page mounts only its compact warning surface. An unsupported explicit
+the shared remote resource and cards. Usage defaults its machine selector to All, followed by Mac and the configured remote roster; it renders local and remote reports separately. Selecting a remote hides all local charts, while Mac hides remote errors. Only roster identities survive a range-load failure; previous-window totals never do. An unsupported explicit
 time window is never silently replaced by the remote default. The CLI verb is deferred in the route registry.

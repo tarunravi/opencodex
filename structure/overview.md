@@ -148,4 +148,4 @@ The [explicit model-capability contract](config.md#explicit-per-model-capability
 
 Provider-scoped approval reviewer settings are projected by the [catalog owner](catalog.md#provider-scoped-approval-reviewer); this surface retains its existing routing, transport and account-selection behavior.
 
-The dashboard reads separate remote proxy reports through the [remote usage contract](gui-and-management-api.md#remote-usage-reports); local accounting and inference behavior remain unchanged.
+The Usage machine filter defaults to All and preserves separate local and remote reports; its shared resource and failure behavior follow the [remote usage contract](gui-and-management-api.md#remote-usage-reports).

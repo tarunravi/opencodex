@@ -8,6 +8,9 @@ export const fr: Record<TKey, string> = {
   "remoteUsage.unauthorized": "The remote proxy rejected access.",
   "remoteUsage.invalidResponse": "The remote proxy returned an invalid usage report.",
 
+  "usage.machine.label": "Machine",
+  "usage.machine.all": "Toutes",
+  "usage.machine.mac": "Mac",
   "remoteUsage.title": "Remote OpenCodex",
   "remoteUsage.subtitle": "Usage recorded on each remote proxy. Totals stay separate because relayed requests may also appear locally.",
   "remoteUsage.empty": "No remote proxies configured.",
