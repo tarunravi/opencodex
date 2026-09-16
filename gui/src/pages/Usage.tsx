@@ -1251,7 +1251,7 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
         ]} />
         <UsageFilters surface={surface} range={customWindow ? null : range} onSurface={setSurface} onRange={selectRange} t={t} />
       </div>
-      <p className="page-sub">{t("usage.subtitle")}</p>
+      {showLocal && <p className="page-sub">{t("usage.subtitle")}</p>}
       {/*
         An explicit interval is the rare path — the presets answer the question almost every
         time — so the two date fields open on request instead of greeting every visit as the

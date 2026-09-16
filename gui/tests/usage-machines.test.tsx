@@ -112,6 +112,7 @@ test("All defaults first; machine reports stay separate and reserved remote IDs 
   expect(container.querySelector('section[aria-label="Devbox one"]')).toBeNull();
   expect(document.querySelector(".toast-notice")).toBeNull();
   await select("Devbox one");
+  expect(container.textContent).not.toContain("Local token accounting");
   expect(container.textContent).not.toContain("local-only-model");
   expect(container.querySelector('section[aria-label="Mac"]')).toBeNull();
   expect(container.querySelector('section[aria-label="Devbox two"]')).toBeNull();
