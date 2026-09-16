@@ -183,3 +183,5 @@ implement legacy call/result pairing. Modern tool-image carriers are unchanged.
 raw passthrough; `tests/responses/chat-media-translation.test.ts` reaches the real HTTP
 translation boundary and verifies that rejection sends no upstream request.
 Canonical Responses identity sanitation and narrowly scoped pre-output combo recovery follow [request-local target compatibility](../runtime.md#request-local-target-compatibility); other adapter contracts remain unchanged.
+
+The dashboard reads separate remote proxy reports through the [remote usage contract](../gui-and-management-api.md#remote-usage-reports); local accounting and inference behavior remain unchanged.

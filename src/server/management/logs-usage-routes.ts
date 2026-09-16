@@ -52,6 +52,7 @@ import {
 } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
 import { collectCodexTaskEvents, summarizeTaskEvents } from "../../usage/codex-activity";
+import { collectRemoteUsage } from "../../usage/remote-instances";
 import { parseUsageTimeWindow, type UsageTimeWindow } from "../../usage/time-range";
 import { USAGE_RANGES, USAGE_SURFACES, parseRange, parseUsageSurface, rangeWindow, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
@@ -177,6 +178,20 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       clearClaudeInboundDebug();
     }
     return jsonResponse(setDebugSettings(partial));
+  }
+
+  if (url.pathname === "/api/usage/remotes" && req.method === "GET") {
+    let window: UsageTimeWindow | undefined;
+    try {
+      window = parseUsageTimeWindow(url.searchParams.get("since"), url.searchParams.get("until"));
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : "invalid usage time window" }, 400);
+    }
+    return jsonResponse(await collectRemoteUsage({
+      range: parseRange(url.searchParams.get("range")),
+      surface: parseUsageSurface(url.searchParams.get("surface")),
+      ...window,
+    }));
   }
 
   if (url.pathname === "/api/usage" && req.method === "GET") {

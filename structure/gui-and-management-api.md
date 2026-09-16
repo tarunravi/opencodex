@@ -633,4 +633,16 @@ Exact [model input declarations](config.md#explicit-per-model-capability-declara
 
 The raw provider editor round-trips `autoReviewModel` and `autoReviewModelOverrides` through editor-owned DTO fields. POST/PATCH/PUT share validation; PUT copies schema-normalized values into the persisted and live candidate before adoption. Canonical `openai` rejects these fields, including clear forms. Field-masked writes (PATCH, editor PUT, reload) pin every registry-seed key and ignore operator overlays the seed never defines, most commonly `selectedModels`; POST keeps the exact-key comparison. Canonical `openai` still rejects `allowPrivateNetwork`, which must not short-circuit destination DNS checks on the ChatGPT forward row. Existing authentication, origin checks and stale-baseline protection still govern the writes. See [reviewer projection](catalog.md#provider-scoped-approval-reviewer).
 
-| Cursor MCP integration | `src/server/management/native-integration-routes.ts` — `GET/PUT /api/native-integrations/cursor` inspects or toggles one ownership-marked `opencodex` entry in Cursor's global `mcp.json`. The entry exposes explicit OpenCodex tools; it does not reroute Cursor's native inference. Malformed files and same-named user-owned entries fail closed. |
+| Cursor MCP integration | `src/server/management/native-integration-routes.ts` — `GET /api/native-integrations/cursor-mcp` inspects and `PUT /api/native-integrations/cursor` toggles one ownership-marked `opencodex` entry in Cursor's global `mcp.json`. The entry exposes explicit OpenCodex tools; it does not reroute Cursor's native inference. Malformed files and same-named user-owned entries fail closed. |
+
+
+## Remote usage reports
+
+`src/usage/remote-instances.ts` reads owner-only `usage-remotes.json` and concurrently queries at most
+eight loopback SSH forwards with independent five-second deadlines. `GET /api/usage/remotes` stays behind
+the existing management admission gate in `src/server/management/logs-usage-routes.ts`. Only validated
+numeric totals, partial-history metadata, and sanitized per-remote status reach the browser; neither
+credentials nor destinations do. HTTP-success error envelopes remain failures. Local and remote counters
+stay separate because relayed requests can appear in both ledgers. `gui/src/pages/RemoteUsage.tsx` owns
+remote cards and filters; the Usage page mounts only its compact warning surface. An unsupported explicit
+time window is never silently replaced by the remote default. The CLI verb is deferred in the route registry.

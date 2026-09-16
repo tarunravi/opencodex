@@ -2,6 +2,24 @@ import type { TKey } from "./en";
 
 /** Traditional Chinese (Taiwan) UI strings — keys must match `en.ts` 1:1. */
 export const zhTW: Record<TKey, string> = {
+  "remoteUsage.unsupportedWindow": "This remote proxy does not support the selected time window.",
+  "remoteUsage.unauthorized": "The remote proxy rejected access.",
+  "remoteUsage.invalidResponse": "The remote proxy returned an invalid usage report.",
+
+  "remoteUsage.title": "Remote OpenCodex",
+  "remoteUsage.subtitle": "Usage recorded on each remote proxy. Totals stay separate because relayed requests may also appear locally.",
+  "remoteUsage.empty": "No remote proxies configured.",
+  "remoteUsage.unavailable": "Remote usage is unavailable. Local usage is unaffected.",
+  "remoteUsage.offline": "Could not reach this remote proxy.",
+  "remoteUsage.online": "Connected",
+  "remoteUsage.warning": "Some remote usage could not be loaded: {names}. Local usage is unaffected.",
+  "remoteUsage.refresh": "Refresh remote usage",
+  "remoteUsage.range": "Remote usage range",
+  "remoteUsage.today": "Today (remote time)",
+  "remoteUsage.stale": "Showing the previous remote report. Refresh to try again.",
+  "remoteUsage.partial": "This remote report is incomplete; totals may be lower than actual usage.",
+  "remoteUsage.timeZone": "Today uses the remote time zone: {zone}.",
+
   "usage.incomplete": "部分用量記錄無法納入。次數、日期和排名僅反映可讀取的記錄。",
   "models.pickerOrder.usageIncomplete": "用量歷史不完整，無法儲存最常用排序。請選擇其他排序或先修復歷史記錄。",
   "api.attribution.noRecordedUse": "可讀取的記錄中沒有使用記錄",

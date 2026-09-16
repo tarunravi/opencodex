@@ -331,3 +331,5 @@ Modern `tool` images continue through the existing following-user carrier. These
 an OpenCodex conversion limit, not a provider capability claim. Final Responses-to-adapter
 admission follows the [registry contract](../adapters/registry.md#untranslated-input-media).
 Canonical Responses identity sanitation and narrowly scoped pre-output combo recovery follow [request-local target compatibility](../runtime.md#request-local-target-compatibility); other adapter contracts remain unchanged.
+
+The dashboard reads separate remote proxy reports through the [remote usage contract](../gui-and-management-api.md#remote-usage-reports); local accounting and inference behavior remain unchanged.

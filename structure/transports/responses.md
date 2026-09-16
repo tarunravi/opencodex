@@ -693,3 +693,5 @@ What must not happen is a ladder that charges and then returns through a path th
 nor releases. That is not a lost send; it is a send the request never made, spending an allowance a
 later recovery in the same request then cannot have. `tests/lib/execution-budget-permits.test.ts`
 pins both ladder shapes against exactly that.
+
+The dashboard reads separate remote proxy reports through the [remote usage contract](../gui-and-management-api.md#remote-usage-reports); local accounting and inference behavior remain unchanged.

@@ -84,7 +84,8 @@ route-specific results rather than repeating this table.
 | `POST /api/claude-desktop/apply` | Write the saved profile to Claude Desktop's managed config | 400/500 write failure |
 | `GET /api/claude-desktop/status` | Inspect saved-versus-applied profile and Desktop health | 400 status read failure |
 | `GET, PUT /api/claude-code` | Read or update Claude Code gateway, auth-mode, model-map, context, agent, and sidecar settings | 400 invalid field or shape |
-| `GET, PUT /api/native-integrations/cursor` | Inspect or toggle Cursor's ownership-marked OpenCodex MCP tools; native Cursor inference is unchanged | 409 malformed, changed, or same-named user-owned config; 500 write failure |
+| `GET /api/native-integrations/cursor` | Read Cursor Private Inference gateway and installation status | 400 invalid request |
+| `GET /api/native-integrations/cursor-mcp`, `PUT /api/native-integrations/cursor` | Inspect or toggle Cursor's ownership-marked OpenCodex MCP tools; native Cursor inference is unchanged | 409 malformed, changed, or same-named user-owned config; 500 write failure |
 
 The dashboard drives both coupon paths from **Providers > xAI Grok > Accounts**: each
 signed-in account row carries a ticket badge with its remaining coupon count, and the

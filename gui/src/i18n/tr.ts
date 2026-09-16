@@ -5,6 +5,24 @@ import type { TKey } from "./en";
  * Turkish i18n catalog. Must match the `TKey` set (compile-checked).
  */
 export const tr: Record<TKey, string> = {
+  "remoteUsage.unsupportedWindow": "This remote proxy does not support the selected time window.",
+  "remoteUsage.unauthorized": "The remote proxy rejected access.",
+  "remoteUsage.invalidResponse": "The remote proxy returned an invalid usage report.",
+
+  "remoteUsage.title": "Remote OpenCodex",
+  "remoteUsage.subtitle": "Usage recorded on each remote proxy. Totals stay separate because relayed requests may also appear locally.",
+  "remoteUsage.empty": "No remote proxies configured.",
+  "remoteUsage.unavailable": "Remote usage is unavailable. Local usage is unaffected.",
+  "remoteUsage.offline": "Could not reach this remote proxy.",
+  "remoteUsage.online": "Connected",
+  "remoteUsage.warning": "Some remote usage could not be loaded: {names}. Local usage is unaffected.",
+  "remoteUsage.refresh": "Refresh remote usage",
+  "remoteUsage.range": "Remote usage range",
+  "remoteUsage.today": "Today (remote time)",
+  "remoteUsage.stale": "Showing the previous remote report. Refresh to try again.",
+  "remoteUsage.partial": "This remote report is incomplete; totals may be lower than actual usage.",
+  "remoteUsage.timeZone": "Today uses the remote time zone: {zone}.",
+
   "usage.incomplete": "Bazı kullanım kayıtları dahil edilemedi. Sayılar, tarihler ve sıralamalar yalnızca okunabilir kayıtlara dayanır.",
   "models.pickerOrder.usageIncomplete": "Kullanım geçmişi eksik olduğundan en çok kullanılan sıralaması kaydedilemiyor. Başka bir sıralama seçin veya önce geçmişi onarın.",
   "api.attribution.noRecordedUse": "Okunabilir kayıtlarda kullanım yok",

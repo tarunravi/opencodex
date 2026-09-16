@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
+import { RemoteUsagePanel } from "./RemoteUsage";
 import type { UsageReadMetadata } from "../usage-summary-resource";
 import { UsageIncompleteNotice } from "../components/usage-incomplete-notice";
 import { formatProviderDisplayName } from "../provider-icons";
@@ -1331,6 +1332,8 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
           </div>
         </div>
       )}
+
+      <RemoteUsagePanel compact apiBase={apiBase} range={range} surface={surface} since={customWindow?.since} until={customWindow?.until} />
 
       {state.showSkeleton && !data ? (
         <DataSurfaceSkeleton label={t("usage.loading")} rows={5} />

@@ -102,6 +102,29 @@ catalog, and API key views show a warning even when no readable records remain. 
 usage rankings reflect readable records only. **Models → Most used snapshot → Apply order** refuses
 to save an incomplete snapshot; choose another order or repair the history before retrying.
 
+### Remote OpenCodex usage
+
+**Remote OpenCodex** displays each remote proxy's requests, tokens, and estimated cost separately.
+Relayed requests can also appear in the local ledger, so these totals are never added to local usage.
+The Usage page keeps its local report and shows a small dismissible warning when remote reports fail.
+Remote reports refresh every minute while the page is visible; the remote page also has a refresh button.
+An unavailable report is an error, not a zero total. Today uses each remote proxy's time zone.
+Explicit time windows require a remote version that echoes those bounds; older versions show an
+unsupported-window message instead of substituting another range.
+
+Configure up to eight remotes in `usage-remotes.json` under `OPENCODEX_HOME` (normally `~/.opencodex`).
+Each entry contains `id`, `name`, `baseUrl`, and `token`, where `token` is the remote management token:
+
+```json
+[{"id":"devbox","name":"Devbox","baseUrl":"http://127.0.0.1:41121","token":"<remote-management-token>"}]
+```
+
+Keep this file private (`chmod 600`) and forward each local port to the remote proxy over SSH.
+Only literal loopback HTTP destinations are accepted. Credentials remain on the server; the browser
+receives projected usage totals and per-remote status. Redirects and environment HTTP proxies are disabled.
+`GET /api/usage/remotes` requires the existing management authentication and accepts `range`, `surface`,
+and paired `since`/`until` bounds. A remote-usage CLI verb is deferred; the dashboard owns this workflow.
+
 ### Account selection
 
 Account selection is shared with request routing. Selecting an OAuth account takes effect on the

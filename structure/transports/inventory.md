@@ -148,3 +148,5 @@ Renamed fixed-key providers receive [missing reasoning metadata](../catalog.md#r
 
 Translated audio/file admission follows the [final-adapter input contract](../adapters/registry.md#untranslated-input-media); native raw passthrough remains separate.
 Canonical Responses identity sanitation and narrowly scoped pre-output combo recovery follow [request-local target compatibility](../runtime.md#request-local-target-compatibility); other adapter contracts remain unchanged.
+
+The dashboard reads separate remote proxy reports through the [remote usage contract](../gui-and-management-api.md#remote-usage-reports); local accounting and inference behavior remain unchanged.

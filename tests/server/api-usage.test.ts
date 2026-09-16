@@ -109,6 +109,31 @@ afterEach(() => {
 });
 
 describe("GET /api/usage", () => {
+  test("remote reports require management authentication and validate windows independently", async () => {
+    const server = startServer(0);
+    const peer = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => {
+      expect(request.headers.get("x-opencodex-api-key")).toBe("test-remote-admin");
+      const url = new URL(request.url);
+      expect(url.searchParams.get("range")).toBe("7d");
+      expect(url.searchParams.get("surface")).toBe("codex");
+      return Response.json({ range: "7d", surface: "codex", summary: { requests: 2, inputTokens: 4, outputTokens: 3, cachedInputTokens: 1, totalTokens: 7 } });
+    } });
+    try {
+      const url = new URL("/api/usage/remotes?range=7d&surface=codex", server.url);
+      expect((await globalThis.fetch(url)).status).toBe(401);
+      expect(await fetch(url).then(res => res.json())).toEqual({ remotes: [] });
+      writeFileSync(join(testDir, "usage-remotes.json"), JSON.stringify([{ id: "peer", name: "Peer", baseUrl: peer.url.origin, token: "test-remote-admin" }]), { mode: 0o600 });
+      const remote = await fetch(url).then(res => res.json());
+      expect(remote.remotes[0].usage.summary.totalTokens).toBe(7);
+      expect(JSON.stringify(remote)).not.toContain("test-remote-admin");
+      expect((await fetch(new URL("/api/usage/remotes?since=20&until=10", server.url))).status).toBe(400);
+      expect((await fetch(new URL("/api/usage?range=7d", server.url)).then(res => res.json())).summary.requests).toBe(0);
+    } finally {
+      peer.stop(true);
+      await server.stop(true);
+    }
+  });
+
   test("custom bounds override presets while preserving surface, filters and accounts", async () => {
     const since = new Date(2026, 1, 10, 12).getTime();
     const until = since + 3_600_000;

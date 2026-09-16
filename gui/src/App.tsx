@@ -6,6 +6,7 @@ import Models from "./pages/Models";
 import Subagents from "./pages/Subagents";
 import Logs from "./pages/Logs";
 import Usage from "./pages/Usage";
+import RemoteUsage from "./pages/RemoteUsage";
 import Storage from "./pages/Storage";
 import CodexSet from "./pages/CodexSet";
 import Integrations from "./pages/Integrations";
@@ -35,6 +36,7 @@ const PAGE_TKEY: Record<Page, TKey> = {
   subagents: "nav.subagents",
   logs: "nav.logs",
   usage: "nav.usage",
+  "remote-usage": "remoteUsage.title",
   storage: "nav.storage",
   remote: "nav.remote",
   "codex-set": "nav.codexSet",
@@ -69,6 +71,7 @@ const NAV: NavEntry[] = [
   { id: "subagents", tkey: "nav.subagents", Icon: IconBot },
   { id: "logs", tkey: "nav.logs", Icon: IconList },
   { id: "usage", tkey: "nav.usage", Icon: IconActivity },
+  { id: "remote-usage", tkey: "remoteUsage.title", Icon: IconServer },
   { id: "storage", tkey: "nav.storage", Icon: IconHardDrive },
   { id: "remote", tkey: "nav.remote", Icon: IconMonitor },
   { id: "integrations", tkey: "nav.integrations", Icon: IconGlobe },
@@ -449,6 +452,7 @@ export default function App() {
                 {page === "subagents" && <Subagents key={sharedBase} apiBase={sharedBase} />}
                 {page === "logs" && <Logs apiBase={sharedBase} />}
                 {page === "usage" && <Usage apiBase={sharedBase} connected={targets.connected} apiKeyId={targets.apiKeyId} />}
+                {page === "remote-usage" && <RemoteUsage apiBase={sharedBase} />}
                 {page === "storage" && <Storage apiBase={sharedBase} />}
                 {page === "remote" && <RemoteWorkspace apiBase={sharedBase} hubOrigin={targets.shared.serverOrigin} />}
                 {page === "codex-set" && <CodexSet apiBase={sharedBase} />}

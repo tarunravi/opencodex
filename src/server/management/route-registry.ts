@@ -228,6 +228,7 @@ export const MANAGEMENT_ROUTES: readonly ManagementRoute[] = [
   { method: "GET", path: "/api/storage/trash", module: "server/management/logs-usage-routes", mutates: false },
   { method: "GET", path: "/api/storage/trash/restore/test-stream", module: "server/management/logs-usage-routes", mutates: false, exempt: { reason: "test-seam", why: "Opt-in streaming seam declared at src/storage/restore-job.ts:34." } },
   { method: "GET", path: "/api/usage", module: "server/management/logs-usage-routes", mutates: false },
+  { method: "GET", path: "/api/usage/remotes", module: "server/management/logs-usage-routes", mutates: false, exempt: { reason: "deferred-verb", why: "Remote usage is a dashboard surface; a corresponding CLI verb is outside this feature scope.", owner: "remote-usage-cli", ownerDoc: "docs-site/src/content/docs/guides/web-dashboard.md" } },
   { method: "POST", path: "/api/storage/cleanup", module: "server/management/logs-usage-routes", mutates: true },
   { method: "POST", path: "/api/storage/cleanup-policy/run", module: "server/management/logs-usage-routes", mutates: true },
   { method: "POST", path: "/api/storage/cleanup/preview", module: "server/management/logs-usage-routes", mutates: true },
@@ -252,6 +253,8 @@ export const MANAGEMENT_ROUTES: readonly ManagementRoute[] = [
   { method: "PUT", path: "/api/model-visibility", module: "server/management/model-routes", mutates: true },
   { method: "PUT", path: "/api/selected-models", module: "server/management/model-routes", mutates: true },
   // server/management/native-integration-routes
+  { method: "GET", path: "/api/native-integrations/cursor-mcp", module: "server/management/native-integration-routes", mutates: false, exempt: { reason: "deferred-verb", why: "Fork Cursor MCP status is separate from upstream Cursor gateway status; its CLI verb is deferred.", owner: "cursor-mcp-cli", ownerDoc: "structure/gui-and-management-api.md" } },
+  { method: "PUT", path: "/api/native-integrations/cursor", module: "server/management/native-integration-routes", mutates: true, exempt: { reason: "deferred-verb", why: "Fork Cursor MCP toggle has no corresponding CLI verb yet.", owner: "cursor-mcp-cli", ownerDoc: "structure/gui-and-management-api.md" } },
   { method: "GET", path: "/api/native-integrations", module: "server/management/native-integration-routes", mutates: false },
   { method: "PUT", path: "/api/native-integrations/claude", module: "server/management/native-integration-routes", mutates: true },
   { method: "PUT", path: "/api/native-integrations/claude-desktop", module: "server/management/native-integration-routes", mutates: true },
