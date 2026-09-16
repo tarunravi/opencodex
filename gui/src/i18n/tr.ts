@@ -11,6 +11,8 @@ export const tr: Record<TKey, string> = {
 
   "usage.machine.label": "Makine",
   "usage.machine.all": "Tümü",
+  "usage.machine.accounting": "All combines recorded proxy usage, including relayed requests recorded on multiple machines. Daily charts use each proxy’s calendar dates; unavailable combined rates and wall times show —.",
+  "usage.machine.partial": "Some machine reports are pending, unavailable, or outdated: {names}.",
   "usage.machine.mac": "Mac",
   "remoteUsage.summaryOnly": "This remote only supplied totals; detailed usage is unavailable.",
   "remoteUsage.title": "Remote OpenCodex",
@@ -984,7 +986,7 @@ export const tr: Record<TKey, string> = {
 
   // usage page
   "usage.title": "Kullanım",
-  "usage.subtitle": "Proxy'nizden yerel jeton muhasebesi.",
+  "usage.subtitle": "Token accounting from the selected machines. Missing usage is never shown as zero.",
   "usage.loading": "Kullanım verileri yükleniyor…",
   "usage.empty": "Henüz kullanım kaydedilmedi.",
   "usage.loadError": "Kullanım verileri yüklenemedi.",
@@ -1029,7 +1031,7 @@ export const tr: Record<TKey, string> = {
   "usage.heatmap.tooltipTokens": "{tokens} jeton",
   "usage.heatmap.tooltipRequests": "{requests} istek",
   "usage.profile.name": "OpenCodex",
-  "usage.profile.badge": "Yerel proxy",
+  "usage.profile.badge": "Proxy",
   "usage.stat.lifetimeTokens": "Toplam jeton",
   "usage.stat.peakDay": "En yoğun gün",
   "usage.stat.requests": "İstekler",

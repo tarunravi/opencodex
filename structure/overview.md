@@ -148,4 +148,4 @@ The [explicit model-capability contract](config.md#explicit-per-model-capability
 
 Provider-scoped approval reviewer settings are projected by the [catalog owner](catalog.md#provider-scoped-approval-reviewer); this surface retains its existing routing, transport and account-selection behavior.
 
-The Usage machine filter defaults to All and preserves separate local and remote reports; its shared resource and failure behavior follow the [remote usage contract](gui-and-management-api.md#remote-usage-reports). The contract includes bounded full-report projection and a shared per-machine dashboard renderer.
+The Usage machine filter defaults to All and uses one fixed dashboard for all machine selections; its shared resource and failure behavior follow the [remote usage contract](gui-and-management-api.md#remote-usage-reports). The contract includes bounded full-report projection and a fixed dashboard renderer with explicit recorded-usage aggregation.

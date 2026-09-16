@@ -10,6 +10,8 @@ export const ru: Record<TKey, string> = {
 
   "usage.machine.label": "Компьютер",
   "usage.machine.all": "Все",
+  "usage.machine.accounting": "All combines recorded proxy usage, including relayed requests recorded on multiple machines. Daily charts use each proxy’s calendar dates; unavailable combined rates and wall times show —.",
+  "usage.machine.partial": "Some machine reports are pending, unavailable, or outdated: {names}.",
   "usage.machine.mac": "Mac",
   "remoteUsage.summaryOnly": "This remote only supplied totals; detailed usage is unavailable.",
   "remoteUsage.title": "Remote OpenCodex",
@@ -965,7 +967,7 @@ export const ru: Record<TKey, string> = {
 
   // usage page
   "usage.title": "Использование",
-  "usage.subtitle": "Локальный учёт токенов вашего прокси. Отсутствующие данные никогда не показываются как ноль.",
+  "usage.subtitle": "Token accounting from the selected machines. Missing usage is never shown as zero.",
   "usage.loading": "Загрузка данных об использовании…",
   "usage.empty": "Данных об использовании пока нет. Отправьте запрос через прокси, чтобы увидеть здесь активность.",
   "usage.loadError": "Не удалось загрузить данные об использовании.",
@@ -1010,7 +1012,7 @@ export const ru: Record<TKey, string> = {
   "usage.heatmap.tooltipTokens": "{tokens} токенов",
   "usage.heatmap.tooltipRequests": "{requests} запросов",
   "usage.profile.name": "OpenCodex",
-  "usage.profile.badge": "Локальный прокси",
+  "usage.profile.badge": "Proxy",
   "usage.stat.lifetimeTokens": "Токенов всего",
   "usage.stat.peakDay": "Пиковый день",
   "usage.stat.requests": "Запросы",

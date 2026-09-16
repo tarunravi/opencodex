@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useId, useRef, useState, type ReactNode } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
-import { RemoteUsageResults } from "./RemoteUsage";
+import { aggregateUsage } from "../aggregate-usage";
 import { useRemoteUsage } from "../remote-usage-resource";
 import type { UsageSummaryTotals, UsageDay, UsageModel, UsageProvider, UsageLatency, UsageEffortGroup, UsageResponse } from "../usage-report";
 import { UsageIncompleteNotice } from "../components/usage-incomplete-notice";
@@ -154,7 +154,6 @@ function UsageProfileHero({
   summary,
   days,
   host,
-  remote = false,
   currentDay,
   locale,
   t,
@@ -162,7 +161,6 @@ function UsageProfileHero({
   summary: UsageSummaryTotals;
   days: UsageDay[];
   host: string;
-  remote?: boolean;
   currentDay?: string | null;
   locale: Locale;
   t: TFn;
@@ -192,7 +190,7 @@ function UsageProfileHero({
       <div className="profile-sub">
         <span className="profile-handle mono">{host}</span>
         <span className="profile-sub-dot" aria-hidden="true">·</span>
-        <span className="profile-badge">{t(remote ? "remoteUsage.title" : "usage.profile.badge")}</span>
+        <span className="profile-badge">{t("usage.profile.badge")}</span>
       </div>
       <div className="profile-stats" role="group" aria-label={t("usage.title")}>
         {stats.map(stat => (
@@ -253,7 +251,7 @@ function UsageInsightsRow({
         <h4 id={topModelsId} className="usage-insights-title">{t("usage.section.topModels")}</h4>
         <div className="usage-topmodels-list">
           {topModels.map(model => (
-            <div key={`${model.provider}/${model.model}`} className="usage-topmodel">
+            <div key={JSON.stringify([model.provider, model.model, model.resolvedModel])} className="usage-topmodel">
               <span className="usage-topmodel-swatch" style={{ background: modelColor(model.model, model.provider) }} aria-hidden="true" />
               <span className="usage-topmodel-name">{modelLabel(model.model)}</span>
               <span className="usage-topmodel-count muted">{t("usage.topModels.runs", { count: model.requests })}</span>
@@ -474,7 +472,7 @@ function WeekDayBars({ weekBars, locale, t }: { weekBars: UsageDay[]; locale: Lo
   const max = Math.max(1, ...weekBars.map(day => day.totalTokens));
 
   return (
-    <div className="daybars" role="img" aria-label={t("usage.section.heatmap")}>
+    <div className="daybars" style={{ gridTemplateColumns: `repeat(${Math.max(1, weekBars.length)}, 1fr)` }} role="img" aria-label={t("usage.section.heatmap")}>
       {weekBars.map(day => {
         const percentage = Math.round((day.totalTokens / max) * 100);
         const label = day.date.slice(5);
@@ -634,37 +632,16 @@ function UsagePerformancePanel({
 }) {
   const titleId = useId();
   const groups = effortGroups ?? [];
-  const cards: { label: string; value: string; hint?: string }[] = [];
-  if (latency) {
-    if (isFiniteNumber(latency.apiActiveMs)) {
-      cards.push({
-        label: t("usage.perf.apiWallTime"),
-        value: formatDurationMs(latency.apiActiveMs, locale),
-        hint: t("usage.perf.apiWallTimeHint"),
-      });
-    }
-    if (isFiniteNumber(latency.activeWallMs)) {
-      cards.push({
-        label: t("usage.perf.taskTime"),
-        value: formatDurationMs(latency.activeWallMs, locale),
-        hint: t("usage.perf.taskTimeHint"),
-      });
-    }
-    if (isFiniteNumber(latency.modelCallMs)) {
-      cards.push({ label: t("usage.perf.modelCallTime"), value: formatDurationMs(latency.modelCallMs, locale) });
-    }
-    if (isFiniteNumber(latency.averageTtftMs)) {
-      cards.push({ label: t("usage.perf.averageTtft"), value: formatDurationMs(latency.averageTtftMs, locale) });
-    }
-    if (isFiniteNumber(latency.endToEndTokensPerSecond)) {
-      cards.push({ label: t("usage.perf.endToEndTps"), value: formatTokensPerSecond(latency.endToEndTokensPerSecond, locale, t) });
-    }
-    if (isFiniteNumber(latency.decodeTokensPerSecond)) {
-      cards.push({ label: t("usage.perf.decodeTps"), value: formatTokensPerSecond(latency.decodeTokensPerSecond, locale, t) });
-    }
-  }
-  // An older proxy omits both fields; the panel disappears rather than rendering empty chrome.
-  if (cards.length === 0 && groups.length === 0) return null;
+  const duration = (value: number | null | undefined) => isFiniteNumber(value) ? formatDurationMs(value!, locale) : "—";
+  const rate = (value: number | null | undefined) => isFiniteNumber(value) ? formatTokensPerSecond(value!, locale, t) : "—";
+  const cards = [
+    { label: t("usage.perf.apiWallTime"), value: duration(latency?.apiActiveMs), hint: t("usage.perf.apiWallTimeHint") },
+    { label: t("usage.perf.taskTime"), value: duration(latency?.activeWallMs), hint: t("usage.perf.taskTimeHint") },
+    { label: t("usage.perf.modelCallTime"), value: duration(latency?.modelCallMs) },
+    { label: t("usage.perf.averageTtft"), value: duration(latency?.averageTtftMs) },
+    { label: t("usage.perf.endToEndTps"), value: rate(latency?.endToEndTokensPerSecond) },
+    { label: t("usage.perf.decodeTps"), value: rate(latency?.decodeTokensPerSecond) },
+  ];
   return (
     <section className="panel" style={{ marginTop: 16 }} aria-labelledby={titleId}>
       <h3 id={titleId} className="panel-title">{t("usage.section.performance")}</h3>
@@ -679,9 +656,9 @@ function UsagePerformancePanel({
           ))}
         </div>
       )}
-      {latency && latency.activeTurns > 0 && (
+      {latency && (latency.activeTurns ?? 0) > 0 && (
         <p className="muted text-control" style={{ marginTop: 12 }}>
-          {t("usage.perf.activeTasks", { count: latency.activeTurns })}
+          {t("usage.perf.activeTasks", { count: latency.activeTurns ?? 0 })}
         </p>
       )}
       {groups.length > 0 && (
@@ -799,7 +776,7 @@ function UsageModelsTable({
         </thead>
         <tbody>
           {models.map(model => (
-            <tr key={`${model.provider}/${model.model}`}>
+            <tr key={JSON.stringify([model.provider, model.model, model.resolvedModel])}>
               <td className="mono">{modelLabel(model.model)}</td>
               <td className="muted">{formatProviderDisplayName(model.provider, t)}</td>
               <td className="num">{model.requests}</td>
@@ -974,7 +951,7 @@ function UsageWorkspaceBody({
       meta: data ? `${data.summary.requests}` : "—",
       body: data ? (
         <>
-          <UsageProfileHero currentDay={remote ? (range ? data.days.at(-1)?.date ?? null : null) : undefined} summary={data.summary} days={data.days} host={host} remote={remote} locale={locale} t={t} />
+          <UsageProfileHero currentDay={remote ? (range ? data.days.at(-1)?.date ?? null : null) : undefined} summary={data.summary} days={data.days} host={host} locale={locale} t={t} />
           <UsageSummaryCards summary={data.summary} activeDays={activeDays} locale={locale} t={t} />
           <UsageHeatmapPanel range={range} heatmap={heatmap} weekBars={weekBars} locale={locale} t={t} />
           <UsagePerformancePanel latency={data.latency} effortGroups={data.effortGroups} locale={locale} t={t} />
@@ -1050,12 +1027,12 @@ function writeHeldUsage(apiBase: string, range: Range, surface: UsageSurface, co
   writeSessionListCache(key, value);
 }
 
-function UsageReport({ data, range, host, remote = false }: { data: UsageResponse | null; range: Range | null; host: string; remote?: boolean }) {
+function UsageReport({ data, range, host, remote = false, combined = false }: { data: UsageResponse | null; range: Range | null; host: string; remote?: boolean; combined?: boolean }) {
   const { t, locale } = useI18n();
   const [modelQuery, setModelQuery] = useState("");
   const customWindow = range === null;
   const heatmap = useMemo(() => buildHeatmap(data?.days ?? [], !!customWindow, remote ? data?.days.at(-1)?.date : undefined), [data?.days, customWindow, remote]);
-  const weekBars = useMemo(() => remote ? (data?.days ?? []).slice(-7) : lastSevenDays(data?.days ?? []), [data?.days, remote]);
+  const weekBars = useMemo(() => combined ? data?.days ?? [] : remote ? (data?.days ?? []).slice(-7) : lastSevenDays(data?.days ?? []), [data?.days, remote, combined]);
   const activeDays = useMemo(() => (data?.days ?? []).filter(d => d.requests > 0).length, [data?.days]);
   const filteredModels = useMemo(() => {
     const q = modelQuery.trim().toLowerCase();
@@ -1154,8 +1131,23 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
     loadUsage,
     { isEmpty: () => false, initialData: cached ?? undefined },
   );
-  const { state } = resource;
-  const data = state.data ?? cached ?? null;
+  const localState = resource.state;
+  const localData = localState.data ?? cached ?? null;
+  const selectedRemote = machine.startsWith(REMOTE_MACHINE_PREFIX) ? remoteResource.state.data?.remotes.find(remote => REMOTE_MACHINE_PREFIX + remote.id === machine) : undefined;
+  const remoteSelected = machine.startsWith(REMOTE_MACHINE_PREFIX);
+  const state = remoteSelected ? remoteResource.state : localState;
+  const availableReports = [
+    ...(localData && !localData.error ? [localData] : []),
+    ...(remoteResource.state.data?.remotes.flatMap(remote => remote.usage?.details ? [remote.usage.details] : []) ?? []),
+  ];
+  const data = machine === "all" ? aggregateUsage(availableReports) : remoteSelected ? selectedRemote?.usage?.details ?? null : localData;
+  const unavailableNames = machine === "all" ? [
+    ...(!localData || localData.error || localState.showError ? [t("usage.machine.mac")] : []),
+    ...(remoteResource.state.data?.remotes.filter(remote => !remote.usage?.details).map(remote => remote.name) ?? []),
+  ] : [];
+  const remoteError = selectedRemote?.error;
+  const selectedError = remoteSelected && !data && !state.showSkeleton;
+  const refresh = () => { resource.refresh(); remoteResource.refresh(); };
 
   const host = useMemo(() => apiHost(apiBase), [apiBase]);
 
@@ -1170,7 +1162,7 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
         ]} />
         <UsageFilters surface={surface} range={customWindow ? null : range} onSurface={setSurface} onRange={selectRange} t={t} />
       </div>
-      {showLocal && <p className="page-sub">{t("usage.subtitle")}</p>}
+      <p className="page-sub">{t("usage.subtitle")}</p>
       {/*
         An explicit interval is the rare path — the presets answer the question almost every
         time — so the two date fields open on request instead of greeting every visit as the
@@ -1267,27 +1259,26 @@ export default function Usage({ apiBase, connected = false, apiKeyId }: { apiBas
         </div>
       )}
 
-      {showLocal && <section aria-label={t(connected ? "usage.scope.machine" : "usage.machine.mac")}>
-      <h3>{t(connected ? scope === "hub" ? "usage.scope.hub" : "usage.scope.machine" : "usage.machine.mac")}</h3>
+      <p className="muted text-caption">{t("usage.machine.accounting")}</p>
+      {machine === "all" && (!remoteResource.state.data || unavailableNames.length > 0 || remoteResource.state.showError || remoteResource.state.data?.error) && <Notice tone="warn">{t("usage.machine.partial", { names: unavailableNames.join(", ") || t("remoteUsage.title") })}</Notice>}
       {state.showSkeleton && !data ? (
         <DataSurfaceSkeleton label={t("usage.loading")} rows={5} />
-      ) : state.kind === "failed-cold" ? (
+      ) : selectedError || (!data && state.kind === "failed-cold") ? (
         <Notice tone="err">
-          {state.error instanceof UsageWindowMismatchError
+          {selectedError ? t(remoteError === "unsupported_window" ? "remoteUsage.unsupportedWindow" : remoteError === "unauthorized" ? "remoteUsage.unauthorized" : remoteError === "invalid_response" ? "remoteUsage.invalidResponse" : remoteResource.state.showError ? "remoteUsage.unavailable" : selectedRemote?.usage ? "remoteUsage.summaryOnly" : "remoteUsage.offline") : state.error instanceof UsageWindowMismatchError
             ? `${t("usage.loadError")} ${t("dash.codexRestartMalformed")}`
             : connected ? t("usage.hubOffline") : state.error instanceof Error ? `${t("usage.loadError")} ${state.error.message}` : t("usage.loadError")}{" "}
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => resource.refresh()}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={refresh}>
             {t("common.retry")}
           </button>
         </Notice>
       ) : (
         <>
           {state.showError && <Notice tone="err">{t(connected ? "usage.hubOffline" : "usage.loadError")}</Notice>}
-          <UsageReport data={data} range={customWindow ? null : range} host={host} />
+          <UsageReport data={data} range={customWindow ? null : range} host={machine === "all" ? t("usage.machine.all") : remoteSelected ? selectedRemote?.name ?? "" : host} remote={machine !== "local"} combined={machine === "all"} />
         </>
       )}
-      </section>}
-      {machine !== "local" && <RemoteUsageResults renderUsage={(report, name) => <UsageReport data={report} range={customWindow ? null : range} host={name} remote />} key={machine} resource={remoteResource} range={range} machineId={machine.startsWith(REMOTE_MACHINE_PREFIX) ? machine.slice(REMOTE_MACHINE_PREFIX.length) : undefined} />}
+
     </>
   );
 }

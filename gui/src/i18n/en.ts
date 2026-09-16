@@ -12,6 +12,8 @@ export const en = {
 
   "usage.machine.label": "Machine",
   "usage.machine.all": "All",
+  "usage.machine.accounting": "All combines recorded proxy usage, including relayed requests recorded on multiple machines. Daily charts use each proxy’s calendar dates; unavailable combined rates and wall times show —.",
+  "usage.machine.partial": "Some machine reports are pending, unavailable, or outdated: {names}.",
   "usage.machine.mac": "Mac",
   "remoteUsage.summaryOnly": "This remote only supplied totals; detailed usage is unavailable.",
   "remoteUsage.title": "Remote OpenCodex",
@@ -997,7 +999,7 @@ export const en = {
 
   // usage page
   "usage.title": "Usage",
-  "usage.subtitle": "Local token accounting from your proxy. Missing usage is never shown as zero.",
+  "usage.subtitle": "Token accounting from the selected machines. Missing usage is never shown as zero.",
   "usage.loading": "Loading usage data…",
   "usage.empty": "No usage recorded yet. Send a request through the proxy to see activity here.",
   "usage.loadError": "Could not load usage data.",
@@ -1042,7 +1044,7 @@ export const en = {
   "usage.heatmap.tooltipTokens": "{tokens} tokens",
   "usage.heatmap.tooltipRequests": "{requests} requests",
   "usage.profile.name": "OpenCodex",
-  "usage.profile.badge": "Local proxy",
+  "usage.profile.badge": "Proxy",
   "usage.stat.lifetimeTokens": "Lifetime tokens",
   "usage.stat.peakDay": "Peak day",
   "usage.stat.requests": "Requests",

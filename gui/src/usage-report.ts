@@ -68,11 +68,11 @@ export interface UsageProvider {
 }
 
 export interface UsageLatency {
-  modelCallMs: number;
-  apiActiveMs: number;
+  modelCallMs: number | null;
+  apiActiveMs: number | null;
   activeWallMs: number | null;
-  activeTurns: number;
-  completedTurns: number;
+  activeTurns: number | null;
+  completedTurns: number | null;
   averageTtftMs: number | null;
   endToEndTokensPerSecond: number | null;
   decodeTokensPerSecond: number | null;

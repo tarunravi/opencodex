@@ -104,15 +104,11 @@ to save an incomplete snapshot; choose another order or repair the history befor
 
 ### Remote OpenCodex usage
 
-**Usage** starts with the **Machine** filter set to **All**, followed by **Mac** and each configured remote in configuration order. All shows separately labeled full reports for Mac and each remote; selecting a machine shows only its report. Disconnected machines stay selectable and display their connection error. Range and client filters apply to the selected reports. Each machine uses the same overview, model breakdown, provider table, coverage, daily activity, and available performance charts. Remote daily charts use the dates reported by that proxy. Missing performance telemetry remains unavailable; older summary-only servers display a totals-only notice.
+**Usage** starts with **Machine → All**, followed by **Mac** and each configured remote in configuration order. The same overview, model/provider tables, coverage, daily activity, and performance slots remain in place as you switch machines; only their data changes.
 
-**Remote OpenCodex** also displays each remote proxy's requests, tokens, and estimated cost separately.
-Relayed requests can also appear in the local ledger, so these totals are never added to local usage.
-Remote failures leave the Mac report usable; choosing Mac hides remote warnings.
-Remote reports refresh every minute while the page is visible; the remote page also has a refresh button.
-An unavailable report is an error, not a zero total. Today uses each remote proxy's time zone.
-Explicit time windows require a remote version that echoes those bounds; older versions show an
-unsupported-window message instead of substituting another range.
+**All** adds recorded proxy usage, including relayed requests recorded by more than one machine. It does not deduplicate inference calls. Token shares and coverage are recomputed from the combined counters. Cross-machine wall times and combined rates without sufficient sample data show **—**, rather than an invented average. Daily buckets combine each proxy's calendar dates, which can represent different time zones. A compact notice identifies machines whose report is missing or outdated; their absence is not zero usage.
+
+Disconnected machines remain selectable. Explicit windows require a remote version that echoes those bounds; older versions show an unsupported-window message. A summary-only remote reports that details are unavailable. Remote reports refresh every minute while visible. The separate **Remote OpenCodex** page continues to show individual summary cards.
 
 Configure up to eight remotes in `usage-remotes.json` under `OPENCODEX_HOME` (normally `~/.opencodex`).
 Each entry contains `id`, `name`, `baseUrl`, and `token`, where `token` is the remote management token:

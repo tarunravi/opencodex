@@ -10,6 +10,8 @@ export const ja: Record<TKey, string> = {
 
   "usage.machine.label": "マシン",
   "usage.machine.all": "すべて",
+  "usage.machine.accounting": "All combines recorded proxy usage, including relayed requests recorded on multiple machines. Daily charts use each proxy’s calendar dates; unavailable combined rates and wall times show —.",
+  "usage.machine.partial": "Some machine reports are pending, unavailable, or outdated: {names}.",
   "usage.machine.mac": "Mac",
   "remoteUsage.summaryOnly": "This remote only supplied totals; detailed usage is unavailable.",
   "remoteUsage.title": "Remote OpenCodex",
@@ -910,7 +912,7 @@ export const ja: Record<TKey, string> = {
 
   // usage page
   "usage.title": "使用量",
-  "usage.subtitle": "プロキシからのローカルトークン会計です。欠損した使用量はゼロとして表示されることはありません。",
+  "usage.subtitle": "Token accounting from the selected machines. Missing usage is never shown as zero.",
   "usage.loading": "使用量データを読み込み中…",
   "usage.empty": "まだ使用量が記録されていません。プロキシ経由でリクエストを送信するとここにアクティビティが表示されます。",
   "usage.loadError": "使用量データを読み込めませんでした。",
@@ -955,7 +957,7 @@ export const ja: Record<TKey, string> = {
   "usage.heatmap.tooltipTokens": "{tokens} トークン",
   "usage.heatmap.tooltipRequests": "{requests} リクエスト",
   "usage.profile.name": "OpenCodex",
-  "usage.profile.badge": "ローカルプロキシ",
+  "usage.profile.badge": "Proxy",
   "usage.stat.lifetimeTokens": "累計トークン",
   "usage.stat.peakDay": "最大日",
   "usage.stat.requests": "リクエスト",

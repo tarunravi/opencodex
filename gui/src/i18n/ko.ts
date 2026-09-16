@@ -10,6 +10,8 @@ export const ko: Record<TKey, string> = {
 
   "usage.machine.label": "머신",
   "usage.machine.all": "전체",
+  "usage.machine.accounting": "All combines recorded proxy usage, including relayed requests recorded on multiple machines. Daily charts use each proxy’s calendar dates; unavailable combined rates and wall times show —.",
+  "usage.machine.partial": "Some machine reports are pending, unavailable, or outdated: {names}.",
   "usage.machine.mac": "Mac",
   "remoteUsage.summaryOnly": "This remote only supplied totals; detailed usage is unavailable.",
   "remoteUsage.title": "Remote OpenCodex",
@@ -978,7 +980,7 @@ export const ko: Record<TKey, string> = {
 
   // usage page
   "usage.title": "사용량",
-  "usage.subtitle": "프록시의 로컬 토큰 집계입니다. 누락된 사용량은 0으로 표시하지 않습니다.",
+  "usage.subtitle": "Token accounting from the selected machines. Missing usage is never shown as zero.",
   "usage.loading": "사용량 데이터를 불러오는 중…",
   "usage.empty": "아직 기록된 사용량이 없습니다. 프록시로 요청을 보내면 여기에 표시됩니다.",
   "usage.loadError": "사용량 데이터를 불러오지 못했습니다.",
@@ -1899,7 +1901,7 @@ export const ko: Record<TKey, string> = {
   "usage.heatmap.tooltipTokens": "{tokens} 토큰",
   "usage.heatmap.tooltipRequests": "{requests} 요청",
   "usage.profile.name": "OpenCodex",
-  "usage.profile.badge": "로컬 프록시",
+  "usage.profile.badge": "Proxy",
   "usage.stat.lifetimeTokens": "누적 토큰",
   "usage.stat.peakDay": "피크 날",
   "usage.stat.requests": "요청",

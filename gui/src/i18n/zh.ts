@@ -10,6 +10,8 @@ export const zh: Record<TKey, string> = {
 
   "usage.machine.label": "机器",
   "usage.machine.all": "全部",
+  "usage.machine.accounting": "All combines recorded proxy usage, including relayed requests recorded on multiple machines. Daily charts use each proxy’s calendar dates; unavailable combined rates and wall times show —.",
+  "usage.machine.partial": "Some machine reports are pending, unavailable, or outdated: {names}.",
   "usage.machine.mac": "Mac",
   "remoteUsage.summaryOnly": "This remote only supplied totals; detailed usage is unavailable.",
   "remoteUsage.title": "Remote OpenCodex",
@@ -959,7 +961,7 @@ export const zh: Record<TKey, string> = {
 
   // usage page
   "usage.title": "用量",
-  "usage.subtitle": "代理本地的 Token 用量统计。缺失的用量不会显示为零。",
+  "usage.subtitle": "Token accounting from the selected machines. Missing usage is never shown as zero.",
   "usage.loading": "正在加载用量数据…",
   "usage.empty": "尚无用量记录。通过代理发送请求后将在此显示。",
   "usage.loadError": "无法加载用量数据。",
@@ -1880,7 +1882,7 @@ export const zh: Record<TKey, string> = {
   "usage.heatmap.tooltipTokens": "{tokens} 令牌",
   "usage.heatmap.tooltipRequests": "{requests} 请求",
   "usage.profile.name": "OpenCodex",
-  "usage.profile.badge": "本地代理",
+  "usage.profile.badge": "Proxy",
   "usage.stat.lifetimeTokens": "累计 Token",
   "usage.stat.peakDay": "单日峰值",
   "usage.stat.requests": "请求",

@@ -5,6 +5,7 @@ import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
 import { clearClientResourceStoresForTests } from "../src/client-resource";
 import Usage from "../src/pages/Usage";
+import { useRemoteUsage } from "../src/remote-usage-resource";
 
 const globals = ["document", "window", "navigator", "localStorage", "sessionStorage", "ResizeObserver", "IS_REACT_ACT_ENVIRONMENT"] as const;
 const originalFetch = globalThis.fetch;
@@ -102,42 +103,45 @@ async function select(name: string) {
   await act(async () => { items.find(item => item.textContent === name)!.click(); });
 }
 
-test("All defaults first; machine reports stay separate and reserved remote IDs do not collide", async () => {
+test("All, Mac and remotes use one unchanged dashboard with distinct data and collision-safe IDs", async () => {
   await mount();
   await settle();
   const items = await options();
   expect(items.map(item => item.textContent)).toEqual(["All", "Mac", "Devbox one", "Devbox two"]);
   expect(items[0].getAttribute("aria-selected")).toBe("true");
   await act(async () => { items[0].click(); });
-  expect(container.querySelector('section[aria-label="Mac"]')?.textContent).toContain("local-only-model");
-  expect(container.querySelector('section[aria-label="Devbox one"]')?.textContent).toContain("remote-only-model");
-  expect(container.querySelector('section[aria-label="Devbox one"]')?.textContent).toContain("Remote Only Provider");
-  const ids = [...container.querySelectorAll("[id]")].map(element => element.id);
-  expect(new Set(ids).size).toBe(ids.length);
-  expect(container.querySelectorAll('section[aria-label="Devbox one"] .heatmap-cell').length).toBeGreaterThan(350);
-  const active = container.querySelector<HTMLElement>('section[aria-label="Devbox one"] .heatmap-grid .heatmap-cell:not(.heatmap-cell-0)');
-  expect(active).not.toBeNull();
-  await act(async () => { active!.dispatchEvent(new testWindow.MouseEvent("mouseover", { bubbles: true })); });
-  expect(container.querySelector(".heatmap-tip-date")?.textContent).toBe("2030-01-01");
-  await select("Mac");
   expect(container.textContent).toContain("local-only-model");
-  expect(container.querySelector('section[aria-label="Devbox one"]')).toBeNull();
-  expect(document.querySelector(".toast-notice")).toBeNull();
-  await select("Devbox one");
-  expect(container.textContent).toContain("Average TTFT");
   expect(container.textContent).toContain("remote-only-model");
   expect(container.textContent).toContain("Remote Only Provider");
-  expect(container.textContent).not.toContain("Local proxy");
-  expect(container.textContent).not.toContain("Local token accounting");
+  expect(container.querySelectorAll(".usage-workspace-shell")).toHaveLength(1);
+  expect(container.textContent).toContain("including relayed requests");
+  const headings = () => [...container.querySelectorAll(".usage-workspace-shell h3, .usage-workspace-shell h4")].map(node => node.textContent);
+  const slots = () => [...container.querySelectorAll('[aria-label="Performance"] .stat > .muted')].map(node => node.textContent);
+  const expectedHeadings = headings();
+  const expectedSlots = slots();
+  const ids = [...container.querySelectorAll("[id]")].map(element => element.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  await select("Mac");
+  expect(headings()).toEqual(expectedHeadings);
+  expect(slots()).toEqual(expectedSlots);
+  expect(container.textContent).toContain("local-only-model");
+  expect(container.textContent).not.toContain("remote-only-model");
+  await select("Devbox one");
+  expect(headings()).toEqual(expectedHeadings);
+  expect(slots()).toEqual(expectedSlots);
+  expect(container.querySelectorAll(".usage-workspace-shell")).toHaveLength(1);
+  expect(container.textContent).toContain("remote-only-model");
+  expect(container.textContent).toContain("Remote Only Provider");
   expect(container.textContent).not.toContain("local-only-model");
-  expect(container.querySelector('section[aria-label="Mac"]')).toBeNull();
-  expect(container.querySelector('section[aria-label="Devbox two"]')).toBeNull();
-  expect(container.querySelector('section[aria-label="Devbox one"]')?.textContent).toContain("Connected");
+  expect(container.querySelectorAll(".heatmap-cell").length).toBeGreaterThan(350);
+  const active = container.querySelector<HTMLElement>('.heatmap-grid .heatmap-cell:not(.heatmap-cell-0)');
+  await act(async () => { active!.dispatchEvent(new testWindow.MouseEvent("mouseover", { bubbles: true })); });
+  expect(container.querySelector(".heatmap-tip-date")?.textContent).toBe("2030-01-01");
   expect(document.querySelector(".toast-notice")).toBeNull();
   await select("Devbox two");
   expect(container.querySelector(".stat")).toBeNull();
   expect(container.textContent).not.toContain("local-only-model");
-  expect(container.querySelector('section[aria-label="Devbox two"]')?.textContent).toContain("Could not reach this remote proxy");
+  expect(container.textContent).toContain("Could not reach this remote proxy");
 });
 
 test("roster survives new ranges and collector failures without showing previous-window totals", async () => {
@@ -171,4 +175,37 @@ test("changing API hosts retires the prior machine roster and selection", async 
   expect(items.map(item => item.textContent)).toEqual(["All", "Mac"]);
   expect(items[0].getAttribute("aria-selected")).toBe("true");
   expect(container.querySelector(".stat")).toBeNull();
+});
+
+test("All seven-day chart retains the union of different source calendar dates", async () => {
+  await mount();
+  await settle();
+  await act(async () => { container.querySelector<HTMLButtonElement>('button.usage-segmented-btn[aria-label="7d"]')!.click(); });
+  await act(async () => {
+    for (const gate of requests.filter(gate => gate.url.includes("range=7d"))) {
+      const remote = gate.url.includes("/remotes?");
+      const data = report(gate, remote ? "remote-model" : "local-model");
+      data.days = Array.from({ length: 7 }, (_, index) => ({ ...data.days[0], date: `2026-09-${10 + index + Number(remote)}` }));
+      gate.resolve(Response.json(remote ? { remotes: [{ ...remotes[0], usage: { ...remotes[0].usage, details: data } }] } : data));
+    }
+  });
+  expect([...container.querySelectorAll(".daybar-label")].map(node => node.textContent)).toEqual(["09-10", "09-11", "09-12", "09-13", "09-14", "09-15", "09-16", "09-17"]);
+  expect(container.querySelector<HTMLElement>(".daybars")?.style.gridTemplateColumns).toBe("repeat(8, 1fr)");
+});
+
+function RemoteRefresh() {
+  const resource = useRemoteUsage({ apiBase, range: "30d", surface: "all" });
+  return <button onClick={() => resource.refresh()}>Refresh fixture</button>;
+}
+
+test("a warm remote refresh failure keeps cached numbers with an outdated-source notice", async () => {
+  await mount();
+  await settle();
+  await act(async () => { root!.render(<LanguageProvider><Usage apiBase={apiBase} /><RemoteRefresh /></LanguageProvider>); });
+  await act(async () => { [...container.querySelectorAll("button")].find(button => button.textContent === "Refresh fixture")!.click(); });
+  const remoteGate = requests.filter(gate => gate.url.includes("/remotes?")).at(-1)!;
+  await act(async () => { remoteGate.resolve(new Response("", { status: 503 })); });
+  expect(container.textContent).toContain("remote-only-model");
+  expect(container.textContent).toContain("unavailable, or outdated");
+  expect(container.textContent).not.toContain("unable to include");
 });
