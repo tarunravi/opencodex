@@ -8,7 +8,7 @@ import { CodexWsMetadata, type CodexWsQuotaObserver } from "./codex-ws-metadata"
 import { CODEX_RESPONSES_HTTP_URL, type PreparedCodexWsRequest } from "./codex-ws-request";
 import { CodexWsCorrelation } from "./codex-ws-correlation";
 import type { CodexWsSession } from "./codex-ws-session";
-import { UPGRADE_DEADLINE_MS, CODEX_WS_LIVENESS_PING_INTERVAL_MS, CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS, MAX_CODEX_WS_FRAME_BYTES,
+import { UPGRADE_DEADLINE_MS, CODEX_WS_LIVENESS_PING_INTERVAL_MS, CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS, CODEX_WS_SILENT_OPEN_PRELUDE_TIMEOUT_MS, MAX_CODEX_WS_FRAME_BYTES,
   MAX_CODEX_WS_QUEUE_BYTES, markCodexWsResponse, normalizeResponsesWsRelayEvent, closedBeforeTerminalMessage,
   codexWsCreateFrameExceedsLimit, codexWsFailureDetail, codexWsPreResponseFailure, markCodexWsStage, codexWsOcxVersion,
   markCodexWsSocketDeath, type CodexWsFailureStage, type CodexWsStageRecord } from "./codex-ws-wire";
@@ -258,12 +258,21 @@ export function codexWsExchange(options: ExchangeOptions): Promise<Response> {
     };
 
     /** (Re)start the silence bound; every inbound frame or pong is proof of life. */
+    const silenceBudgetMs = () => {
+      const pingable = typeof (ws as WebSocket & { ping?: unknown }).ping === "function";
+      const open = ws.readyState === undefined || ws.readyState === 1;
+      // Codex can leave the socket open and silent for many minutes before
+      // response.created, and it does not always answer protocol pings. That is
+      // not a dead turn. Only a socket we cannot ping keeps the short bound.
+      if (pingable && open && pongs === 0 && upstreamFrames === 0) return CODEX_WS_SILENT_OPEN_PRELUDE_TIMEOUT_MS;
+      return CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS;
+    };
     const armSilence = () => {
       clearTimeout(silenceTimer);
       if (responseCommitted || terminal) return;
       silenceTimer = setTimeout(
         () => failStream(`codex websocket response prelude timed out${codexWsFailureDetail(failureStage())}`, 504),
-        CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS,
+        silenceBudgetMs(),
       );
     };
     /** Ping on a fixed interval until the response starts; a socket without ping() is never pinged. */

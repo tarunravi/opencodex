@@ -17,10 +17,16 @@ export const UPGRADE_DEADLINE_MS = 10_000;
 // WebSocket has a native answer: ping. While waiting, the exchange pings every
 // CODEX_WS_LIVENESS_PING_INTERVAL_MS on sockets that expose `ping()`; any inbound frame
 // or pong resets the silence clock, and only CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS of
-// nothing at all settles the exchange as an origin-silence 504. A peer that never pongs
-// keeps exactly the previous 90 s bound; a peer that does can never trip it while alive.
+// nothing at all settles the exchange as an origin-silence 504. A peer that pongs can
+// never trip it while alive. A peer that exposes ping() but never pongs used to die at
+// that same 90 s, which is shorter than a silent Sol prefill on an otherwise open
+// socket. That open-socket case waits CODEX_WS_SILENT_OPEN_PRELUDE_TIMEOUT_MS instead.
+// A socket with no ping() keeps the 90 s bound, because silence is its only signal.
 export const CODEX_WS_LIVENESS_PING_INTERVAL_MS = 15_000;
 export const CODEX_WS_RESPONSE_PRELUDE_TIMEOUT_MS = 90_000;
+// Long enough for a silent GPT-6-Sol prefill (observed past 8 minutes) without
+// leaving a black-holed open socket up indefinitely.
+export const CODEX_WS_SILENT_OPEN_PRELUDE_TIMEOUT_MS = 15 * 60_000;
 // Keep the push-based WS transport inside the same memory envelope as the
 // bounded SSE relays that consume this response. Unlike fetch response bodies,
 // a WebSocket cannot be paused when a ReadableStream applies backpressure, so
